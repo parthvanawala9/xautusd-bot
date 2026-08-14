@@ -22,17 +22,17 @@ jobs:
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
           if [ -z "$ORACLE_PRIVATE_KEY" ]; then
-            echo "ERROR: ORACLE_PRIVATE_KEY secret is empty or missing."
+            echo "ERROR: ORACLE_PRIVATE_KEY is empty or missing."
             exit 1
           fi
 
           if [ -z "$ORACLE_HOST" ]; then
-            echo "ERROR: ORACLE_HOST secret is empty or missing."
+            echo "ERROR: ORACLE_HOST is empty or missing."
             exit 1
           fi
 
           if [ -z "$ORACLE_USER" ]; then
-            echo "ERROR: ORACLE_USER secret is empty or missing."
+            echo "ERROR: ORACLE_USER is empty or missing."
             exit 1
           fi
 
@@ -41,13 +41,14 @@ jobs:
       - name: Prepare SSH
         env:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
         run: |
           mkdir -p ~/.ssh
+
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+
           chmod 600 ~/.ssh/oracle.key
-          ssh-keyscan -H "$ORACLE_HOST" >> ~/.ssh/known_hosts
-          echo "SSH configuration prepared."
+
+          echo "SSH key prepared successfully."
 
       - name: Test SSH connection
         env:
@@ -57,6 +58,7 @@ jobs:
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=30 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "echo SSH connection successful"
@@ -69,6 +71,7 @@ jobs:
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
             "$ORACLE_USER@$ORACLE_HOST" \
             "mkdir -p /home/opc/xautusd-bot"
 
@@ -80,7 +83,7 @@ jobs:
           rsync -avz \
             --exclude='.git' \
             --exclude='.github' \
-            -e "ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no -o ConnectTimeout=30" \
+            -e "ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30" \
             ./ \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/"
 
@@ -92,6 +95,7 @@ jobs:
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
           cd /home/opc/xautusd-bot
