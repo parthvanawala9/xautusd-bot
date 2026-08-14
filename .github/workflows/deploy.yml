@@ -1,10 +1,10 @@
 name: Deploy XAUTUSD Bot
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   deploy:
@@ -14,27 +14,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Deploy files to Oracle
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USER }}
-          key: ${{ secrets.ORACLE_SSH_KEY }}
-          source: "bot.py,requirements.txt,README.md"
-          target: "/home/opc/xautusd-bot"
-          timeout: 30s
-          command_timeout: 1m
+      - name: Prepare SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_KEY }}" > ~/.ssh/oracle.key
+          chmod 600 ~/.ssh/oracle.key
+          ssh-keyscan -H "${{ secrets.ORACLE_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Prepare Oracle server
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.ORACLE_HOST }}
-          username: ${{ secrets.ORACLE_USER }}
-          key: ${{ secrets.ORACLE_SSH_KEY }}
-          timeout: 30s
-          command_timeout: 2m
-          script: |
-            mkdir -p /home/opc/xautusd-bot
-            cd /home/opc/xautusd-bot
-            sudo dnf install -y python3-pip
+      - name: Copy files to Oracle
+        run: |
+          rsync -avz \
+            --exclude '.git' \
+            --exclude '.github' \
+            -e "ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no -o ConnectTimeout=30" \
+            ./ "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}:/home/opc/xautusd-bot/"
+
+      - name: Run bot on Oracle
+        run: |
+          ssh -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
+            "${{ secrets.ORACLE_USER }}@${{ secrets.ORACLE_HOST }}" << 'EOF'
+          
+          cd /home/opc/xautusd-bot
+
+          if [ -f requirements.txt ]; then
             python3 -m pip install --user -r requirements.txt
+          fi
+
+          pkill -f "bot.py" || true
+
+          nohup python3 bot.py > bot.log 2>&1 &
+
+          echo "Bot started"
+          EOF
