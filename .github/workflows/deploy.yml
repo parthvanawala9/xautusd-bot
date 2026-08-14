@@ -14,23 +14,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Deploy to Oracle
-        uses: appleboy/scp-action@v0.1.7
+      - name: Deploy files to Oracle
+        uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           source: "bot.py,requirements.txt,README.md"
           target: "/home/opc/xautusd-bot"
+          timeout: 30s
+          command_timeout: 1m
 
-      - name: Install and restart bot
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Prepare Oracle server
+        uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.ORACLE_HOST }}
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
+          timeout: 30s
+          command_timeout: 2m
           script: |
-            cd /home/opc/xautusd-bot
-            sudo dnf install -y python3-pip unzip
-            python3 -m pip install --user -r requirements.txt
             mkdir -p /home/opc/xautusd-bot
+            cd /home/opc/xautusd-bot
+            sudo dnf install -y python3-pip
+            python3 -m pip install --user -r requirements.txt
