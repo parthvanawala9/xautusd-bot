@@ -1,0 +1,36 @@
+name: Deploy XAUTUSD Bot
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to Oracle
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          source: "bot.py,requirements.txt,README.md"
+          target: "/home/opc/xautusd-bot"
+
+      - name: Install and restart bot
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
+          script: |
+            cd /home/opc/xautusd-bot
+            sudo dnf install -y python3-pip unzip
+            python3 -m pip install --user -r requirements.txt
+            mkdir -p /home/opc/xautusd-bot
