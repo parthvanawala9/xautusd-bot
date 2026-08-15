@@ -22,17 +22,17 @@ jobs:
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
           if [ -z "$ORACLE_PRIVATE_KEY" ]; then
-            echo "ERROR: ORACLE_PRIVATE_KEY is empty or missing."
+            echo "ERROR: ORACLE_PRIVATE_KEY is missing."
             exit 1
           fi
 
           if [ -z "$ORACLE_HOST" ]; then
-            echo "ERROR: ORACLE_HOST is empty or missing."
+            echo "ERROR: ORACLE_HOST is missing."
             exit 1
           fi
 
           if [ -z "$ORACLE_USER" ]; then
-            echo "ERROR: ORACLE_USER is empty or missing."
+            echo "ERROR: ORACLE_USER is missing."
             exit 1
           fi
 
@@ -45,7 +45,7 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
           chmod 600 ~/.ssh/oracle.key
-          echo "SSH key prepared successfully."
+          echo "SSH key prepared."
 
       - name: Test SSH connection
         env:
@@ -93,6 +93,7 @@ jobs:
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
           set -e
@@ -100,27 +101,41 @@ jobs:
           cd /home/opc/xautusd-bot
 
           echo "=================================="
-          echo "INSTALLING PYTHON"
+          echo "CHECKING PYTHON"
           echo "=================================="
 
-          if ! command -v python3 >/dev/null 2>&1; then
-            echo "Python3 not found. Installing..."
-            sudo dnf install -y python3
-          fi
-
-          echo "Python version:"
           python3 --version
 
           echo "=================================="
-          echo "INSTALLING PIP"
+          echo "CHECKING PIP"
           echo "=================================="
 
-          if ! python3 -m pip --version >/dev/null 2>&1; then
-            echo "Pip not found. Installing python3-pip..."
-            sudo dnf install -y python3-pip
+          if python3 -m pip --version >/dev/null 2>&1; then
+              echo "Pip is already installed."
+          else
+              echo "Pip is missing."
+              echo "Trying Python ensurepip..."
+
+              python3 -m ensurepip --upgrade || true
+
+              if ! python3 -m pip --version >/dev/null 2>&1; then
+                  echo "ensurepip unavailable."
+                  echo "Downloading official pip installer..."
+
+                  curl -fsSL --connect-timeout 15 --max-time 60 \
+                    https://bootstrap.pypa.io/get-pip.py \
+                    -o /tmp/get-pip.py
+
+                  python3 /tmp/get-pip.py --user
+
+                  rm -f /tmp/get-pip.py
+              fi
           fi
 
-          echo "Pip version:"
+          echo "=================================="
+          echo "PIP VERSION"
+          echo "=================================="
+
           python3 -m pip --version
 
           echo "=================================="
@@ -128,16 +143,18 @@ jobs:
           echo "=================================="
 
           if [ -f requirements.txt ]; then
-            python3 -m pip install --user -r requirements.txt
+              python3 -m pip install --user -r requirements.txt
           else
-            echo "No requirements.txt found."
+              echo "ERROR: requirements.txt not found."
+              exit 1
           fi
 
           echo "=================================="
           echo "STOPPING OLD BOT"
           echo "=================================="
 
-          pkill -f "bot.py" || true
+          pkill -f "python3 bot.py" || true
+          pkill -f "python bot.py" || true
 
           sleep 2
 
@@ -145,18 +162,28 @@ jobs:
           echo "STARTING XAUTUSD BOT"
           echo "=================================="
 
-          nohup python3 bot.py > bot.log 2>&1 &
+          nohup python3 bot.py > /home/opc/xautusd-bot/bot.log 2>&1 &
 
           sleep 5
 
+          echo "=================================="
+          echo "CHECKING BOT"
+          echo "=================================="
+
           if pgrep -f "python3 bot.py" >/dev/null; then
-            echo "BOT IS RUNNING SUCCESSFULLY."
+              echo "=================================="
+              echo "BOT IS RUNNING SUCCESSFULLY."
+              echo "=================================="
           else
-            echo "BOT FAILED TO START."
-            echo "========== BOT LOG =========="
-            cat bot.log || true
-            echo "============================="
-            exit 1
+              echo "=================================="
+              echo "BOT FAILED TO START."
+              echo "=================================="
+
+              echo "========== BOT LOG =========="
+              cat /home/opc/xautusd-bot/bot.log || true
+              echo "============================="
+
+              exit 1
           fi
 
           EOF
