@@ -7,103 +7,178 @@ import logging
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
 
 # ============================================================
-# XAUTUSD DELTA LIVE AUTO-TRADING BOT
+# XAUTUSD DELTA INDIA LIVE AUTO-TRADING BOT
+# ============================================================
 #
 # LIVE TRADING ONLY
 #
-# This bot is permanently configured for:
-#   Delta Exchange India PRODUCTION API
-#   https://api.india.delta.exchange
-#
-# There is NO testnet mode.
-# There is NO demo mode.
-# There is NO dry-run mode.
-# Orders sent by this bot are REAL orders.
-#
 # Strategy:
-#   Trading day = 05:30 IST -> next day 05:30 IST
 #
-#   Opening candle = 05:30-05:45 IST
+# Trading day:
+#   05:30 IST -> next day 05:30 IST
 #
-#   If flat after 05:45:
-#       break opening HIGH -> market LONG, SL = day LOW
-#       break opening LOW  -> market SHORT, SL = day HIGH
+# Opening candle:
+#   05:30 -> 05:45 IST
 #
-#   If already in a position at a new 05:30:
-#       DO NOT open a new trade.
-#       Reset the day's reference extremes and replace the SL
-#       as the new day's LOW (long) / HIGH (short) develops.
+# Entry:
+#   Price breaks opening HIGH -> LONG
+#   Price breaks opening LOW  -> SHORT
 #
-#   SL trigger = last traded price, stop-market, reduce-only.
+# Stop Loss:
+#   LONG  -> current trading-day LOW
+#   SHORT -> current trading-day HIGH
 #
-#   When SL closes a position:
-#       immediately reverse with a MARKET order.
+# After SL:
+#   Immediately reverse at MARKET.
 #
-#   No profit target.
+# Position handling:
+#   If a position already exists when bot starts,
+#   bot manages that position and does NOT duplicate it.
 #
-#   Friday trade may continue overnight.
+# New trading day:
+#   Existing position is NOT closed.
+#   SL is rebuilt using the new day's high/low.
 #
-#   Saturday 05:00 IST:
-#       force square-off and stop trading.
+# Weekend:
+#   Saturday 05:00 IST -> square off.
+#   Saturday 05:00 -> Monday 05:45 = no entries.
 #
-#   No Saturday/Sunday entries.
+# Position sizing:
+#   10% of current equity as margin
+#   50x leverage
 #
-#   Monday 05:45 IST:
-#       new entries allowed.
-#
-# LIVE TRADING:
-#   Always enabled.
-#   No environment variable can disable live trading.
+# IMPORTANT:
+#   This file is LIVE ONLY.
+#   There is NO dry-run/demo trading mode.
 # ============================================================
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+load_dotenv()
+
 
 IST = ZoneInfo("Asia/Kolkata")
 UTC = timezone.utc
 
+
+# Delta Exchange India production API.
+BASE_URL = os.getenv(
+    "DELTA_BASE_URL",
+    "https://api.india.delta.exchange"
+).rstrip("/")
+
+
+SYMBOL = os.getenv(
+    "DELTA_SYMBOL",
+    "XAUTUSD"
+)
+
+
+API_KEY = os.getenv(
+    "DELTA_API_KEY",
+    ""
+).strip()
+
+
+API_SECRET = os.getenv(
+    "DELTA_API_SECRET",
+    ""
+).strip()
+
+
 # ============================================================
-# PRODUCTION ONLY
+# LIVE SETTINGS
 # ============================================================
 
-BASE_URL = "https://api.india.delta.exchange"
-
-SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD")
-
-API_KEY = os.getenv("DELTA_API_KEY", "")
-API_SECRET = os.getenv("DELTA_API_SECRET", "")
-
-# PERMANENTLY LIVE.
-# There is intentionally no testnet/dry-run switch.
+# HARD-CODED LIVE MODE.
+# There is intentionally no dry-run mode in this file.
 LIVE_TRADING = True
 
-LEVERAGE = Decimal(os.getenv("LEVERAGE", "50"))
-BALANCE_FRACTION = Decimal(os.getenv("BALANCE_FRACTION", "0.10"))
-POLL_SECONDS = float(os.getenv("POLL_SECONDS", "0.50"))
 
-# The bot requires real Delta API credentials.
-if not API_KEY or not API_SECRET:
-    raise SystemExit(
-        "Missing DELTA_API_KEY / DELTA_API_SECRET in .env"
+LEVERAGE = Decimal(
+    os.getenv(
+        "LEVERAGE",
+        "50"
     )
+)
+
+
+BALANCE_FRACTION = Decimal(
+    os.getenv(
+        "BALANCE_FRACTION",
+        "0.10"
+    )
+)
+
+
+POLL_SECONDS = float(
+    os.getenv(
+        "POLL_SECONDS",
+        "0.50"
+    )
+)
+
+
+# ============================================================
+# REQUIRED CREDENTIAL CHECK
+# ============================================================
+
+if not API_KEY:
+    raise SystemExit(
+        "Missing DELTA_API_KEY."
+    )
+
+
+if not API_SECRET:
+    raise SystemExit(
+        "Missing DELTA_API_SECRET."
+    )
+
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
+    format=(
+        "%(asctime)s | "
+        "%(levelname)s | "
+        "%(message)s"
+    ),
 )
+
+
+# ============================================================
+# HTTP SESSION
+# ============================================================
 
 session = requests.Session()
 
-session.headers.update({
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Live-OpeningRange-Bot/1.0",
-})
+session.headers.update(
+    {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": (
+            "XAUTUSD-OpeningRange-Live-Bot/2.0"
+        ),
+    }
+)
 
+
+# ============================================================
+# TIME HELPERS
+# ============================================================
 
 def now_ist():
     return datetime.now(IST)
@@ -111,8 +186,9 @@ def now_ist():
 
 def trading_day_start(dt=None):
     """
-    Returns the current strategy day boundary at 05:30 IST.
+    Current strategy day starts at 05:30 IST.
     """
+
     dt = dt or now_ist()
 
     boundary = dt.replace(
@@ -123,53 +199,70 @@ def trading_day_start(dt=None):
     )
 
     if dt < boundary:
-        boundary -= timedelta(days=1)
+        boundary -= timedelta(
+            days=1
+        )
 
     return boundary
 
 
 def is_weekend_block(dt=None):
     """
-    Saturday 05:00 through Monday 05:45 is blocked.
+    Saturday 05:00 IST through Monday 05:45 IST:
+    no new trades.
 
-    Friday trading can continue overnight until
-    Saturday 05:00 IST.
+    Existing position is squared off at Saturday 05:00.
     """
 
     dt = dt or now_ist()
 
-    wd = dt.weekday()
+    weekday = dt.weekday()
 
-    # Saturday from 05:00 onward.
-    if wd == 5 and dt.time() >= datetime.strptime(
-        "05:00",
-        "%H:%M"
-    ).time():
+    # Saturday
+    if (
+        weekday == 5
+        and dt.time()
+        >= datetime.strptime(
+            "05:00",
+            "%H:%M"
+        ).time()
+    ):
         return True
 
-    # Entire Sunday.
-    if wd == 6:
+    # Sunday
+    if weekday == 6:
         return True
 
-    # Monday before 05:45.
-    if wd == 0 and dt.time() < datetime.strptime(
-        "05:45",
-        "%H:%M"
-    ).time():
+    # Monday before 05:45
+    if (
+        weekday == 0
+        and dt.time()
+        < datetime.strptime(
+            "05:45",
+            "%H:%M"
+        ).time()
+    ):
         return True
 
     return False
 
 
 def is_force_squareoff_time(dt=None):
+    """
+    Saturday from 05:00 IST.
+    """
+
     dt = dt or now_ist()
 
     return (
         dt.weekday() == 5
         and dt.hour == 5
-        and dt.minute >= 0
     )
 
+
+# ============================================================
+# DELTA API AUTHENTICATION
+# ============================================================
 
 def sign_request(
     method,
@@ -177,7 +270,27 @@ def sign_request(
     query_string="",
     body=""
 ):
-    timestamp = str(int(time.time()))
+    """
+    Delta signature.
+
+    IMPORTANT:
+    query_string must contain the leading '?' when
+    query parameters exist.
+
+    Example:
+
+        ?product_id=131253
+
+    This is the correction for the previous
+    Signature Mismatch error.
+    """
+
+    timestamp = str(
+        int(
+            time.time()
+        )
+    )
+
 
     message = (
         method.upper()
@@ -187,119 +300,206 @@ def sign_request(
         + body
     )
 
+
     signature = hmac.new(
         API_SECRET.encode(),
         message.encode(),
-        hashlib.sha256,
+        hashlib.sha256
     ).hexdigest()
 
-    headers = {
+
+    return {
         "api-key": API_KEY,
         "signature": signature,
         "timestamp": timestamp,
     }
 
-    return headers
 
+# ============================================================
+# API REQUEST
+# ============================================================
 
 def request(
     method,
     path,
     params=None,
     body=None,
-    authenticated=False,
+    authenticated=False
 ):
+    """
+    Central Delta REST API request.
+
+    Query string used for the HTTP request and the
+    query string used for signing are generated from
+    the same encoded parameters.
+    """
+
     params = params or {}
+
 
     body_text = (
         json.dumps(
             body,
-            separators=(",", ":"),
+            separators=(
+                ",",
+                ":"
+            ),
             ensure_ascii=False,
         )
         if body is not None
         else ""
     )
 
-    query = "&".join(
-        f"{k}={v}"
-        for k, v in params.items()
-    )
+
+    # Build the EXACT encoded query string.
+    #
+    # IMPORTANT:
+    # Include '?' in the signature.
+    #
+    # Example:
+    # ?product_id=131253
+    #
+    if params:
+        query_string = (
+            "?"
+            + urlencode(
+                params,
+                doseq=True
+            )
+        )
+    else:
+        query_string = ""
+
 
     headers = {}
 
+
     if authenticated:
+
         headers.update(
             sign_request(
                 method,
                 path,
-                query,
+                query_string,
                 body_text,
             )
         )
 
-    url = BASE_URL + path
 
-    r = session.request(
-        method.upper(),
-        url,
-        params=params,
-        data=body_text if body is not None else None,
-        headers=headers,
-        timeout=15,
+    url = (
+        BASE_URL
+        + path
     )
 
-    if not r.ok:
-        raise RuntimeError(
-            f"{method} {path} HTTP {r.status_code}: {r.text}"
+
+    try:
+
+        response = session.request(
+            method.upper(),
+            url,
+            params=params,
+            data=(
+                body_text
+                if body is not None
+                else None
+            ),
+            headers=headers,
+            timeout=15,
         )
 
-    data = r.json()
+    except requests.RequestException as exc:
+
+        raise RuntimeError(
+            f"Network error calling "
+            f"{method} {path}: {exc}"
+        ) from exc
+
+
+    if not response.ok:
+
+        raise RuntimeError(
+            f"{method} {path} "
+            f"HTTP {response.status_code}: "
+            f"{response.text}"
+        )
+
+
+    try:
+
+        data = response.json()
+
+    except ValueError as exc:
+
+        raise RuntimeError(
+            f"{method} {path} returned "
+            f"invalid JSON: {response.text}"
+        ) from exc
+
 
     if data.get("success") is False:
+
         raise RuntimeError(
             f"{method} {path}: {data}"
         )
 
+
     return data
 
 
+# ============================================================
+# PUBLIC API
+# ============================================================
+
 def get_product():
+
     return request(
         "GET",
-        f"/v2/products/{SYMBOL}",
+        f"/v2/products/{SYMBOL}"
     )["result"]
 
 
 def get_ticker():
+
     return request(
         "GET",
-        f"/v2/tickers/{SYMBOL}",
+        f"/v2/tickers/{SYMBOL}"
     )["result"]
 
 
+# ============================================================
+# POSITION
+# ============================================================
+
 def get_position(product_id):
+
     result = request(
         "GET",
         "/v2/positions",
         params={
-            "product_id": product_id,
+            "product_id": int(
+                product_id
+            )
         },
         authenticated=True,
     )["result"]
 
+
     if not result:
+
         return {
             "size": 0,
             "entry_price": None,
+            "raw": result,
         }
+
 
     size = int(
         result.get(
             "size",
-            0,
+            0
         )
     )
+
 
     return {
         "size": size,
@@ -310,7 +510,12 @@ def get_position(product_id):
     }
 
 
+# ============================================================
+# WALLET BALANCES
+# ============================================================
+
 def get_balances():
+
     return request(
         "GET",
         "/v2/wallet/balances",
@@ -319,66 +524,89 @@ def get_balances():
 
 
 def get_usdt_equity():
+
     data = get_balances()
+
 
     meta = data.get(
         "meta",
-        {},
+        {}
     )
 
-    if meta.get("net_equity") not in (
+
+    if meta.get(
+        "net_equity"
+    ) not in (
         None,
-        "",
+        ""
     ):
+
         return Decimal(
             str(
-                meta["net_equity"]
+                meta[
+                    "net_equity"
+                ]
             )
         )
 
+
     for wallet in data.get(
         "result",
-        [],
+        []
     ):
-        if str(
+
+        asset = str(
             wallet.get(
                 "asset_symbol",
-                "",
+                ""
             )
-        ).upper() in (
+        ).upper()
+
+
+        if asset in (
             "USDT",
-            "USD",
+            "USD"
         ):
+
             return Decimal(
                 str(
                     wallet.get(
                         "balance",
-                        "0",
+                        "0"
                     )
                 )
             )
 
+
     raise RuntimeError(
-        "Could not find account equity / USDT balance."
+        "Could not find "
+        "USDT/USD account equity."
     )
 
+
+# ============================================================
+# HISTORICAL CANDLES
+# ============================================================
 
 def get_candles(
     resolution,
     start_dt,
-    end_dt,
+    end_dt
 ):
+
     start = int(
         start_dt
         .astimezone(UTC)
         .timestamp()
     )
 
+
     end = int(
         end_dt
         .astimezone(UTC)
         .timestamp()
     )
+
 
     return request(
         "GET",
@@ -392,29 +620,38 @@ def get_candles(
     )["result"]
 
 
+# ============================================================
+# MARKET ORDER
+# ============================================================
+
 def market_order(
     product_id,
     side,
     size,
-    client_id,
+    client_id
 ):
+
     body = {
-        "product_id": int(product_id),
+        "product_id": int(
+            product_id
+        ),
         "product_symbol": SYMBOL,
-        "size": int(size),
+        "size": int(
+            size
+        ),
         "side": side,
         "order_type": "market_order",
-        "client_order_id": client_id[:32],
+        "client_order_id": (
+            client_id[:32]
+        ),
     }
 
-    # ========================================================
-    # REAL ORDER
-    # ========================================================
 
     logging.warning(
-        "LIVE MARKET ORDER | %s",
-        body,
+        "LIVE MARKET ORDER: %s",
+        body
     )
+
 
     return request(
         "POST",
@@ -423,35 +660,50 @@ def market_order(
         authenticated=True,
     )
 
+
+# ============================================================
+# STOP MARKET ORDER
+# ============================================================
 
 def stop_market_order(
     product_id,
     side,
     size,
     stop_price,
-    client_id,
+    client_id
 ):
+
     body = {
-        "product_id": int(product_id),
+        "product_id": int(
+            product_id
+        ),
         "product_symbol": SYMBOL,
-        "size": int(size),
+        "size": int(
+            size
+        ),
         "side": side,
         "order_type": "market_order",
-        "stop_order_type": "stop_loss_order",
-        "stop_price": str(stop_price),
-        "stop_trigger_method": "last_traded_price",
+        "stop_order_type": (
+            "stop_loss_order"
+        ),
+        "stop_price": str(
+            stop_price
+        ),
+        "stop_trigger_method": (
+            "last_traded_price"
+        ),
         "reduce_only": True,
-        "client_order_id": client_id[:32],
+        "client_order_id": (
+            client_id[:32]
+        ),
     }
 
-    # ========================================================
-    # REAL STOP ORDER
-    # ========================================================
 
     logging.warning(
-        "LIVE STOP ORDER | %s",
-        body,
+        "LIVE STOP ORDER: %s",
+        body
     )
+
 
     return request(
         "POST",
@@ -461,9 +713,23 @@ def stop_market_order(
     )
 
 
-def cancel_order(order_id):
+# ============================================================
+# CANCEL ORDER
+# ============================================================
+
+def cancel_order(
+    order_id
+):
+
     if not order_id:
         return
+
+
+    logging.info(
+        "CANCEL ORDER: %s",
+        order_id
+    )
+
 
     request(
         "DELETE",
@@ -472,105 +738,166 @@ def cancel_order(order_id):
     )
 
 
-def get_open_stop_orders(product_id):
+# ============================================================
+# OPEN STOP ORDERS
+# ============================================================
+
+def get_open_stop_orders(
+    product_id
+):
+
     data = request(
         "GET",
         "/v2/orders",
         params={
-            "product_ids": product_id,
-            "states": "open,pending",
-            "order_types": "all_stop",
+            "product_ids": int(
+                product_id
+            ),
+            "states": (
+                "open,pending"
+            ),
+            "order_types": (
+                "all_stop"
+            ),
         },
         authenticated=True,
     )
 
+
     return data.get(
         "result",
-        [],
+        []
     )
 
 
-def cancel_all_strategy_stops(product_id):
+# ============================================================
+# CANCEL ALL STOP ORDERS
+# ============================================================
+
+def cancel_all_strategy_stops(
+    product_id
+):
+
     orders = get_open_stop_orders(
         product_id
     )
 
+
     for order in orders:
+
         try:
+
             cancel_order(
-                order.get("id")
+                order.get(
+                    "id"
+                )
             )
 
-        except Exception as e:
+        except Exception as exc:
+
             logging.error(
                 "Could not cancel stop %s: %s",
                 order.get("id"),
-                e,
+                exc
             )
 
 
-def set_leverage(product_id):
+# ============================================================
+# LEVERAGE
+# ============================================================
+
+def set_leverage(
+    product_id
+):
+
     body = {
         "leverage": str(
             LEVERAGE
         )
     }
 
-    logging.warning(
-        "SETTING LIVE LEVERAGE: %sx",
-        LEVERAGE,
+
+    logging.info(
+        "SETTING LEVERAGE: %sx",
+        LEVERAGE
     )
+
 
     request(
         "POST",
-        f"/v2/products/{product_id}/orders/leverage",
+        f"/v2/products/"
+        f"{product_id}/orders/leverage",
         body=body,
         authenticated=True,
     )
 
 
+# ============================================================
+# DECIMAL PRODUCT FIELD
+# ============================================================
+
 def decimal_field(
     product,
     *names,
-    default=None,
+    default=None
 ):
+
     for name in names:
-        if product.get(name) is not None:
+
+        if product.get(
+            name
+        ) is not None:
+
             try:
+
                 return Decimal(
                     str(
                         product[name]
                     )
                 )
+
             except Exception:
+
                 pass
+
 
     return default
 
 
+# ============================================================
+# POSITION SIZE
+# ============================================================
+
 def calculate_contract_size(
     product,
-    price,
+    price
 ):
     """
-    Target notional =
-        10% of current equity * 50x leverage.
+    Uses:
 
-    Contract size is calculated from the actual
-    XAUTUSD product metadata.
+        10% of current equity
+        x 50 leverage
+
+    as target notional.
+
+    Contract metadata from Delta is used to determine
+    the actual number of contracts.
     """
 
     equity = get_usdt_equity()
+
 
     target_margin = (
         equity
         * BALANCE_FRACTION
     )
 
+
     target_notional = (
         target_margin
         * LEVERAGE
     )
+
 
     contract_value = decimal_field(
         product,
@@ -579,14 +906,18 @@ def calculate_contract_size(
         "contract_unit_value",
     )
 
+
     if (
         contract_value is None
         or contract_value <= 0
     ):
+
         raise RuntimeError(
-            "XAUTUSD product response did not expose "
-            "a usable contract_value."
+            "XAUTUSD product response "
+            "does not contain a usable "
+            "contract_value."
         )
+
 
     raw_size = (
         target_notional
@@ -596,12 +927,14 @@ def calculate_contract_size(
         )
     )
 
+
     lot_size = decimal_field(
         product,
         "lot_size",
         "order_size_increment",
         default=Decimal("1"),
     )
+
 
     min_size = decimal_field(
         product,
@@ -610,18 +943,31 @@ def calculate_contract_size(
         default=lot_size,
     )
 
-    if lot_size <= 0:
+
+    if (
+        lot_size is None
+        or lot_size <= 0
+    ):
+
         lot_size = Decimal("1")
 
+
     size = (
-        raw_size
-        / lot_size
-    ).to_integral_value(
-        rounding=ROUND_DOWN
-    ) * lot_size
+        (
+            raw_size
+            / lot_size
+        )
+        .to_integral_value(
+            rounding=ROUND_DOWN
+        )
+        * lot_size
+    )
+
 
     if size < min_size:
+
         size = min_size
+
 
     return (
         int(size),
@@ -632,247 +978,393 @@ def calculate_contract_size(
     )
 
 
+# ============================================================
+# STRATEGY
+# ============================================================
+
 class Strategy:
 
     def __init__(
         self,
-        product,
+        product
     ):
+
         self.product = product
+
 
         self.product_id = int(
             product["id"]
         )
 
+
         self.day = None
+
 
         self.day_high = None
         self.day_low = None
 
+
         self.opening_high = None
         self.opening_low = None
 
-        self.opening_candle_ready = False
+
+        self.opening_candle_ready = (
+            False
+        )
+
 
         self.last_price = None
 
+
         self.last_position_size = 0
+
 
         self.current_sl = None
         self.stop_order_id = None
 
+
         self.reversal_lock = False
+
 
         self.last_entry_day = None
 
+
+    # ========================================================
+    # REFRESH DAY
+    # ========================================================
+
     def refresh_day(
         self,
-        now,
+        now
     ):
+
         new_day = trading_day_start(
             now
         )
 
+
         if self.day == new_day:
+
             return
+
+
+        logging.info(
+            "=============================================="
+        )
 
         logging.info(
             "NEW STRATEGY DAY: %s IST",
-            new_day,
+            new_day
         )
 
+        logging.info(
+            "=============================================="
+        )
+
+
         self.day = new_day
+
 
         self.opening_high = None
         self.opening_low = None
 
-        self.opening_candle_ready = False
 
+        self.opening_candle_ready = (
+            False
+        )
+
+
+        # Rebuild the day's actual high/low
+        # from 1-minute candles.
         try:
+
             candles = get_candles(
                 "1m",
                 new_day,
-                now,
+                now
             )
 
+
             if candles:
+
                 self.day_high = max(
                     Decimal(
                         str(
-                            c["high"]
+                            candle[
+                                "high"
+                            ]
                         )
                     )
-                    for c in candles
+                    for candle in candles
                 )
+
 
                 self.day_low = min(
                     Decimal(
                         str(
-                            c["low"]
+                            candle[
+                                "low"
+                            ]
                         )
                     )
-                    for c in candles
+                    for candle in candles
                 )
 
             else:
-                self.day_high = self.last_price
-                self.day_low = self.last_price
 
-        except Exception as e:
+                self.day_high = (
+                    self.last_price
+                )
+
+                self.day_low = (
+                    self.last_price
+                )
+
+
+        except Exception as exc:
+
             logging.error(
-                "Could not rebuild day High/Low: %s",
-                e,
+                "Could not rebuild "
+                "day High/Low: %s",
+                exc
             )
 
-            self.day_high = self.last_price
-            self.day_low = self.last_price
 
+            self.day_high = (
+                self.last_price
+            )
+
+
+            self.day_low = (
+                self.last_price
+            )
+
+
+        # Load opening candle once complete.
         if (
             now
-            >= new_day
-            + timedelta(minutes=15)
+            >= (
+                new_day
+                + timedelta(
+                    minutes=15
+                )
+            )
         ):
+
             self.load_opening_candle()
 
-    def load_opening_candle(self):
+
+    # ========================================================
+    # OPENING CANDLE
+    # ========================================================
+
+    def load_opening_candle(
+        self
+    ):
 
         if self.opening_candle_ready:
+
             return
 
+
         start = self.day
+
 
         end = (
             self.day
             + timedelta(
                 minutes=15,
-                seconds=1,
+                seconds=1
             )
         )
+
 
         candles = get_candles(
             "15m",
             start,
-            end,
+            end
         )
 
+
         target = None
+
 
         for candle in candles:
 
             candle_time = (
                 datetime.fromtimestamp(
                     int(
-                        candle["time"]
+                        candle[
+                            "time"
+                        ]
                     ),
-                    UTC,
+                    UTC
                 )
                 .astimezone(IST)
             )
 
+
             if candle_time == start:
+
                 target = candle
+
                 break
 
+
         if target is None:
+
             raise RuntimeError(
-                "5:30–5:45 IST opening candle not found."
+                "05:30-05:45 IST "
+                "opening candle not found."
             )
+
 
         self.opening_high = Decimal(
             str(
-                target["high"]
+                target[
+                    "high"
+                ]
             )
         )
+
 
         self.opening_low = Decimal(
             str(
-                target["low"]
+                target[
+                    "low"
+                ]
             )
         )
 
-        self.opening_candle_ready = True
+
+        self.opening_candle_ready = (
+            True
+        )
+
 
         logging.info(
-            "OPENING CANDLE 05:30-05:45 | High=%s Low=%s",
+            "OPENING CANDLE 05:30-05:45 | "
+            "HIGH=%s | LOW=%s",
             self.opening_high,
             self.opening_low,
         )
 
+
+    # ========================================================
+    # UPDATE EXTREMES
+    # ========================================================
+
     def update_extreme(
         self,
-        price,
+        price
     ):
+
         if (
             self.day_high is None
             or price > self.day_high
         ):
+
             self.day_high = price
+
 
         if (
             self.day_low is None
             or price < self.day_low
         ):
+
             self.day_low = price
+
+
+    # ========================================================
+    # DESIRED STOP
+    # ========================================================
 
     def desired_sl(
         self,
-        position_size,
+        position_size
     ):
+
         if position_size > 0:
+
             return self.day_low
 
+
         if position_size < 0:
+
             return self.day_high
 
+
         return None
+
+
+    # ========================================================
+    # PLACE / REPLACE SL
+    # ========================================================
 
     def place_or_replace_sl(
         self,
         position_size,
-        force=False,
+        force=False
     ):
+
         desired = self.desired_sl(
             position_size
         )
 
+
         if desired is None:
+
             return
+
 
         if self.last_price is None:
+
             return
 
-        # LONG stop must be below current price.
+
+        # Long SL must be below current price.
         if (
             position_size > 0
             and desired >= self.last_price
         ):
+
             return
 
-        # SHORT stop must be above current price.
+
+        # Short SL must be above current price.
         if (
             position_size < 0
             and desired <= self.last_price
         ):
+
             return
+
 
         if (
             not force
             and self.current_sl == desired
             and self.stop_order_id
         ):
+
             return
 
+
+        # Cancel previous SL.
         if self.stop_order_id:
+
             try:
+
                 cancel_order(
                     self.stop_order_id
                 )
 
-            except Exception as e:
+            except Exception as exc:
+
                 logging.error(
                     "Cancel old SL failed: %s",
-                    e,
+                    exc
                 )
+
 
         side = (
             "sell"
@@ -880,59 +1372,76 @@ class Strategy:
             else "buy"
         )
 
+
         size = abs(
             position_size
         )
 
-        cid = (
-            f"xsl{int(time.time()*1000)}"
+
+        client_id = (
+            f"xsl"
+            f"{int(time.time() * 1000)}"
         )
+
 
         result = stop_market_order(
             self.product_id,
             side,
             size,
             desired,
-            cid,
+            client_id,
         )
 
+
         self.current_sl = desired
+
+
+        self.stop_order_id = None
+
 
         try:
 
             result_list = result.get(
                 "result",
-                [],
+                []
             )
+
 
             if (
                 isinstance(
                     result_list,
-                    list,
+                    list
                 )
                 and result_list
             ):
+
                 self.stop_order_id = (
                     result_list[0].get(
                         "id"
                     )
                 )
 
+
             elif isinstance(
                 result_list,
-                dict,
+                dict
             ):
+
                 self.stop_order_id = (
                     result_list.get(
                         "id"
                     )
                 )
 
+
         except Exception:
+
             self.stop_order_id = None
 
+
         logging.info(
-            "LIVE SL SET | position=%s | SL=%s | side=%s",
+            "LIVE SL SET | position=%s | "
+            "SL=%s | side=%s | order_id=%s",
             (
                 "LONG"
                 if position_size > 0
@@ -940,27 +1449,33 @@ class Strategy:
             ),
             desired,
             side,
+            self.stop_order_id,
         )
+
+
+    # ========================================================
+    # ENTER TRADE
+    # ========================================================
 
     def enter(
         self,
         direction,
         price,
-        reason,
+        reason
     ):
+
         if is_weekend_block():
+
             return
 
-        (
-            size,
-            equity,
-            margin,
-            notional,
-            contract_value,
-        ) = calculate_contract_size(
-            self.product,
-            price,
+
+        size, equity, margin, notional, contract_value = (
+            calculate_contract_size(
+                self.product,
+                price
+            )
         )
+
 
         side = (
             "buy"
@@ -968,89 +1483,132 @@ class Strategy:
             else "sell"
         )
 
-        cid = (
-            f"xent{int(time.time()*1000)}"
+
+        client_id = (
+            f"xent"
+            f"{int(time.time() * 1000)}"
         )
 
+
         logging.warning(
-            "================================================"
+            "=============================================="
         )
 
         logging.warning(
             "LIVE ENTRY %s",
-            direction,
+            direction
         )
 
         logging.warning(
-            "Price=%s | Size=%s | Equity=%s | "
-            "Margin=%s | Notional=%s",
-            price,
-            size,
-            equity,
-            margin,
-            notional,
+            "PRICE=%s",
+            price
         )
 
         logging.warning(
-            "Reason=%s",
-            reason,
+            "SIZE=%s",
+            size
         )
 
         logging.warning(
-            "================================================"
+            "EQUITY=%s",
+            equity
         )
 
-        # REAL MARKET ORDER
+        logging.warning(
+            "MARGIN=%s",
+            margin
+        )
+
+        logging.warning(
+            "NOTIONAL=%s",
+            notional
+        )
+
+        logging.warning(
+            "CONTRACT VALUE=%s",
+            contract_value
+        )
+
+        logging.warning(
+            "REASON=%s",
+            reason
+        )
+
+        logging.warning(
+            "=============================================="
+        )
+
+
         market_order(
             self.product_id,
             side,
             size,
-            cid,
+            client_id,
         )
 
-        # Wait for Delta position state.
+
+        # Wait for Delta to report the position.
         for _ in range(30):
 
-            time.sleep(0.2)
+            time.sleep(
+                0.2
+            )
 
-            pos = get_position(
+
+            position = get_position(
                 self.product_id
             )
 
+
             if (
                 direction == "LONG"
-                and pos["size"] > 0
+                and position["size"] > 0
             ) or (
                 direction == "SHORT"
-                and pos["size"] < 0
+                and position["size"] < 0
             ):
 
                 self.last_position_size = (
-                    pos["size"]
+                    position["size"]
                 )
+
 
                 self.current_sl = None
                 self.stop_order_id = None
 
+
                 self.place_or_replace_sl(
-                    pos["size"],
-                    force=True,
+                    position["size"],
+                    force=True
                 )
+
 
                 return
 
+
         raise RuntimeError(
-            "Live market entry was sent but "
+            "Market entry was sent but "
             "position fill was not confirmed."
         )
 
-    def square_off(self):
 
-        pos = get_position(
+    # ========================================================
+    # SQUARE OFF
+    # ========================================================
+
+    def square_off(
+        self
+    ):
+
+        position = get_position(
             self.product_id
         )
 
-        size = pos["size"]
+
+        size = position[
+            "size"
+        ]
+
 
         if size == 0:
 
@@ -1058,14 +1616,18 @@ class Strategy:
                 self.product_id
             )
 
+
             self.current_sl = None
             self.stop_order_id = None
 
+
             return
+
 
         cancel_all_strategy_stops(
             self.product_id
         )
+
 
         side = (
             "sell"
@@ -1073,146 +1635,255 @@ class Strategy:
             else "buy"
         )
 
+
         logging.warning(
-            "================================================"
+            "=============================================="
         )
 
         logging.warning(
-            "LIVE FORCE SQUARE-OFF | size=%s",
-            size,
+            "SATURDAY FORCE SQUARE-OFF"
         )
 
         logging.warning(
-            "================================================"
+            "POSITION SIZE=%s",
+            size
         )
+
+        logging.warning(
+            "=============================================="
+        )
+
 
         market_order(
             self.product_id,
             side,
             abs(size),
-            f"xoff{int(time.time()*1000)}",
+            (
+                f"xoff"
+                f"{int(time.time() * 1000)}"
+            ),
         )
+
 
         self.current_sl = None
         self.stop_order_id = None
 
+
+    # ========================================================
+    # POSITION TRANSITION
+    # ========================================================
+
     def process_position_transition(
         self,
         old_size,
-        new_size,
+        new_size
     ):
-        # A reduce-only SL closed the position.
-        # Immediately reverse.
+
+        # Position did not transition from open -> flat.
         if (
             old_size == 0
             or new_size != 0
         ):
+
             return
+
 
         if (
             self.reversal_lock
             or is_weekend_block()
         ):
+
             return
+
 
         if self.last_price is None:
+
             return
 
+
+        # If LONG was stopped -> SHORT.
+        #
+        # If SHORT was stopped -> LONG.
         direction = (
             "SHORT"
             if old_size > 0
             else "LONG"
         )
 
+
         logging.warning(
-            "LIVE SL EXIT DETECTED | old=%s | "
-            "reversing to %s",
-            old_size,
-            direction,
+            "=============================================="
         )
 
+        logging.warning(
+            "SL EXIT DETECTED"
+        )
+
+        logging.warning(
+            "OLD SIZE=%s",
+            old_size
+        )
+
+        logging.warning(
+            "REVERSING TO %s",
+            direction
+        )
+
+        logging.warning(
+            "=============================================="
+        )
+
+
         self.reversal_lock = True
+
 
         try:
 
             self.current_sl = None
             self.stop_order_id = None
 
+
             self.enter(
                 direction,
                 self.last_price,
-                "SL reversal",
+                "SL reversal"
             )
 
+
         finally:
+
             self.reversal_lock = False
 
-    def run_once(self):
+
+    # ========================================================
+    # ONE STRATEGY LOOP
+    # ========================================================
+
+    def run_once(
+        self
+    ):
 
         now = now_ist()
 
+
+        # ----------------------------------------------------
+        # PRICE
+        # ----------------------------------------------------
+
         ticker = get_ticker()
 
+
         raw_price = (
-            ticker.get("close")
-            or ticker.get("last_price")
-            or ticker.get("mark_price")
+            ticker.get(
+                "close"
+            )
+            or ticker.get(
+                "last_price"
+            )
+            or ticker.get(
+                "mark_price"
+            )
         )
+
 
         if raw_price is None:
+
             raise RuntimeError(
-                f"Could not find LTP in ticker: {ticker}"
+                f"Could not find LTP "
+                f"in ticker: {ticker}"
             )
 
+
         price = Decimal(
-            str(raw_price)
+            str(
+                raw_price
+            )
         )
 
+
         self.last_price = price
+
+
+        # ----------------------------------------------------
+        # DAY
+        # ----------------------------------------------------
 
         self.refresh_day(
             now
         )
 
+
         self.update_extreme(
             price
         )
 
-        # Saturday square-off.
-        if (
-            now.weekday() == 5
-            and now.hour == 5
-            and now.minute >= 0
+
+        # ----------------------------------------------------
+        # SATURDAY SQUARE-OFF
+        # ----------------------------------------------------
+
+        if is_force_squareoff_time(
+            now
         ):
 
+            # Execute only during the first
+            # five minutes of the Saturday boundary.
             if now.minute < 5:
+
                 self.square_off()
 
             return
 
-        if is_weekend_block():
+
+        # ----------------------------------------------------
+        # WEEKEND BLOCK
+        # ----------------------------------------------------
+
+        if is_weekend_block(
+            now
+        ):
+
             return
 
-        pos = get_position(
+
+        # ----------------------------------------------------
+        # POSITION
+        # ----------------------------------------------------
+
+        position = get_position(
             self.product_id
         )
 
-        new_size = pos["size"]
 
-        old_size = self.last_position_size
+        new_size = position[
+            "size"
+        ]
 
-        # Existing position handling.
+
+        old_size = (
+            self.last_position_size
+        )
+
+
+        # ----------------------------------------------------
+        # EXISTING POSITION
+        # ----------------------------------------------------
+
         if (
             old_size == 0
             and new_size != 0
         ):
 
             logging.info(
-                "Existing live position detected: %s",
-                new_size,
+                "Existing position detected: %s",
+                new_size
             )
 
-        # Detect SL closure.
+
+        # ----------------------------------------------------
+        # POSITION CLOSED
+        # ----------------------------------------------------
+
         if (
             old_size != 0
             and new_size == 0
@@ -1220,23 +1891,29 @@ class Strategy:
 
             self.process_position_transition(
                 old_size,
-                new_size,
+                new_size
             )
 
-            pos = get_position(
+
+            # Re-read after reversal.
+            position = get_position(
                 self.product_id
             )
 
-            new_size = pos["size"]
 
-        self.last_position_size = new_size
+            new_size = position[
+                "size"
+            ]
 
-        # ====================================================
-        # EXISTING POSITION
-        #
-        # Never open a second trade.
-        # Only manage the live position and SL.
-        # ====================================================
+
+        self.last_position_size = (
+            new_size
+        )
+
+
+        # ----------------------------------------------------
+        # MANAGE OPEN POSITION
+        # ----------------------------------------------------
 
         if new_size != 0:
 
@@ -1246,11 +1923,10 @@ class Strategy:
 
             return
 
-        # ====================================================
-        # FLAT
-        #
-        # Entry only after opening candle completes.
-        # ====================================================
+
+        # ----------------------------------------------------
+        # WAIT FOR OPENING CANDLE
+        # ----------------------------------------------------
 
         if now < (
             self.day
@@ -1258,110 +1934,160 @@ class Strategy:
                 minutes=15
             )
         ):
+
             return
 
+
+        # ----------------------------------------------------
+        # OPENING CANDLE
+        # ----------------------------------------------------
+
         if not self.opening_candle_ready:
+
             self.load_opening_candle()
 
-        # LONG breakout.
-        if (
-            price
-            > self.opening_high
-        ):
+
+        # ----------------------------------------------------
+        # LONG BREAKOUT
+        # ----------------------------------------------------
+
+        if price > self.opening_high:
 
             self.enter(
                 "LONG",
                 price,
-                "opening candle HIGH breakout",
+                "opening candle HIGH breakout"
             )
 
             return
 
-        # SHORT breakout.
-        if (
-            price
-            < self.opening_low
-        ):
+
+        # ----------------------------------------------------
+        # SHORT BREAKOUT
+        # ----------------------------------------------------
+
+        if price < self.opening_low:
 
             self.enter(
                 "SHORT",
                 price,
-                "opening candle LOW breakout",
+                "opening candle LOW breakout"
             )
 
             return
 
-    def run(self):
 
-        logging.warning(
-            "================================================"
+    # ========================================================
+    # MAIN BOT LOOP
+    # ========================================================
+
+    def run(
+        self
+    ):
+
+        logging.info(
+            "=============================================="
         )
 
-        logging.warning(
-            "XAUTUSD LIVE TRADING BOT STARTING"
+        logging.info(
+            "XAUTUSD LIVE BOT STARTING"
         )
 
-        logging.warning(
-            "PRODUCTION API:"
+        logging.info(
+            "=============================================="
         )
 
-        logging.warning(
-            "%s",
-            BASE_URL,
+        logging.info(
+            "BASE_URL=%s",
+            BASE_URL
         )
 
-        logging.warning(
+        logging.info(
             "SYMBOL=%s",
-            SYMBOL,
+            SYMBOL
         )
 
-        logging.warning(
-            "LIVE_TRADING=True"
+        logging.info(
+            "LIVE_TRADING=%s",
+            LIVE_TRADING
         )
 
-        logging.warning(
+        logging.info(
             "LEVERAGE=%sx",
-            LEVERAGE,
+            LEVERAGE
         )
 
-        logging.warning(
+        logging.info(
             "BALANCE FRACTION=%s%%",
-            BALANCE_FRACTION * 100,
+            BALANCE_FRACTION * 100
         )
 
-        logging.warning(
-            "REAL MONEY TRADING IS ENABLED."
+        logging.info(
+            "=============================================="
         )
 
-        logging.warning(
-            "================================================"
-        )
 
-        # Live leverage setting.
+        if not LIVE_TRADING:
+
+            raise RuntimeError(
+                "LIVE_TRADING is not enabled."
+            )
+
+
+        # ----------------------------------------------------
+        # LEVERAGE
+        # ----------------------------------------------------
+
         set_leverage(
             self.product_id
         )
 
-        # Reconcile any existing live position.
-        pos = get_position(
+
+        # ----------------------------------------------------
+        # STARTUP POSITION RECONCILIATION
+        # ----------------------------------------------------
+
+        position = get_position(
             self.product_id
         )
 
+
         self.last_position_size = (
-            pos["size"]
+            position["size"]
         )
 
-        if pos["size"] != 0:
+
+        if position["size"] != 0:
 
             logging.warning(
-                "BOT STARTED WITH OPEN LIVE POSITION: %s",
-                pos["size"],
+                "=============================================="
             )
 
             logging.warning(
-                "It will manage the existing position "
-                "and will NOT open a duplicate trade."
+                "BOT STARTED WITH OPEN POSITION"
             )
+
+            logging.warning(
+                "SIZE=%s",
+                position["size"]
+            )
+
+            logging.warning(
+                "BOT WILL MANAGE IT."
+            )
+
+            logging.warning(
+                "BOT WILL NOT OPEN A DUPLICATE POSITION."
+            )
+
+            logging.warning(
+                "=============================================="
+            )
+
+
+        # ----------------------------------------------------
+        # CONTINUOUS LIVE LOOP
+        # ----------------------------------------------------
 
         while True:
 
@@ -1369,64 +2095,124 @@ class Strategy:
 
                 self.run_once()
 
+
             except KeyboardInterrupt:
 
                 logging.warning(
-                    "Stopped by user."
+                    "Bot stopped by user."
                 )
 
                 break
 
-            except Exception as e:
+
+            except Exception as exc:
 
                 logging.exception(
-                    "LIVE BOT ERROR: %s",
-                    e,
+                    "BOT ERROR: %s",
+                    exc
                 )
 
-                time.sleep(3)
+
+                # Wait before retrying.
+                # Prevents API spam if Delta temporarily
+                # returns an error.
+                time.sleep(
+                    3
+                )
+
 
             time.sleep(
                 POLL_SECONDS
             )
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
 
-    logging.warning(
-        "Connecting to Delta Exchange India PRODUCTION..."
+    logging.info(
+        "=============================================="
     )
 
+    logging.info(
+        "CONNECTING TO DELTA INDIA PRODUCTION"
+    )
+
+    logging.info(
+        "=============================================="
+    )
+
+
+    logging.info(
+        "BASE URL: %s",
+        BASE_URL
+    )
+
+
+    logging.info(
+        "SYMBOL: %s",
+        SYMBOL
+    )
+
+
+    # --------------------------------------------------------
+    # PRODUCT
+    # --------------------------------------------------------
+
     product = get_product()
+
 
     logging.info(
         "PRODUCT RESPONSE:"
     )
 
+
     logging.info(
         json.dumps(
             product,
-            indent=2,
+            indent=2
         )
     )
 
-    if str(
+
+    # --------------------------------------------------------
+    # SYMBOL CHECK
+    # --------------------------------------------------------
+
+    product_symbol = str(
         product.get(
             "symbol",
-            SYMBOL,
+            SYMBOL
         )
-    ).upper() != SYMBOL.upper():
+    ).upper()
+
+
+    if (
+        product_symbol
+        != SYMBOL.upper()
+    ):
 
         raise RuntimeError(
-            "Requested product symbol does not match API response."
+            "Requested product symbol "
+            "does not match API response. "
+            f"Requested={SYMBOL} "
+            f"Received={product_symbol}"
         )
+
+
+    # --------------------------------------------------------
+    # PRODUCT STATE
+    # --------------------------------------------------------
 
     state = str(
         product.get(
             "state",
-            "",
+            ""
         )
     ).lower()
+
 
     if state and state not in (
         "live",
@@ -1439,10 +2225,31 @@ def main():
             f"State={state}"
         )
 
+
+    # --------------------------------------------------------
+    # LIVE MODE CHECK
+    # --------------------------------------------------------
+
+    if not LIVE_TRADING:
+
+        raise RuntimeError(
+            "This bot is configured for LIVE trading only."
+        )
+
+
+    # --------------------------------------------------------
+    # START STRATEGY
+    # --------------------------------------------------------
+
     Strategy(
         product
     ).run()
 
 
+# ============================================================
+# START
+# ============================================================
+
 if __name__ == "__main__":
+
     main()
