@@ -207,24 +207,64 @@ jobs:
           echo "STOPPING OLD BOT"
           echo "=================================="
 
-          pkill -f "python3 bot.py" || true
-          pkill -f "python bot.py" || true
+          pkill -f "/home/opc/xautusd-bot/bot.py" || true
 
           sleep 2
+
+          echo "=================================="
+          echo "CLEARING OLD BOT LOG"
+          echo "=================================="
+
+          : > /home/opc/xautusd-bot/bot.log
 
           echo "=================================="
           echo "STARTING XAUTUSD BOT"
           echo "=================================="
 
-          nohup python3 bot.py > /home/opc/xautusd-bot/bot.log 2>&1 &
+          nohup python3 /home/opc/xautusd-bot/bot.py \
+            > /home/opc/xautusd-bot/bot.log 2>&1 &
 
-          sleep 5
+          BOT_PID=$!
+
+          echo "Bot PID: $BOT_PID"
 
           echo "=================================="
-          echo "CHECKING BOT"
+          echo "WAITING FOR BOT STARTUP"
           echo "=================================="
 
-          if pgrep -f "python3 bot.py" >/dev/null; then
+          sleep 8
+
+          echo "=================================="
+          echo "CHECKING BOT PROCESS"
+          echo "=================================="
+
+          if ps -p "$BOT_PID" >/dev/null 2>&1; then
+              echo "BOT PROCESS IS RUNNING."
+          else
+              echo "BOT PROCESS STOPPED."
+
+              echo "========== BOT LOG =========="
+              cat /home/opc/xautusd-bot/bot.log || true
+              echo "============================="
+
+              exit 1
+          fi
+
+          echo "=================================="
+          echo "BOT LOG - LAST 100 LINES"
+          echo "=================================="
+
+          if [ -f /home/opc/xautusd-bot/bot.log ]; then
+              tail -n 100 /home/opc/xautusd-bot/bot.log
+          else
+              echo "WARNING: bot.log was not created."
+          fi
+
+          echo "=================================="
+          echo "BOT PROCESS CHECK"
+          echo "=================================="
+
+          if pgrep -f "/home/opc/xautusd-bot/bot.py" >/dev/null; then
               echo "=================================="
               echo "BOT IS RUNNING SUCCESSFULLY."
               echo "=================================="
