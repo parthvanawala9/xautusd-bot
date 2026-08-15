@@ -43,11 +43,8 @@ jobs:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
-
           chmod 600 ~/.ssh/oracle.key
-
           echo "SSH key prepared successfully."
 
       - name: Test SSH connection
@@ -98,23 +95,69 @@ jobs:
             -o UserKnownHostsFile=/dev/null \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
+          set -e
+
           cd /home/opc/xautusd-bot
 
-          echo "Installing dependencies..."
+          echo "=================================="
+          echo "INSTALLING PYTHON"
+          echo "=================================="
+
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "Python3 not found. Installing..."
+            sudo dnf install -y python3
+          fi
+
+          echo "Python version:"
+          python3 --version
+
+          echo "=================================="
+          echo "INSTALLING PIP"
+          echo "=================================="
+
+          if ! python3 -m pip --version >/dev/null 2>&1; then
+            echo "Pip not found. Installing python3-pip..."
+            sudo dnf install -y python3-pip
+          fi
+
+          echo "Pip version:"
+          python3 -m pip --version
+
+          echo "=================================="
+          echo "INSTALLING BOT DEPENDENCIES"
+          echo "=================================="
 
           if [ -f requirements.txt ]; then
             python3 -m pip install --user -r requirements.txt
+          else
+            echo "No requirements.txt found."
           fi
 
-          echo "Stopping old bot if running..."
+          echo "=================================="
+          echo "STOPPING OLD BOT"
+          echo "=================================="
 
           pkill -f "bot.py" || true
 
-          echo "Starting XAUTUSD bot..."
+          sleep 2
+
+          echo "=================================="
+          echo "STARTING XAUTUSD BOT"
+          echo "=================================="
 
           nohup python3 bot.py > bot.log 2>&1 &
 
-          echo "Bot started successfully."
+          sleep 5
+
+          if pgrep -f "python3 bot.py" >/dev/null; then
+            echo "BOT IS RUNNING SUCCESSFULLY."
+          else
+            echo "BOT FAILED TO START."
+            echo "========== BOT LOG =========="
+            cat bot.log || true
+            echo "============================="
+            exit 1
+          fi
 
           EOF
 
