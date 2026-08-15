@@ -20,6 +20,8 @@ jobs:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
+          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
         run: |
           if [ -z "$ORACLE_PRIVATE_KEY" ]; then
             echo "ERROR: ORACLE_PRIVATE_KEY is missing."
@@ -36,6 +38,16 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$DELTA_API_KEY" ]; then
+            echo "ERROR: DELTA_API_KEY is missing."
+            exit 1
+          fi
+
+          if [ -z "$DELTA_API_SECRET" ]; then
+            echo "ERROR: DELTA_API_SECRET is missing."
+            exit 1
+          fi
+
           echo "All required secrets are present."
 
       - name: Prepare SSH
@@ -43,8 +55,11 @@ jobs:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
+
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+
           chmod 600 ~/.ssh/oracle.key
+
           echo "SSH key prepared."
 
       - name: Test SSH connection
@@ -69,6 +84,7 @@ jobs:
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=30 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "mkdir -p /home/opc/xautusd-bot"
 
@@ -80,9 +96,31 @@ jobs:
           rsync -avz \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='.env' \
+            --exclude='bot.log' \
             -e "ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=30" \
             ./ \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/"
+
+      - name: Create Delta .env on Oracle
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
+          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
+        run: |
+          printf 'DELTA_API_KEY=%s\nDELTA_API_SECRET=%s\n' \
+            "$DELTA_API_KEY" \
+            "$DELTA_API_SECRET" \
+          | ssh \
+              -i ~/.ssh/oracle.key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=30 \
+              "$ORACLE_USER@$ORACLE_HOST" \
+              "cat > /home/opc/xautusd-bot/.env && chmod 600 /home/opc/xautusd-bot/.env"
+
+          echo "Delta .env created successfully."
 
       - name: Install dependencies and start bot
         env:
@@ -137,6 +175,22 @@ jobs:
           echo "=================================="
 
           python3 -m pip --version
+
+          echo "=================================="
+          echo "CHECKING DELTA ENV"
+          echo "=================================="
+
+          if [ ! -f .env ]; then
+              echo "ERROR: .env file was not created."
+              exit 1
+          fi
+
+          if grep -q '^DELTA_API_KEY=' .env && grep -q '^DELTA_API_SECRET=' .env; then
+              echo "Delta API credentials are present."
+          else
+              echo "ERROR: Delta API credentials are missing from .env."
+              exit 1
+          fi
 
           echo "=================================="
           echo "INSTALLING BOT DEPENDENCIES"
