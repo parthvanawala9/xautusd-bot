@@ -291,7 +291,6 @@ def sign_request(
         )
     )
 
-
     message = (
         method.upper()
         + timestamp
@@ -300,13 +299,11 @@ def sign_request(
         + body
     )
 
-
     signature = hmac.new(
         API_SECRET.encode(),
         message.encode(),
         hashlib.sha256
     ).hexdigest()
-
 
     return {
         "api-key": API_KEY,
@@ -336,7 +333,6 @@ def request(
 
     params = params or {}
 
-
     body_text = (
         json.dumps(
             body,
@@ -349,7 +345,6 @@ def request(
         if body is not None
         else ""
     )
-
 
     # Build the EXACT encoded query string.
     #
@@ -370,9 +365,7 @@ def request(
     else:
         query_string = ""
 
-
     headers = {}
-
 
     if authenticated:
 
@@ -385,12 +378,10 @@ def request(
             )
         )
 
-
     url = (
         BASE_URL
         + path
     )
-
 
     try:
 
@@ -414,7 +405,6 @@ def request(
             f"{method} {path}: {exc}"
         ) from exc
 
-
     if not response.ok:
 
         raise RuntimeError(
@@ -422,7 +412,6 @@ def request(
             f"HTTP {response.status_code}: "
             f"{response.text}"
         )
-
 
     try:
 
@@ -435,13 +424,11 @@ def request(
             f"invalid JSON: {response.text}"
         ) from exc
 
-
     if data.get("success") is False:
 
         raise RuntimeError(
             f"{method} {path}: {data}"
         )
-
 
     return data
 
@@ -483,7 +470,6 @@ def get_position(product_id):
         authenticated=True,
     )["result"]
 
-
     if not result:
 
         return {
@@ -492,14 +478,12 @@ def get_position(product_id):
             "raw": result,
         }
 
-
     size = int(
         result.get(
             "size",
             0
         )
     )
-
 
     return {
         "size": size,
@@ -527,12 +511,10 @@ def get_usdt_equity():
 
     data = get_balances()
 
-
     meta = data.get(
         "meta",
         {}
     )
-
 
     if meta.get(
         "net_equity"
@@ -549,7 +531,6 @@ def get_usdt_equity():
             )
         )
 
-
     for wallet in data.get(
         "result",
         []
@@ -561,7 +542,6 @@ def get_usdt_equity():
                 ""
             )
         ).upper()
-
 
         if asset in (
             "USDT",
@@ -576,7 +556,6 @@ def get_usdt_equity():
                     )
                 )
             )
-
 
     raise RuntimeError(
         "Could not find "
@@ -600,13 +579,11 @@ def get_candles(
         .timestamp()
     )
 
-
     end = int(
         end_dt
         .astimezone(UTC)
         .timestamp()
     )
-
 
     return request(
         "GET",
@@ -646,12 +623,10 @@ def market_order(
         ),
     }
 
-
     logging.warning(
         "LIVE MARKET ORDER: %s",
         body
     )
-
 
     return request(
         "POST",
@@ -698,12 +673,10 @@ def stop_market_order(
         ),
     }
 
-
     logging.warning(
         "LIVE STOP ORDER: %s",
         body
     )
-
 
     return request(
         "POST",
@@ -724,12 +697,10 @@ def cancel_order(
     if not order_id:
         return
 
-
     logging.info(
         "CANCEL ORDER: %s",
         order_id
     )
-
 
     request(
         "DELETE",
@@ -763,7 +734,6 @@ def get_open_stop_orders(
         authenticated=True,
     )
 
-
     return data.get(
         "result",
         []
@@ -781,7 +751,6 @@ def cancel_all_strategy_stops(
     orders = get_open_stop_orders(
         product_id
     )
-
 
     for order in orders:
 
@@ -816,12 +785,10 @@ def set_leverage(
         )
     }
 
-
     logging.info(
         "SETTING LEVERAGE: %sx",
         LEVERAGE
     )
-
 
     request(
         "POST",
@@ -860,7 +827,6 @@ def decimal_field(
 
                 pass
 
-
     return default
 
 
@@ -886,18 +852,15 @@ def calculate_contract_size(
 
     equity = get_usdt_equity()
 
-
     target_margin = (
         equity
         * BALANCE_FRACTION
     )
 
-
     target_notional = (
         target_margin
         * LEVERAGE
     )
-
 
     contract_value = decimal_field(
         product,
@@ -905,7 +868,6 @@ def calculate_contract_size(
         "contract_value_usd",
         "contract_unit_value",
     )
-
 
     if (
         contract_value is None
@@ -918,7 +880,6 @@ def calculate_contract_size(
             "contract_value."
         )
 
-
     raw_size = (
         target_notional
         / (
@@ -927,14 +888,12 @@ def calculate_contract_size(
         )
     )
 
-
     lot_size = decimal_field(
         product,
         "lot_size",
         "order_size_increment",
         default=Decimal("1"),
     )
-
 
     min_size = decimal_field(
         product,
@@ -943,14 +902,12 @@ def calculate_contract_size(
         default=lot_size,
     )
 
-
     if (
         lot_size is None
         or lot_size <= 0
     ):
 
         lot_size = Decimal("1")
-
 
     size = (
         (
@@ -963,11 +920,9 @@ def calculate_contract_size(
         * lot_size
     )
 
-
     if size < min_size:
 
         size = min_size
-
 
     return (
         int(size),
@@ -991,53 +946,32 @@ class Strategy:
 
         self.product = product
 
-
         self.product_id = int(
             product["id"]
         )
 
-
         self.day = None
-
 
         self.day_high = None
         self.day_low = None
 
-
         self.opening_high = None
         self.opening_low = None
-
 
         self.opening_candle_ready = (
             False
         )
 
-
         self.last_price = None
 
-
         self.last_position_size = 0
-
 
         self.current_sl = None
         self.stop_order_id = None
 
-
         self.reversal_lock = False
 
-
         self.last_entry_day = None
-
-
-        # ====================================================
-        # DUPLICATE ENTRY PROTECTION
-        # ====================================================
-        #
-        # Prevents the bot from sending another market order
-        # while the previous market order is still waiting for
-        # Delta to report the resulting position.
-        #
-        self.entry_in_progress = False
 
 
     # ========================================================
@@ -1053,11 +987,9 @@ class Strategy:
             now
         )
 
-
         if self.day == new_day:
 
             return
-
 
         logging.info(
             "=============================================="
@@ -1072,18 +1004,14 @@ class Strategy:
             "=============================================="
         )
 
-
         self.day = new_day
-
 
         self.opening_high = None
         self.opening_low = None
 
-
         self.opening_candle_ready = (
             False
         )
-
 
         # Rebuild the day's actual high/low
         # from 1-minute candles.
@@ -1094,7 +1022,6 @@ class Strategy:
                 new_day,
                 now
             )
-
 
             if candles:
 
@@ -1108,7 +1035,6 @@ class Strategy:
                     )
                     for candle in candles
                 )
-
 
                 self.day_low = min(
                     Decimal(
@@ -1131,7 +1057,6 @@ class Strategy:
                     self.last_price
                 )
 
-
         except Exception as exc:
 
             logging.error(
@@ -1140,16 +1065,13 @@ class Strategy:
                 exc
             )
 
-
             self.day_high = (
                 self.last_price
             )
 
-
             self.day_low = (
                 self.last_price
             )
-
 
         # Load opening candle once complete.
         if (
@@ -1177,9 +1099,7 @@ class Strategy:
 
             return
 
-
         start = self.day
-
 
         end = (
             self.day
@@ -1189,16 +1109,13 @@ class Strategy:
             )
         )
 
-
         candles = get_candles(
             "15m",
             start,
             end
         )
 
-
         target = None
-
 
         for candle in candles:
 
@@ -1214,13 +1131,11 @@ class Strategy:
                 .astimezone(IST)
             )
 
-
             if candle_time == start:
 
                 target = candle
 
                 break
-
 
         if target is None:
 
@@ -1228,7 +1143,6 @@ class Strategy:
                 "05:30-05:45 IST "
                 "opening candle not found."
             )
-
 
         self.opening_high = Decimal(
             str(
@@ -1238,7 +1152,6 @@ class Strategy:
             )
         )
 
-
         self.opening_low = Decimal(
             str(
                 target[
@@ -1247,11 +1160,9 @@ class Strategy:
             )
         )
 
-
         self.opening_candle_ready = (
             True
         )
-
 
         logging.info(
             "OPENING CANDLE 05:30-05:45 | "
@@ -1277,7 +1188,6 @@ class Strategy:
 
             self.day_high = price
 
-
         if (
             self.day_low is None
             or price < self.day_low
@@ -1299,11 +1209,9 @@ class Strategy:
 
             return self.day_low
 
-
         if position_size < 0:
 
             return self.day_high
-
 
         return None
 
@@ -1322,16 +1230,13 @@ class Strategy:
             position_size
         )
 
-
         if desired is None:
 
             return
 
-
         if self.last_price is None:
 
             return
-
 
         # Long SL must be below current price.
         if (
@@ -1341,7 +1246,6 @@ class Strategy:
 
             return
 
-
         # Short SL must be above current price.
         if (
             position_size < 0
@@ -1350,7 +1254,6 @@ class Strategy:
 
             return
 
-
         if (
             not force
             and self.current_sl == desired
@@ -1358,7 +1261,6 @@ class Strategy:
         ):
 
             return
-
 
         # Cancel previous SL.
         if self.stop_order_id:
@@ -1376,24 +1278,20 @@ class Strategy:
                     exc
                 )
 
-
         side = (
             "sell"
             if position_size > 0
             else "buy"
         )
 
-
         size = abs(
             position_size
         )
-
 
         client_id = (
             f"xsl"
             f"{int(time.time() * 1000)}"
         )
-
 
         result = stop_market_order(
             self.product_id,
@@ -1403,12 +1301,9 @@ class Strategy:
             client_id,
         )
 
-
         self.current_sl = desired
 
-
         self.stop_order_id = None
-
 
         try:
 
@@ -1416,7 +1311,6 @@ class Strategy:
                 "result",
                 []
             )
-
 
             if (
                 isinstance(
@@ -1432,7 +1326,6 @@ class Strategy:
                     )
                 )
 
-
             elif isinstance(
                 result_list,
                 dict
@@ -1444,11 +1337,9 @@ class Strategy:
                     )
                 )
 
-
         except Exception:
 
             self.stop_order_id = None
-
 
         logging.info(
             "LIVE SL SET | position=%s | "
@@ -1479,52 +1370,6 @@ class Strategy:
 
             return
 
-
-        # ====================================================
-        # DUPLICATE ENTRY PROTECTION
-        # ====================================================
-        #
-        # If an entry order has already been submitted and
-        # Delta has not yet confirmed the resulting position,
-        # absolutely do NOT submit another market order.
-        #
-        if self.entry_in_progress:
-
-            logging.warning(
-                "ENTRY BLOCKED: previous market "
-                "entry is still being confirmed."
-            )
-
-            return
-
-
-        # ====================================================
-        # DUPLICATE ENTRY PROTECTION
-        # ====================================================
-        #
-        # Always check the real Delta position immediately
-        # before sending a new market order.
-        #
-        existing_position = get_position(
-            self.product_id
-        )
-
-
-        if existing_position["size"] != 0:
-
-            logging.warning(
-                "ENTRY BLOCKED: existing "
-                "position already exists | size=%s",
-                existing_position["size"]
-            )
-
-            self.last_position_size = (
-                existing_position["size"]
-            )
-
-            return
-
-
         size, equity, margin, notional, contract_value = (
             calculate_contract_size(
                 self.product,
@@ -1532,19 +1377,16 @@ class Strategy:
             )
         )
 
-
         side = (
             "buy"
             if direction == "LONG"
             else "sell"
         )
 
-
         client_id = (
             f"xent"
             f"{int(time.time() * 1000)}"
         )
-
 
         logging.warning(
             "=============================================="
@@ -1594,43 +1436,12 @@ class Strategy:
             "=============================================="
         )
 
-
-        # ====================================================
-        # LOCK BEFORE SENDING MARKET ORDER
-        # ====================================================
-        #
-        # This is critical.
-        #
-        # Once the market order is successfully submitted,
-        # another loop cannot submit a second 10% entry while
-        # Delta is still updating the position.
-        #
-        try:
-
-            market_order(
-                self.product_id,
-                side,
-                size,
-                client_id,
-            )
-
-        except Exception:
-
-            # If Delta rejected the order before submission,
-            # allow the strategy to try again normally.
-            self.entry_in_progress = False
-
-            raise
-
-
-        self.entry_in_progress = True
-
-
-        logging.info(
-            "ENTRY ORDER SUBMITTED. "
-            "ENTRY LOCK ACTIVE."
+        market_order(
+            self.product_id,
+            side,
+            size,
+            client_id,
         )
-
 
         # Wait for Delta to report the position.
         for _ in range(30):
@@ -1639,11 +1450,9 @@ class Strategy:
                 0.2
             )
 
-
             position = get_position(
                 self.product_id
             )
-
 
             if (
                 direction == "LONG"
@@ -1657,63 +1466,19 @@ class Strategy:
                     position["size"]
                 )
 
-
                 self.current_sl = None
                 self.stop_order_id = None
-
 
                 self.place_or_replace_sl(
                     position["size"],
                     force=True
                 )
 
-
-                # ====================================================
-                # ENTRY CONFIRMED
-                # ====================================================
-                #
-                # Now it is safe to release the entry lock.
-                #
-                self.entry_in_progress = False
-
-
-                logging.info(
-                    "ENTRY CONFIRMED. "
-                    "ENTRY LOCK RELEASED."
-                )
-
-
                 return
-
-
-        # ====================================================
-        # IMPORTANT:
-        #
-        # The market order was successfully submitted, but
-        # Delta did not confirm the position within the normal
-        # confirmation window.
-        #
-        # DO NOT release the lock.
-        #
-        # This prevents the main loop from submitting another
-        # 10% market order.
-        # ====================================================
-
-        logging.error(
-            "MARKET ENTRY WAS SUBMITTED BUT "
-            "POSITION WAS NOT CONFIRMED."
-        )
-
-        logging.error(
-            "ENTRY LOCK REMAINS ACTIVE TO "
-            "PREVENT DUPLICATE ORDERS."
-        )
-
 
         raise RuntimeError(
             "Market entry was sent but "
-            "position fill was not confirmed. "
-            "Duplicate-entry protection remains active."
+            "position fill was not confirmed."
         )
 
 
@@ -1729,11 +1494,9 @@ class Strategy:
             self.product_id
         )
 
-
         size = position[
             "size"
         ]
-
 
         if size == 0:
 
@@ -1741,25 +1504,20 @@ class Strategy:
                 self.product_id
             )
 
-
             self.current_sl = None
             self.stop_order_id = None
 
-
             return
-
 
         cancel_all_strategy_stops(
             self.product_id
         )
-
 
         side = (
             "sell"
             if size > 0
             else "buy"
         )
-
 
         logging.warning(
             "=============================================="
@@ -1778,7 +1536,6 @@ class Strategy:
             "=============================================="
         )
 
-
         market_order(
             self.product_id,
             side,
@@ -1788,7 +1545,6 @@ class Strategy:
                 f"{int(time.time() * 1000)}"
             ),
         )
-
 
         self.current_sl = None
         self.stop_order_id = None
@@ -1812,7 +1568,6 @@ class Strategy:
 
             return
 
-
         if (
             self.reversal_lock
             or is_weekend_block()
@@ -1820,11 +1575,9 @@ class Strategy:
 
             return
 
-
         if self.last_price is None:
 
             return
-
 
         # If LONG was stopped -> SHORT.
         #
@@ -1834,7 +1587,6 @@ class Strategy:
             if old_size > 0
             else "LONG"
         )
-
 
         logging.warning(
             "=============================================="
@@ -1858,22 +1610,18 @@ class Strategy:
             "=============================================="
         )
 
-
         self.reversal_lock = True
-
 
         try:
 
             self.current_sl = None
             self.stop_order_id = None
 
-
             self.enter(
                 direction,
                 self.last_price,
                 "SL reversal"
             )
-
 
         finally:
 
@@ -1890,13 +1638,11 @@ class Strategy:
 
         now = now_ist()
 
-
         # ----------------------------------------------------
         # PRICE
         # ----------------------------------------------------
 
         ticker = get_ticker()
-
 
         raw_price = (
             ticker.get(
@@ -1910,7 +1656,6 @@ class Strategy:
             )
         )
 
-
         if raw_price is None:
 
             raise RuntimeError(
@@ -1918,16 +1663,13 @@ class Strategy:
                 f"in ticker: {ticker}"
             )
 
-
         price = Decimal(
             str(
                 raw_price
             )
         )
 
-
         self.last_price = price
-
 
         # ----------------------------------------------------
         # DAY
@@ -1937,11 +1679,9 @@ class Strategy:
             now
         )
 
-
         self.update_extreme(
             price
         )
-
 
         # ----------------------------------------------------
         # SATURDAY SQUARE-OFF
@@ -1959,7 +1699,6 @@ class Strategy:
 
             return
 
-
         # ----------------------------------------------------
         # WEEKEND BLOCK
         # ----------------------------------------------------
@@ -1970,7 +1709,6 @@ class Strategy:
 
             return
 
-
         # ----------------------------------------------------
         # POSITION
         # ----------------------------------------------------
@@ -1979,16 +1717,13 @@ class Strategy:
             self.product_id
         )
 
-
         new_size = position[
             "size"
         ]
 
-
         old_size = (
             self.last_position_size
         )
-
 
         # ----------------------------------------------------
         # EXISTING POSITION
@@ -2004,7 +1739,6 @@ class Strategy:
                 new_size
             )
 
-
         # ----------------------------------------------------
         # POSITION CLOSED
         # ----------------------------------------------------
@@ -2019,22 +1753,18 @@ class Strategy:
                 new_size
             )
 
-
             # Re-read after reversal.
             position = get_position(
                 self.product_id
             )
 
-
             new_size = position[
                 "size"
             ]
 
-
         self.last_position_size = (
             new_size
         )
-
 
         # ----------------------------------------------------
         # MANAGE OPEN POSITION
@@ -2047,7 +1777,6 @@ class Strategy:
             )
 
             return
-
 
         # ----------------------------------------------------
         # WAIT FOR OPENING CANDLE
@@ -2062,7 +1791,6 @@ class Strategy:
 
             return
 
-
         # ----------------------------------------------------
         # OPENING CANDLE
         # ----------------------------------------------------
@@ -2071,35 +1799,96 @@ class Strategy:
 
             self.load_opening_candle()
 
+        # ====================================================
+        # OPENING RANGE BREAKOUT
+        # ====================================================
+        #
+        # IMPORTANT CHANGE:
+        #
+        # Instead of checking only the instantaneous ticker
+        # price, check the recent 1-minute candle HIGH/LOW.
+        #
+        # This prevents the bot from missing a breakout that
+        # happens between two 0.5-second polling cycles.
+        #
+        # Strategy remains exactly the same:
+        #
+        #   Opening HIGH broken -> LONG
+        #   Opening LOW broken  -> SHORT
+        # ====================================================
 
-        # ----------------------------------------------------
-        # LONG BREAKOUT
-        # ----------------------------------------------------
+        recent_start = now - timedelta(
+            minutes=2
+        )
 
-        if price > self.opening_high:
+        recent_candles = get_candles(
+            "1m",
+            recent_start,
+            now
+        )
 
-            self.enter(
-                "LONG",
-                price,
-                "opening candle HIGH breakout"
+        for candle in recent_candles:
+
+            candle_time = (
+                datetime.fromtimestamp(
+                    int(
+                        candle[
+                            "time"
+                        ]
+                    ),
+                    UTC
+                )
+                .astimezone(IST)
             )
 
-            return
+            # Ignore the opening candle itself.
+            if candle_time <= self.day:
 
+                continue
 
-        # ----------------------------------------------------
-        # SHORT BREAKOUT
-        # ----------------------------------------------------
-
-        if price < self.opening_low:
-
-            self.enter(
-                "SHORT",
-                price,
-                "opening candle LOW breakout"
+            candle_high = Decimal(
+                str(
+                    candle[
+                        "high"
+                    ]
+                )
             )
 
-            return
+            candle_low = Decimal(
+                str(
+                    candle[
+                        "low"
+                    ]
+                )
+            )
+
+            # ------------------------------------------------
+            # LONG BREAKOUT
+            # ------------------------------------------------
+
+            if candle_high > self.opening_high:
+
+                self.enter(
+                    "LONG",
+                    price,
+                    "opening candle HIGH breakout"
+                )
+
+                return
+
+            # ------------------------------------------------
+            # SHORT BREAKOUT
+            # ------------------------------------------------
+
+            if candle_low < self.opening_low:
+
+                self.enter(
+                    "SHORT",
+                    price,
+                    "opening candle LOW breakout"
+                )
+
+                return
 
 
     # ========================================================
@@ -2148,20 +1937,14 @@ class Strategy:
         )
 
         logging.info(
-            "DUPLICATE ENTRY PROTECTION=ON"
-        )
-
-        logging.info(
             "=============================================="
         )
-
 
         if not LIVE_TRADING:
 
             raise RuntimeError(
                 "LIVE_TRADING is not enabled."
             )
-
 
         # ----------------------------------------------------
         # LEVERAGE
@@ -2171,7 +1954,6 @@ class Strategy:
             self.product_id
         )
 
-
         # ----------------------------------------------------
         # STARTUP POSITION RECONCILIATION
         # ----------------------------------------------------
@@ -2180,11 +1962,9 @@ class Strategy:
             self.product_id
         )
 
-
         self.last_position_size = (
             position["size"]
         )
-
 
         if position["size"] != 0:
 
@@ -2213,7 +1993,6 @@ class Strategy:
                 "=============================================="
             )
 
-
         # ----------------------------------------------------
         # CONTINUOUS LIVE LOOP
         # ----------------------------------------------------
@@ -2224,7 +2003,6 @@ class Strategy:
 
                 self.run_once()
 
-
             except KeyboardInterrupt:
 
                 logging.warning(
@@ -2233,7 +2011,6 @@ class Strategy:
 
                 break
 
-
             except Exception as exc:
 
                 logging.exception(
@@ -2241,14 +2018,12 @@ class Strategy:
                     exc
                 )
 
-
                 # Wait before retrying.
                 # Prevents API spam if Delta temporarily
                 # returns an error.
                 time.sleep(
                     3
                 )
-
 
             time.sleep(
                 POLL_SECONDS
@@ -2273,18 +2048,15 @@ def main():
         "=============================================="
     )
 
-
     logging.info(
         "BASE URL: %s",
         BASE_URL
     )
 
-
     logging.info(
         "SYMBOL: %s",
         SYMBOL
     )
-
 
     # --------------------------------------------------------
     # PRODUCT
@@ -2292,11 +2064,9 @@ def main():
 
     product = get_product()
 
-
     logging.info(
         "PRODUCT RESPONSE:"
     )
-
 
     logging.info(
         json.dumps(
@@ -2304,7 +2074,6 @@ def main():
             indent=2
         )
     )
-
 
     # --------------------------------------------------------
     # SYMBOL CHECK
@@ -2316,7 +2085,6 @@ def main():
             SYMBOL
         )
     ).upper()
-
 
     if (
         product_symbol
@@ -2330,7 +2098,6 @@ def main():
             f"Received={product_symbol}"
         )
 
-
     # --------------------------------------------------------
     # PRODUCT STATE
     # --------------------------------------------------------
@@ -2341,7 +2108,6 @@ def main():
             ""
         )
     ).lower()
-
 
     if state and state not in (
         "live",
@@ -2354,7 +2120,6 @@ def main():
             f"State={state}"
         )
 
-
     # --------------------------------------------------------
     # LIVE MODE CHECK
     # --------------------------------------------------------
@@ -2364,7 +2129,6 @@ def main():
         raise RuntimeError(
             "This bot is configured for LIVE trading only."
         )
-
 
     # --------------------------------------------------------
     # START STRATEGY
