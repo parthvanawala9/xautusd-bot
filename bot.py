@@ -656,11 +656,27 @@ def cancel_order(
     if not order_id:
         return
 
-    api(
-        "DELETE",
-        f"/v2/orders/{order_id}",
-        auth=True,
-    )
+    try:
+
+        api(
+            "DELETE",
+            f"/v2/orders/{order_id}",
+            auth=True,
+        )
+
+    except RuntimeError as exc:
+
+        # A stop may have already triggered/cancelled on Delta.
+        # Treat HTTP 404 as already gone instead of retrying forever.
+        if "HTTP 404" in str(exc):
+
+            logging.info(
+                "Stop/order %s already gone.",
+                order_id
+            )
+            return
+
+        raise
 
 
 # ============================================================
@@ -985,6 +1001,11 @@ class Strategy:
         # First trade of current trading day
         self.first_trade_taken = False
 
+        # Timestamp of the first strategy entry for this trading day.
+        # This lets the bot distinguish a real first trade from an old
+        # or stale state file after deployment/restart.
+        self.first_trade_time = None
+
         # Only identifies whether the current position
         # was the special first position.
         self.first_position = False
@@ -1038,6 +1059,10 @@ class Strategy:
                 "first_trade_taken",
                 False
             )
+        )
+
+        self.first_trade_time = self.state.get(
+            "first_trade_time"
         )
 
         self.first_position = bool(
@@ -1103,6 +1128,8 @@ class Strategy:
                 ),
                 "first_trade_taken":
                     self.first_trade_taken,
+                "first_trade_time":
+                    self.first_trade_time,
                 "first_position":
                     self.first_position,
                 "manual_flat":
@@ -1180,6 +1207,7 @@ class Strategy:
         self.day_low = None
 
         self.first_trade_taken = False
+        self.first_trade_time = None
         self.first_position = False
 
         self.manual_flat = False
@@ -1319,10 +1347,25 @@ class Strategy:
 
         try:
 
+            # IMPORTANT:
+            # Rebuild ONLY from completed historical candles.
+            # Do NOT add the current live price here.
+            #
+            # The next update_extremes() call must be able to see:
+            #
+            #     previous_high -> current price = NEW HIGH
+            #
+            # Otherwise a restart exactly at a breakout would hide
+            # the breakout by making the current price the day high first.
+            historical_end = now.replace(
+                second=0,
+                microsecond=0
+            )
+
             rows = candles(
                 "1m",
                 self.day,
-                now
+                historical_end
             )
 
         except Exception as exc:
@@ -1337,20 +1380,31 @@ class Strategy:
         high = None
         low = None
 
+        current_minute = now.replace(
+            second=0,
+            microsecond=0
+        )
+
         for row in rows:
 
             try:
 
+                row_time = datetime.fromtimestamp(
+                    int(row["time"]),
+                    UTC
+                ).astimezone(IST)
+
+                # Ignore the currently forming 1-minute candle.
+                # Its high/low may already contain the live breakout.
+                if row_time >= current_minute:
+                    continue
+
                 candle_high = Decimal(
-                    str(
-                        row["high"]
-                    )
+                    str(row["high"])
                 )
 
                 candle_low = Decimal(
-                    str(
-                        row["low"]
-                    )
+                    str(row["low"])
                 )
 
             except (
@@ -1375,33 +1429,6 @@ class Strategy:
 
                 low = candle_low
 
-        # Always include current live price.
-        try:
-
-            live_price = ticker_price()
-
-            if (
-                high is None
-                or live_price > high
-            ):
-
-                high = live_price
-
-            if (
-                low is None
-                or live_price < low
-            ):
-
-                low = live_price
-
-        except Exception as exc:
-
-            logging.error(
-                "Could not get live price "
-                "while rebuilding extremes: %s",
-                exc
-            )
-
         if high is not None:
             self.day_high = high
 
@@ -1411,7 +1438,7 @@ class Strategy:
         self.persist()
 
         logging.warning(
-            "DAY EXTREMES REBUILT | "
+            "HISTORICAL DAY RANGE | "
             "HIGH=%s | LOW=%s",
             self.day_high,
             self.day_low,
@@ -1905,6 +1932,9 @@ class Strategy:
 
                     self.first_trade_taken = True
 
+                    if first:
+                        self.first_trade_time = now_ist().isoformat()
+
                     self.first_position = (
                         first
                     )
@@ -2108,6 +2138,14 @@ class Strategy:
         ):
             return
 
+        logging.info(
+            "FIRST BREAKOUT CHECK | "
+            "PRICE=%s | OPEN_HIGH=%s | OPEN_LOW=%s",
+            price,
+            self.opening_high,
+            self.opening_low,
+        )
+
         # FIRST LONG
         if price > self.opening_high:
 
@@ -2144,6 +2182,14 @@ class Strategy:
 
         if not self.first_trade_taken:
             return
+
+        logging.info(
+            "DAY BREAKOUT CHECK | "
+            "PRICE=%s | PREV_HIGH=%s | PREV_LOW=%s",
+            price,
+            previous_high,
+            previous_low,
+        )
 
         # ----------------------------------------------------
         # NEW DAY HIGH
@@ -2501,6 +2547,31 @@ class Strategy:
             position["size"]
         )
 
+        # The previous versions of this bot could mark
+        # first_trade_taken=True simply because an open position
+        # was found at startup. If the bot is currently FLAT and
+        # the state file has no real first-trade timestamp, treat
+        # that old flag as stale so today's opening-range breakout
+        # can actually trigger.
+        current_day = trading_day_start(now_ist())
+
+        if (
+            position["size"] == 0
+            and self.day == current_day
+            and self.first_trade_taken
+            and not self.first_trade_time
+        ):
+
+            logging.warning(
+                "LEGACY STATE DETECTED | "
+                "RESETTING STALE FIRST-TRADE FLAG"
+            )
+
+            self.first_trade_taken = False
+            self.first_position = False
+            self.manual_flat = False
+            self.persist()
+
         if position["size"] != 0:
 
             logging.warning(
@@ -2509,9 +2580,9 @@ class Strategy:
                 position["size"]
             )
 
-            # Existing position means we are NOT looking
-            # for the special first 05:30 trade.
-            self.first_trade_taken = True
+            # An already-open position is managed immediately, but it is
+            # NOT automatically counted as the bot's first trade.
+            # Preserve first_trade_taken from persistent state if it exists.
             self.first_position = False
             self.manual_flat = False
 
