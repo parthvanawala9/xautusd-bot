@@ -28,47 +28,43 @@ from dotenv import load_dotenv
 #
 # IMPORTANT:
 #   The 05:30 candle can trigger ONLY ONE first trade.
-#   Once its breakout is consumed, it can NEVER trigger
-#   another trade during that trading day.
 #
 # INTRADAY:
-#   LONG  -> DAY LOW is SL
-#   SHORT -> DAY HIGH is SL
+#   LONG  -> current DAY LOW is SL
+#   SHORT -> current DAY HIGH is SL
 #
 # NO PROFIT TARGET.
 #
 # OVERNIGHT:
-#   If LONG survives into next day:
-#       after new 05:30-05:45 candle closes,
-#       its LOW becomes the new day's starting SL.
+#   Existing LONG:
+#       next day's 05:30 candle LOW becomes SL
 #
-#   If SHORT survives into next day:
-#       after new 05:30-05:45 candle closes,
-#       its HIGH becomes the new day's starting SL.
-#
-#   After that, the new day's running LOW/HIGH continues
-#   to be used as the SL.
+#   Existing SHORT:
+#       next day's 05:30 candle HIGH becomes SL
 #
 # SL REVERSAL:
 #   LONG SL hit  -> SHORT
 #   SHORT SL hit -> LONG
 #
-#   Reversal does NOT repeatedly trigger from the same level.
-#
 # MANUAL CLOSE:
-#   If user manually closes a position:
-#       no immediate re-entry.
+#   If user manually closes position:
+#       NO immediate re-entry.
 #
-#   Bot waits for a NEW day high or NEW day low.
+#   Bot waits for a genuinely NEW day high/low.
 #
-#   The same already-broken level cannot trigger again.
+# STOP MANAGEMENT:
+#   There must be EXACTLY ONE active stop-loss order
+#   for the current position.
+#
+#   Existing stop is EDITED when possible.
+#   Extra stops are CANCELLED.
 #
 # POSITION SIZE:
 #   10% balance as margin
 #   50x leverage
 #
 # WEEKEND:
-#   Friday/Saturday 05:00 square-off.
+#   Saturday 05:00 square-off.
 #   No trading Saturday/Sunday.
 #   Monday starts after 05:45.
 #
@@ -167,7 +163,7 @@ session.headers.update(
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": (
-            "XAUTUSD-OpeningRange-Live-Bot/8.0"
+            "XAUTUSD-OpeningRange-Live-Bot/9.0"
         ),
     }
 )
@@ -193,10 +189,7 @@ def trading_day_start(dt=None):
     )
 
     if dt < boundary:
-
-        boundary -= timedelta(
-            days=1
-        )
+        boundary -= timedelta(days=1)
 
     return boundary
 
@@ -658,37 +651,150 @@ def stop_order(
 
 
 # ============================================================
-# CANCEL ORDER
+# CANCEL SINGLE ORDER
+# ============================================================
+#
+# IMPORTANT:
+#
+# Delta India API:
+#
+# DELETE /v2/orders
+#
+# Body:
+# {
+#     "id": order_id,
+#     "product_id": product_id
+# }
+#
+# NOT:
+#
+# DELETE /v2/orders/{order_id}
+#
 # ============================================================
 
 def cancel_order(
+    product_id,
     order_id
 ):
 
     if not order_id:
-        return
+        return False
 
     try:
 
         api(
             "DELETE",
-            f"/v2/orders/{order_id}",
+            "/v2/orders",
+            body={
+                "id": int(order_id),
+                "product_id": int(product_id),
+            },
             auth=True,
         )
 
+        logging.info(
+            "ORDER CANCELLED SUCCESSFULLY | ID=%s",
+            order_id
+        )
+
+        return True
+
     except RuntimeError as exc:
 
-        # Order already disappeared from exchange.
-        if "HTTP 404" in str(exc):
+        error_text = str(exc)
+
+        # The order may already have triggered,
+        # been cancelled, or disappeared.
+        if "404" in error_text:
 
             logging.info(
-                "Order %s already removed.",
+                "ORDER %s ALREADY GONE",
                 order_id
             )
 
-            return
+            return True
 
-        raise
+        logging.error(
+            "ORDER CANCEL FAILED | ID=%s | %s",
+            order_id,
+            error_text
+        )
+
+        return False
+
+
+# ============================================================
+# EDIT STOP ORDER
+# ============================================================
+#
+# Used to change an existing stop instead of creating
+# another stop whenever possible.
+#
+# ============================================================
+
+def edit_stop_order(
+    product_id,
+    order,
+    new_price
+):
+
+    order_id = order.get(
+        "id"
+    )
+
+    if not order_id:
+        return False
+
+    body = {
+        "id": int(order_id),
+        "product_id": int(product_id),
+        "product_symbol": SYMBOL,
+        "size": abs(
+            int(
+                order.get(
+                    "size",
+                    0
+                )
+            )
+        ),
+        "stop_price": str(
+            new_price
+        ),
+    }
+
+    logging.info(
+        "EDITING EXISTING SL | ID=%s | NEW SL=%s",
+        order_id,
+        new_price
+    )
+
+    try:
+
+        api(
+            "PUT",
+            "/v2/orders",
+            body=body,
+            auth=True,
+        )
+
+        logging.info(
+            "EXISTING SL EDITED SUCCESSFULLY | "
+            "ID=%s | SL=%s",
+            order_id,
+            new_price
+        )
+
+        return True
+
+    except RuntimeError as exc:
+
+        logging.error(
+            "EDIT SL FAILED | ID=%s | %s",
+            order_id,
+            exc
+        )
+
+        return False
 
 
 # ============================================================
@@ -703,11 +809,12 @@ def open_stops(
         "GET",
         "/v2/orders",
         params={
-            "product_ids": int(
-                product_id
+            "product_ids": str(
+                int(product_id)
             ),
             "states": "open,pending",
             "order_types": "all_stop",
+            "page_size": 100,
         },
         auth=True,
     )
@@ -739,23 +846,28 @@ def cancel_all_stops(
         product_id
     )
 
+    if not orders:
+
+        return
+
+    logging.warning(
+        "FOUND %s ACTIVE STOP ORDER(S)",
+        len(orders)
+    )
+
     for order in orders:
 
-        try:
+        order_id = order.get(
+            "id"
+        )
 
-            cancel_order(
-                order.get(
-                    "id"
-                )
-            )
+        if not order_id:
+            continue
 
-        except Exception as exc:
-
-            logging.error(
-                "Could not cancel stop %s: %s",
-                order.get("id"),
-                exc
-            )
+        cancel_order(
+            product_id,
+            order_id
+        )
 
 
 # ============================================================
@@ -1003,7 +1115,7 @@ class Strategy:
         self.opening_low = None
         self.opening_ready = False
 
-        # Running current-day extremes.
+        # Current trading-day extremes.
         self.day_high = None
         self.day_low = None
 
@@ -1011,11 +1123,10 @@ class Strategy:
         # BREAKOUT LOCKS
         # ----------------------------------------------------
 
-        # Opening candle can trigger ONLY ONE first trade.
+        # Opening candle may trigger ONLY ONE first trade.
         self.opening_breakout_used = False
 
-        # After manual close / while flat, these prevent the
-        # exact same breakout from being used again.
+        # Prevent repeated breakout at the same extreme.
         self.high_breakout_used = False
         self.low_breakout_used = False
 
@@ -1024,27 +1135,21 @@ class Strategy:
         # ----------------------------------------------------
 
         self.first_trade_taken = False
-
-        # True only if current position was the opening-range
-        # first entry.
         self.first_position = False
 
-        # Manual close state.
+        # True when user manually closed position.
         self.manual_flat = False
 
         self.last_position = 0
 
-        # Current active exchange SL.
+        # Current SL tracked by bot.
         self.current_sl = None
         self.stop_id = None
 
         self.entry_lock = False
 
-        # Existing position carried into a new day.
+        # Overnight state.
         self.carried_into_day = False
-
-        # New 05:30 candle has been applied as the initial
-        # SL for an overnight position.
         self.overnight_candle_applied = False
 
         self.state = load_state()
@@ -1276,57 +1381,50 @@ class Strategy:
 
         self.day = new_day
 
-        # New opening candle must be loaded.
         self.opening_high = None
         self.opening_low = None
         self.opening_ready = False
 
-        # New day range starts from opening candle.
         self.day_high = None
         self.day_low = None
 
-        # VERY IMPORTANT:
-        #
-        # Opening candle gets one fresh chance each day.
-        #
-        # But if an existing position is being carried,
-        # this opening candle is NOT an entry trigger.
+        # ----------------------------------------------------
+        # POSITION CARRIED INTO NEW DAY
+        # ----------------------------------------------------
+
         if existing_position != 0:
 
+            # No new opening trade because position already
+            # exists.
             self.opening_breakout_used = True
 
             self.first_trade_taken = True
-
             self.first_position = False
-
             self.manual_flat = False
 
             self.carried_into_day = True
-
             self.overnight_candle_applied = False
 
             logging.warning(
-                "POSITION CARRIED INTO NEW DAY | "
-                "SIZE=%s",
+                "POSITION CARRIED INTO NEW DAY | SIZE=%s",
                 existing_position
             )
+
+        # ----------------------------------------------------
+        # FLAT AT START OF NEW DAY
+        # ----------------------------------------------------
 
         else:
 
             self.opening_breakout_used = False
 
             self.first_trade_taken = False
-
             self.first_position = False
-
             self.manual_flat = False
 
             self.carried_into_day = False
-
             self.overnight_candle_applied = False
 
-            # These are reset because they belong to the
-            # current trading day's new-breakout logic.
             self.high_breakout_used = False
             self.low_breakout_used = False
 
@@ -1393,7 +1491,6 @@ class Strategy:
             if candle_time == self.day:
 
                 target = row
-
                 break
 
         if target is None:
@@ -1428,7 +1525,7 @@ class Strategy:
 
 
     # ========================================================
-    # APPLY NEW OPENING CANDLE TO CARRIED POSITION
+    # APPLY OPENING CANDLE TO OVERNIGHT POSITION
     # ========================================================
 
     def apply_opening_to_new_day_range(
@@ -1450,7 +1547,7 @@ class Strategy:
         )
 
         logging.warning(
-            "OVERNIGHT POSITION NEW SL RANGE"
+            "OVERNIGHT POSITION NEW DAY RANGE"
         )
 
         logging.warning(
@@ -1496,11 +1593,12 @@ class Strategy:
             changed = True
 
         if changed:
+
             self.persist()
 
 
     # ========================================================
-    # REBUILD RANGE
+    # REBUILD DAY RANGE
     # ========================================================
 
     def rebuild_day_range(
@@ -1655,7 +1753,25 @@ class Strategy:
 
 
     # ========================================================
-    # SYNC ONE STOP
+    # SYNC EXACTLY ONE SL
+    # ========================================================
+    #
+    # RULE:
+    #
+    #   Position open
+    #       ↓
+    #   Find ALL active stop orders
+    #       ↓
+    #   Keep only the correct one
+    #       ↓
+    #   Cancel extras
+    #       ↓
+    #   If existing correct-side SL exists:
+    #       EDIT it
+    #   Otherwise:
+    #       cancel old stops
+    #       create ONE new stop
+    #
     # ========================================================
 
     def sync_sl(
@@ -1670,10 +1786,12 @@ class Strategy:
         )
 
         if desired is None:
-
             return
 
-        # LONG SL must remain below price.
+        # ----------------------------------------------------
+        # LONG SL MUST BE BELOW CURRENT PRICE
+        # ----------------------------------------------------
+
         if (
             size > 0
             and desired >= price
@@ -1688,7 +1806,10 @@ class Strategy:
 
             return
 
-        # SHORT SL must remain above price.
+        # ----------------------------------------------------
+        # SHORT SL MUST BE ABOVE CURRENT PRICE
+        # ----------------------------------------------------
+
         if (
             size < 0
             and desired <= price
@@ -1709,11 +1830,16 @@ class Strategy:
             )
         )
 
+        # ----------------------------------------------------
+        # GET ALL ACTIVE STOPS
+        # ----------------------------------------------------
+
         orders = open_stops(
             self.product_id
         )
 
         valid = []
+        extras = []
 
         for order in orders:
 
@@ -1734,9 +1860,9 @@ class Strategy:
                 )
             )
 
+            # Correct direction.
             if (
                 side == expected_side
-                and order_price == desired
                 and order_id
             ):
 
@@ -1747,66 +1873,198 @@ class Strategy:
             else:
 
                 if order_id:
-
-                    try:
-
-                        cancel_order(
-                            order_id
-                        )
-
-                    except Exception as exc:
-
-                        logging.error(
-                            "Could not cancel "
-                            "extra stop %s: %s",
-                            order_id,
-                            exc
-                        )
-
-        # Keep exactly one matching stop.
-        if len(valid) > 1:
-
-            for extra in valid[1:]:
-
-                try:
-
-                    cancel_order(
-                        extra.get(
-                            "id"
-                        )
+                    extras.append(
+                        order
                     )
 
-                except Exception:
-                    pass
+        # ----------------------------------------------------
+        # CANCEL WRONG-SIDE / INVALID STOPS
+        # ----------------------------------------------------
 
-            valid = valid[:1]
+        for order in extras:
 
-        # Existing correct stop.
-        if (
-            len(valid) == 1
-            and not force
-            and self.current_sl == desired
-        ):
+            logging.warning(
+                "CANCELLING INVALID/EXTRA STOP | ID=%s",
+                order.get("id")
+            )
 
-            self.stop_id = valid[0].get(
+            cancel_order(
+                self.product_id,
+                order.get("id")
+            )
+
+        # ----------------------------------------------------
+        # IF MULTIPLE SAME-SIDE STOPS EXIST
+        #
+        # Keep one.
+        # Cancel all others.
+        # ----------------------------------------------------
+
+        if len(valid) > 1:
+
+            # Prefer the one with the desired price.
+            desired_matches = [
+                order
+                for order in valid
+                if self.stop_price(
+                    order
+                ) == desired
+            ]
+
+            if desired_matches:
+
+                keeper = desired_matches[0]
+
+            else:
+
+                keeper = valid[0]
+
+            remaining = []
+
+            for order in valid:
+
+                if (
+                    order.get("id")
+                    == keeper.get("id")
+                ):
+                    continue
+
+                remaining.append(
+                    order
+                )
+
+            for order in remaining:
+
+                logging.warning(
+                    "CANCELLING DUPLICATE SL | ID=%s",
+                    order.get("id")
+                )
+
+                cancel_order(
+                    self.product_id,
+                    order.get("id")
+                )
+
+            valid = [
+                keeper
+            ]
+
+        # ----------------------------------------------------
+        # ONE EXISTING STOP
+        # ----------------------------------------------------
+
+        if len(valid) == 1:
+
+            existing = valid[0]
+
+            existing_id = existing.get(
                 "id"
             )
 
-            return
+            existing_price = (
+                self.stop_price(
+                    existing
+                )
+            )
 
-        # Replace existing correct stop when forced.
-        for order in valid:
+            self.stop_id = existing_id
 
-            try:
+            # Already exactly correct.
+            if (
+                existing_price == desired
+                and not force
+            ):
 
-                cancel_order(
-                    order.get(
-                        "id"
-                    )
+                self.current_sl = desired
+
+                logging.info(
+                    "SL ALREADY CORRECT | "
+                    "ID=%s | SL=%s",
+                    existing_id,
+                    desired
                 )
 
-            except Exception:
-                pass
+                return
+
+            # Correct stop exists but price needs changing.
+            #
+            # Prefer EDIT instead of cancel + create.
+            if existing_price != desired:
+
+                edited = edit_stop_order(
+                    self.product_id,
+                    existing,
+                    desired
+                )
+
+                if edited:
+
+                    self.current_sl = desired
+                    self.stop_id = existing_id
+
+                    logging.warning(
+                        "SL UPDATED WITHOUT CREATING DUPLICATE | "
+                        "ID=%s | SL=%s",
+                        existing_id,
+                        desired
+                    )
+
+                    return
+
+                logging.warning(
+                    "EDIT FAILED | "
+                    "FALLING BACK TO CANCEL + CREATE"
+                )
+
+            # If force=True or edit failed, cancel it.
+            cancel_order(
+                self.product_id,
+                existing_id
+            )
+
+            self.stop_id = None
+            self.current_sl = None
+
+        # ----------------------------------------------------
+        # FINAL CLEANUP
+        #
+        # Re-read exchange to make sure old stops are gone.
+        # ----------------------------------------------------
+
+        try:
+
+            remaining_stops = open_stops(
+                self.product_id
+            )
+
+            for order in remaining_stops:
+
+                order_id = order.get(
+                    "id"
+                )
+
+                if order_id:
+
+                    logging.warning(
+                        "FINAL STOP CLEANUP | ID=%s",
+                        order_id
+                    )
+
+                    cancel_order(
+                        self.product_id,
+                        order_id
+                    )
+
+        except Exception as exc:
+
+            logging.error(
+                "Final stop cleanup failed: %s",
+                exc
+            )
+
+        # ----------------------------------------------------
+        # CREATE EXACTLY ONE NEW STOP
+        # ----------------------------------------------------
 
         result = stop_order(
             self.product_id,
@@ -1855,15 +2113,40 @@ class Strategy:
             )
 
         logging.warning(
-            "SL ACTIVE | %s | SL=%s | DAY HIGH=%s | DAY LOW=%s",
+            "=============================================="
+        )
+
+        logging.warning(
+            "ONE SL ACTIVE"
+        )
+
+        logging.warning(
+            "POSITION=%s",
             (
                 "LONG"
                 if size > 0
                 else "SHORT"
-            ),
-            desired,
+            )
+        )
+
+        logging.warning(
+            "SL=%s",
+            desired
+        )
+
+        logging.warning(
+            "SL ID=%s",
+            self.stop_id
+        )
+
+        logging.warning(
+            "DAY HIGH=%s | DAY LOW=%s",
             self.day_high,
             self.day_low
+        )
+
+        logging.warning(
+            "=============================================="
         )
 
 
@@ -2054,7 +2337,7 @@ class Strategy:
             return False
 
         # ----------------------------------------------------
-        # HIGH BREAK -> LONG
+        # HIGH -> LONG
         # ----------------------------------------------------
 
         if price > self.opening_high:
@@ -2086,10 +2369,6 @@ class Strategy:
 
             if success:
 
-                # CONSUME THE OPENING BREAKOUT.
-                #
-                # This is the critical protection against
-                # repeated trades from the same candle.
                 self.opening_breakout_used = True
                 self.high_breakout_used = True
 
@@ -2098,7 +2377,7 @@ class Strategy:
             return success
 
         # ----------------------------------------------------
-        # LOW BREAK -> SHORT
+        # LOW -> SHORT
         # ----------------------------------------------------
 
         if price < self.opening_low:
@@ -2153,10 +2432,7 @@ class Strategy:
             return False
 
         # ----------------------------------------------------
-        # NEW HIGH
-        #
-        # day_high is the previous recorded extreme.
-        # We compare FIRST and update AFTER.
+        # NEW HIGH -> LONG
         # ----------------------------------------------------
 
         if (
@@ -2177,8 +2453,6 @@ class Strategy:
             if success:
 
                 self.manual_flat = False
-
-                # Consume this breakout.
                 self.high_breakout_used = True
 
                 logging.warning(
@@ -2193,7 +2467,7 @@ class Strategy:
             return success
 
         # ----------------------------------------------------
-        # NEW LOW
+        # NEW LOW -> SHORT
         # ----------------------------------------------------
 
         if (
@@ -2214,7 +2488,6 @@ class Strategy:
             if success:
 
                 self.manual_flat = False
-
                 self.low_breakout_used = True
 
                 logging.warning(
@@ -2233,27 +2506,6 @@ class Strategy:
 
     # ========================================================
     # POST FIRST TRADE BREAKOUT
-    #
-    # Used when flat but strategy is already past the
-    # opening trade.
-    #
-    # A breakout is checked BEFORE updating day extremes.
-    #
-    # Therefore:
-    #
-    # old high = 4400
-    # price     = 4401
-    #
-    # -> one LONG.
-    #
-    # After that day_high becomes 4401.
-    #
-    # Price staying at 4401/4402 cannot repeatedly enter
-    # because we are no longer flat once entry succeeds.
-    #
-    # If manually closed at 4401:
-    # day_high is already 4401.
-    # Price must exceed 4401 to enter again.
     # ========================================================
 
     def post_first_breakout(
@@ -2337,7 +2589,7 @@ class Strategy:
 
 
     # ========================================================
-    # DETECT CLOSED POSITION
+    # DETECT CLOSE REASON
     # ========================================================
 
     def detect_close_reason(
@@ -2349,7 +2601,10 @@ class Strategy:
         if old_size == 0:
             return "none"
 
-        # If price crossed our known SL, treat as SL.
+        # ----------------------------------------------------
+        # STOP LOSS
+        # ----------------------------------------------------
+
         if self.current_sl is not None:
 
             if (
@@ -2366,6 +2621,7 @@ class Strategy:
 
                 return "sl"
 
+        # Otherwise manual close.
         return "manual"
 
 
@@ -2392,8 +2648,12 @@ class Strategy:
                 self.product_id
             )
 
-        except Exception:
-            pass
+        except Exception as exc:
+
+            logging.error(
+                "Stop cleanup after close failed: %s",
+                exc
+            )
 
         self.current_sl = None
         self.stop_id = None
@@ -2428,15 +2688,6 @@ class Strategy:
             self.manual_flat = True
             self.first_position = False
 
-            # IMPORTANT:
-            #
-            # We DO NOT reset day_high/day_low.
-            #
-            # Therefore the same price cannot immediately
-            # trigger another trade.
-            #
-            # A genuinely NEW high/low is required.
-
             self.persist()
 
             return
@@ -2465,13 +2716,10 @@ class Strategy:
         self.manual_flat = False
         self.first_position = False
 
-        # Reversal is a new position.
         self.carried_into_day = False
         self.overnight_candle_applied = True
 
-        # Make sure the current price is reflected in the
-        # current day's range BEFORE selecting the opposite
-        # stop.
+        # Make current price part of current day range.
         self.update_day_extremes(
             price
         )
@@ -2480,8 +2728,6 @@ class Strategy:
 
         # ----------------------------------------------------
         # LONG -> SHORT
-        #
-        # SHORT SL = current DAY HIGH
         # ----------------------------------------------------
 
         if old_size > 0:
@@ -2495,8 +2741,6 @@ class Strategy:
 
         # ----------------------------------------------------
         # SHORT -> LONG
-        #
-        # LONG SL = current DAY LOW
         # ----------------------------------------------------
 
         else:
@@ -2510,7 +2754,7 @@ class Strategy:
 
 
     # ========================================================
-    # APPLY OVERNIGHT OPENING CANDLE
+    # APPLY OVERNIGHT SL
     # ========================================================
 
     def apply_overnight_sl(
@@ -2533,7 +2777,7 @@ class Strategy:
         ):
             return
 
-        # New day starts its range from the 05:30 candle.
+        # New day's range starts ONLY from the 05:30 candle.
         self.day_high = self.opening_high
         self.day_low = self.opening_low
 
@@ -2704,7 +2948,7 @@ class Strategy:
         old_size = self.last_position
 
         # ----------------------------------------------------
-        # POSITION IS OPEN
+        # POSITION OPEN
         # ----------------------------------------------------
 
         if new_size != 0:
@@ -2766,10 +3010,6 @@ class Strategy:
 
             self.last_position = new_size
 
-            # Update current day range.
-            #
-            # For an overnight position, the opening candle
-            # was already initialized first.
             self.update_day_extremes(
                 price
             )
@@ -2782,7 +3022,7 @@ class Strategy:
             return
 
         # ----------------------------------------------------
-        # POSITION IS FLAT
+        # POSITION FLAT
         # ----------------------------------------------------
 
         self.last_position = 0
@@ -2811,6 +3051,11 @@ class Strategy:
             )
 
             if stops:
+
+                logging.warning(
+                    "FLAT ACCOUNT HAS %s ORPHAN STOP(S)",
+                    len(stops)
+                )
 
                 cancel_all_stops(
                     self.product_id
@@ -2847,30 +3092,12 @@ class Strategy:
 
         if self.manual_flat:
 
-            # IMPORTANT:
-            #
-            # Check breakout BEFORE updating day extremes.
-            #
-            # This means:
-            #
-            # day_high = 4400
-            # price    = 4401
-            #
-            # -> NEW HIGH BREAKOUT.
-            #
-            # Once entered, day_high becomes 4401.
-            #
-            # If manually closed at 4401:
-            # price must go > 4401 before another LONG.
-            #
-
             triggered = (
                 self.manual_breakout(
                     price
                 )
             )
 
-            # If no trade happened, update the range.
             if not triggered:
 
                 self.update_day_extremes(
@@ -2880,19 +3107,10 @@ class Strategy:
             return
 
         # ----------------------------------------------------
-        # FIRST TRADE OF THE DAY
+        # FIRST TRADE OF DAY
         # ----------------------------------------------------
 
         if not self.opening_breakout_used:
-
-            # IMPORTANT:
-            #
-            # Check opening breakout BEFORE updating the
-            # current day range.
-            #
-            # This guarantees that price crossing the opening
-            # HIGH/LOW at 05:45 is detected.
-            #
 
             triggered = (
                 self.opening_breakout(
@@ -2904,9 +3122,6 @@ class Strategy:
 
                 return
 
-            # No opening breakout yet.
-            #
-            # Update today's range after checking.
             self.update_day_extremes(
                 price
             )
@@ -2915,11 +3130,6 @@ class Strategy:
 
         # ----------------------------------------------------
         # OPENING BREAKOUT ALREADY CONSUMED
-        #
-        # We are flat because of manual close or some other
-        # flat state.
-        #
-        # Only a NEW day HIGH/LOW can trigger.
         # ----------------------------------------------------
 
         triggered = (
@@ -2932,9 +3142,6 @@ class Strategy:
 
             return
 
-        # No breakout.
-        #
-        # Update extremes only AFTER checking.
         self.update_day_extremes(
             price
         )
@@ -2957,7 +3164,7 @@ class Strategy:
         )
 
         logging.warning(
-            "STRATEGY VERSION 8.0"
+            "STRATEGY VERSION 9.0"
         )
 
         logging.warning(
@@ -3040,6 +3247,26 @@ class Strategy:
             "================================================"
         )
 
+        logging.warning(
+            "STOP MANAGEMENT:"
+        )
+
+        logging.warning(
+            "EXACTLY ONE ACTIVE SL"
+        )
+
+        logging.warning(
+            "EXISTING SL IS EDITED WHEN POSSIBLE"
+        )
+
+        logging.warning(
+            "DUPLICATE SLs ARE CANCELLED"
+        )
+
+        logging.warning(
+            "================================================"
+        )
+
         set_leverage(
             self.product_id
         )
@@ -3076,8 +3303,6 @@ class Strategy:
                 startup_size
             )
 
-            # Existing position is NEVER treated as a new
-            # opening breakout.
             self.opening_breakout_used = True
             self.first_trade_taken = True
             self.first_position = False
@@ -3086,8 +3311,6 @@ class Strategy:
 
             self.last_position = startup_size
 
-            # If startup is after 05:45, the new opening candle
-            # becomes the current day's starting range.
             if (
                 now >= opening_end(
                     self.day
@@ -3095,8 +3318,7 @@ class Strategy:
                 and self.opening_ready
             ):
 
-                self.apply_opening_to_new_day_range(
-                )
+                self.apply_opening_to_new_day_range()
 
             self.persist()
 
