@@ -54,9 +54,6 @@ from dotenv import load_dotenv
 #   10% of current equity as margin
 #   50x leverage
 #
-# IMPORTANT:
-#   This file is LIVE ONLY.
-#   There is NO dry-run/demo trading mode.
 # ============================================================
 
 
@@ -66,29 +63,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 IST = ZoneInfo("Asia/Kolkata")
 UTC = timezone.utc
 
-
-# Delta Exchange India production API.
 BASE_URL = os.getenv(
     "DELTA_BASE_URL",
     "https://api.india.delta.exchange"
 ).rstrip("/")
-
 
 SYMBOL = os.getenv(
     "DELTA_SYMBOL",
     "XAUTUSD"
 )
 
-
 API_KEY = os.getenv(
     "DELTA_API_KEY",
     ""
 ).strip()
-
 
 API_SECRET = os.getenv(
     "DELTA_API_SECRET",
@@ -100,10 +91,7 @@ API_SECRET = os.getenv(
 # LIVE SETTINGS
 # ============================================================
 
-# HARD-CODED LIVE MODE.
-# There is intentionally no dry-run mode in this file.
 LIVE_TRADING = True
-
 
 LEVERAGE = Decimal(
     os.getenv(
@@ -112,14 +100,12 @@ LEVERAGE = Decimal(
     )
 )
 
-
 BALANCE_FRACTION = Decimal(
     os.getenv(
         "BALANCE_FRACTION",
         "0.10"
     )
 )
-
 
 POLL_SECONDS = float(
     os.getenv(
@@ -130,14 +116,13 @@ POLL_SECONDS = float(
 
 
 # ============================================================
-# REQUIRED CREDENTIAL CHECK
+# CREDENTIAL CHECK
 # ============================================================
 
 if not API_KEY:
     raise SystemExit(
         "Missing DELTA_API_KEY."
     )
-
 
 if not API_SECRET:
     raise SystemExit(
@@ -170,7 +155,7 @@ session.headers.update(
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": (
-            "XAUTUSD-OpeningRange-Live-Bot/2.0"
+            "XAUTUSD-OpeningRange-Live-Bot/2.1"
         ),
     }
 )
@@ -185,9 +170,6 @@ def now_ist():
 
 
 def trading_day_start(dt=None):
-    """
-    Current strategy day starts at 05:30 IST.
-    """
 
     dt = dt or now_ist()
 
@@ -199,26 +181,18 @@ def trading_day_start(dt=None):
     )
 
     if dt < boundary:
-        boundary -= timedelta(
-            days=1
-        )
+        boundary -= timedelta(days=1)
 
     return boundary
 
 
 def is_weekend_block(dt=None):
-    """
-    Saturday 05:00 IST through Monday 05:45 IST:
-    no new trades.
-
-    Existing position is squared off at Saturday 05:00.
-    """
 
     dt = dt or now_ist()
 
     weekday = dt.weekday()
 
-    # Saturday
+    # Saturday from 05:00
     if (
         weekday == 5
         and dt.time()
@@ -248,9 +222,6 @@ def is_weekend_block(dt=None):
 
 
 def is_force_squareoff_time(dt=None):
-    """
-    Saturday from 05:00 IST.
-    """
 
     dt = dt or now_ist()
 
@@ -270,25 +241,9 @@ def sign_request(
     query_string="",
     body=""
 ):
-    """
-    Delta signature.
-
-    IMPORTANT:
-    query_string must contain the leading '?' when
-    query parameters exist.
-
-    Example:
-
-        ?product_id=131253
-
-    This is the correction for the previous
-    Signature Mismatch error.
-    """
 
     timestamp = str(
-        int(
-            time.time()
-        )
+        int(time.time())
     )
 
     message = (
@@ -323,13 +278,6 @@ def request(
     body=None,
     authenticated=False
 ):
-    """
-    Central Delta REST API request.
-
-    Query string used for the HTTP request and the
-    query string used for signing are generated from
-    the same encoded parameters.
-    """
 
     params = params or {}
 
@@ -346,14 +294,6 @@ def request(
         else ""
     )
 
-    # Build the EXACT encoded query string.
-    #
-    # IMPORTANT:
-    # Include '?' in the signature.
-    #
-    # Example:
-    # ?product_id=131253
-    #
     if params:
         query_string = (
             "?"
@@ -378,10 +318,7 @@ def request(
             )
         )
 
-    url = (
-        BASE_URL
-        + path
-    )
+    url = BASE_URL + path
 
     try:
 
@@ -463,9 +400,7 @@ def get_position(product_id):
         "GET",
         "/v2/positions",
         params={
-            "product_id": int(
-                product_id
-            )
+            "product_id": int(product_id)
         },
         authenticated=True,
     )["result"]
@@ -609,18 +544,12 @@ def market_order(
 ):
 
     body = {
-        "product_id": int(
-            product_id
-        ),
+        "product_id": int(product_id),
         "product_symbol": SYMBOL,
-        "size": int(
-            size
-        ),
+        "size": int(size),
         "side": side,
         "order_type": "market_order",
-        "client_order_id": (
-            client_id[:32]
-        ),
+        "client_order_id": client_id[:32],
     }
 
     logging.warning(
@@ -649,28 +578,16 @@ def stop_market_order(
 ):
 
     body = {
-        "product_id": int(
-            product_id
-        ),
+        "product_id": int(product_id),
         "product_symbol": SYMBOL,
-        "size": int(
-            size
-        ),
+        "size": int(size),
         "side": side,
         "order_type": "market_order",
-        "stop_order_type": (
-            "stop_loss_order"
-        ),
-        "stop_price": str(
-            stop_price
-        ),
-        "stop_trigger_method": (
-            "last_traded_price"
-        ),
+        "stop_order_type": "stop_loss_order",
+        "stop_price": str(stop_price),
+        "stop_trigger_method": "last_traded_price",
         "reduce_only": True,
-        "client_order_id": (
-            client_id[:32]
-        ),
+        "client_order_id": client_id[:32],
     }
 
     logging.warning(
@@ -690,9 +607,7 @@ def stop_market_order(
 # CANCEL ORDER
 # ============================================================
 
-def cancel_order(
-    order_id
-):
+def cancel_order(order_id):
 
     if not order_id:
         return
@@ -721,23 +636,29 @@ def get_open_stop_orders(
         "GET",
         "/v2/orders",
         params={
-            "product_ids": int(
-                product_id
-            ),
-            "states": (
-                "open,pending"
-            ),
-            "order_types": (
-                "all_stop"
-            ),
+            "product_ids": int(product_id),
+            "states": "open,pending",
+            "order_types": "all_stop",
         },
         authenticated=True,
     )
 
-    return data.get(
+    result = data.get(
         "result",
         []
     )
+
+    if isinstance(
+        result,
+        dict
+    ):
+
+        return result.get(
+            "orders",
+            []
+        )
+
+    return result
 
 
 # ============================================================
@@ -752,23 +673,46 @@ def cancel_all_strategy_stops(
         product_id
     )
 
+    if not orders:
+
+        logging.info(
+            "No open XAUTUSD stop orders found."
+        )
+
+        return
+
+    logging.warning(
+        "FOUND %s OPEN STOP ORDER(S) - "
+        "CANCELLING ALL BEFORE NEW SL.",
+        len(orders)
+    )
+
     for order in orders:
+
+        order_id = order.get(
+            "id"
+        )
+
+        if not order_id:
+            continue
 
         try:
 
             cancel_order(
-                order.get(
-                    "id"
-                )
+                order_id
             )
 
         except Exception as exc:
 
             logging.error(
                 "Could not cancel stop %s: %s",
-                order.get("id"),
+                order_id,
                 exc
             )
+
+    # Small delay so cancellation reaches
+    # Delta before a new SL is submitted.
+    time.sleep(0.20)
 
 
 # ============================================================
@@ -838,17 +782,6 @@ def calculate_contract_size(
     product,
     price
 ):
-    """
-    Uses:
-
-        10% of current equity
-        x 50 leverage
-
-    as target notional.
-
-    Contract metadata from Delta is used to determine
-    the actual number of contracts.
-    """
 
     equity = get_usdt_equity()
 
@@ -958,9 +891,7 @@ class Strategy:
         self.opening_high = None
         self.opening_low = None
 
-        self.opening_candle_ready = (
-            False
-        )
+        self.opening_candle_ready = False
 
         self.last_price = None
 
@@ -971,7 +902,17 @@ class Strategy:
 
         self.reversal_lock = False
 
-        self.last_entry_day = None
+        # ----------------------------------------------------
+        # NEW ENTRY PROTECTION
+        # ----------------------------------------------------
+        #
+        # Prevents the same opening breakout from creating
+        # multiple 10% market orders.
+        #
+        self.initial_entry_day = None
+
+        # Prevents two entry requests inside the same process.
+        self.entry_in_progress = False
 
 
     # ========================================================
@@ -1009,12 +950,12 @@ class Strategy:
         self.opening_high = None
         self.opening_low = None
 
-        self.opening_candle_ready = (
-            False
-        )
+        self.opening_candle_ready = False
 
-        # Rebuild the day's actual high/low
-        # from 1-minute candles.
+        # IMPORTANT:
+        # A new strategy day gets a new opening breakout.
+        self.initial_entry_day = None
+
         try:
 
             candles = get_candles(
@@ -1028,9 +969,7 @@ class Strategy:
                 self.day_high = max(
                     Decimal(
                         str(
-                            candle[
-                                "high"
-                            ]
+                            candle["high"]
                         )
                     )
                     for candle in candles
@@ -1039,9 +978,7 @@ class Strategy:
                 self.day_low = min(
                     Decimal(
                         str(
-                            candle[
-                                "low"
-                            ]
+                            candle["low"]
                         )
                     )
                     for candle in candles
@@ -1049,13 +986,8 @@ class Strategy:
 
             else:
 
-                self.day_high = (
-                    self.last_price
-                )
-
-                self.day_low = (
-                    self.last_price
-                )
+                self.day_high = self.last_price
+                self.day_low = self.last_price
 
         except Exception as exc:
 
@@ -1065,15 +997,9 @@ class Strategy:
                 exc
             )
 
-            self.day_high = (
-                self.last_price
-            )
+            self.day_high = self.last_price
+            self.day_low = self.last_price
 
-            self.day_low = (
-                self.last_price
-            )
-
-        # Load opening candle once complete.
         if (
             now
             >= (
@@ -1122,9 +1048,7 @@ class Strategy:
             candle_time = (
                 datetime.fromtimestamp(
                     int(
-                        candle[
-                            "time"
-                        ]
+                        candle["time"]
                     ),
                     UTC
                 )
@@ -1134,7 +1058,6 @@ class Strategy:
             if candle_time == start:
 
                 target = candle
-
                 break
 
         if target is None:
@@ -1146,23 +1069,17 @@ class Strategy:
 
         self.opening_high = Decimal(
             str(
-                target[
-                    "high"
-                ]
+                target["high"]
             )
         )
 
         self.opening_low = Decimal(
             str(
-                target[
-                    "low"
-                ]
+                target["low"]
             )
         )
 
-        self.opening_candle_ready = (
-            True
-        )
+        self.opening_candle_ready = True
 
         logging.info(
             "OPENING CANDLE 05:30-05:45 | "
@@ -1217,6 +1134,42 @@ class Strategy:
 
 
     # ========================================================
+    # GET CURRENT OPEN STOP
+    # ========================================================
+
+    def get_existing_stop(
+        self,
+        desired
+    ):
+
+        orders = get_open_stop_orders(
+            self.product_id
+        )
+
+        if not orders:
+
+            return None
+
+        # Look for an existing stop for this product.
+        #
+        # If one exists, keep it instead of creating another.
+        #
+        # This protects against duplicate SL orders even if
+        # the order ID was not stored correctly after restart.
+        for order in orders:
+
+            order_id = order.get(
+                "id"
+            )
+
+            if order_id:
+
+                return order
+
+        return None
+
+
+    # ========================================================
     # PLACE / REPLACE SL
     # ========================================================
 
@@ -1254,29 +1207,41 @@ class Strategy:
 
             return
 
-        if (
-            not force
-            and self.current_sl == desired
-            and self.stop_order_id
-        ):
+        # ----------------------------------------------------
+        # If the desired SL is unchanged, first verify that
+        # an actual open stop exists on Delta.
+        # ----------------------------------------------------
 
-            return
+        if not force:
 
-        # Cancel previous SL.
-        if self.stop_order_id:
+            existing = self.get_existing_stop(
+                desired
+            )
 
-            try:
+            if existing:
 
-                cancel_order(
-                    self.stop_order_id
+                self.stop_order_id = existing.get(
+                    "id"
                 )
 
-            except Exception as exc:
+                self.current_sl = desired
 
-                logging.error(
-                    "Cancel old SL failed: %s",
-                    exc
-                )
+                return
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Do NOT only cancel self.stop_order_id.
+        #
+        # Cancel ALL open/pending XAUTUSD stop orders.
+        #
+        # This removes stale/orphaned stops left behind by
+        # previous bot runs.
+        # ----------------------------------------------------
+
+        cancel_all_strategy_stops(
+            self.product_id
+        )
 
         side = (
             "sell"
@@ -1302,40 +1267,45 @@ class Strategy:
         )
 
         self.current_sl = desired
-
         self.stop_order_id = None
 
         try:
 
-            result_list = result.get(
-                "result",
-                []
+            result_value = result.get(
+                "result"
             )
 
-            if (
-                isinstance(
-                    result_list,
-                    list
-                )
-                and result_list
+            if isinstance(
+                result_value,
+                list
             ):
 
-                self.stop_order_id = (
-                    result_list[0].get(
-                        "id"
+                if result_value:
+
+                    self.stop_order_id = (
+                        result_value[0].get(
+                            "id"
+                        )
                     )
-                )
 
             elif isinstance(
-                result_list,
+                result_value,
                 dict
             ):
 
                 self.stop_order_id = (
-                    result_list.get(
+                    result_value.get(
                         "id"
                     )
                 )
+
+                if not self.stop_order_id:
+
+                    self.stop_order_id = (
+                        result_value.get(
+                            "order_id"
+                        )
+                    )
 
         except Exception:
 
@@ -1363,123 +1333,215 @@ class Strategy:
         self,
         direction,
         price,
-        reason
+        reason,
+        initial_breakout=False
     ):
+
+        # ----------------------------------------------------
+        # HARD ENTRY LOCK
+        # ----------------------------------------------------
+
+        if self.entry_in_progress:
+
+            logging.warning(
+                "ENTRY BLOCKED: another entry "
+                "is already in progress."
+            )
+
+            return False
 
         if is_weekend_block():
 
-            return
+            return False
 
-        size, equity, margin, notional, contract_value = (
-            calculate_contract_size(
-                self.product,
+        # ----------------------------------------------------
+        # INITIAL BREAKOUT LOCK
+        # ----------------------------------------------------
+        #
+        # Only one initial opening-range entry per trading day.
+        #
+        # SL reversals are NOT blocked by this.
+        # ----------------------------------------------------
+
+        if initial_breakout:
+
+            if self.initial_entry_day == self.day:
+
+                logging.warning(
+                    "BREAKOUT ENTRY BLOCKED: "
+                    "initial entry already taken "
+                    "for trading day %s.",
+                    self.day
+                )
+
+                return False
+
+        # ----------------------------------------------------
+        # CHECK REAL POSITION BEFORE ENTRY
+        # ----------------------------------------------------
+        #
+        # This is important even if our local state says flat.
+        # Never add another 10% position if Delta already has
+        # an open position.
+        # ----------------------------------------------------
+
+        current_position = get_position(
+            self.product_id
+        )
+
+        if current_position["size"] != 0:
+
+            logging.warning(
+                "ENTRY BLOCKED: Delta already "
+                "has position size %s.",
+                current_position["size"]
+            )
+
+            self.last_position_size = (
+                current_position["size"]
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # REMOVE ANY OLD STOP BEFORE A NEW ENTRY
+        # ----------------------------------------------------
+
+        cancel_all_strategy_stops(
+            self.product_id
+        )
+
+        self.entry_in_progress = True
+
+        try:
+
+            size, equity, margin, notional, contract_value = (
+                calculate_contract_size(
+                    self.product,
+                    price
+                )
+            )
+
+            side = (
+                "buy"
+                if direction == "LONG"
+                else "sell"
+            )
+
+            client_id = (
+                f"xent"
+                f"{int(time.time() * 1000)}"
+            )
+
+            logging.warning(
+                "=============================================="
+            )
+
+            logging.warning(
+                "LIVE ENTRY %s",
+                direction
+            )
+
+            logging.warning(
+                "PRICE=%s",
                 price
             )
-        )
 
-        side = (
-            "buy"
-            if direction == "LONG"
-            else "sell"
-        )
-
-        client_id = (
-            f"xent"
-            f"{int(time.time() * 1000)}"
-        )
-
-        logging.warning(
-            "=============================================="
-        )
-
-        logging.warning(
-            "LIVE ENTRY %s",
-            direction
-        )
-
-        logging.warning(
-            "PRICE=%s",
-            price
-        )
-
-        logging.warning(
-            "SIZE=%s",
-            size
-        )
-
-        logging.warning(
-            "EQUITY=%s",
-            equity
-        )
-
-        logging.warning(
-            "MARGIN=%s",
-            margin
-        )
-
-        logging.warning(
-            "NOTIONAL=%s",
-            notional
-        )
-
-        logging.warning(
-            "CONTRACT VALUE=%s",
-            contract_value
-        )
-
-        logging.warning(
-            "REASON=%s",
-            reason
-        )
-
-        logging.warning(
-            "=============================================="
-        )
-
-        market_order(
-            self.product_id,
-            side,
-            size,
-            client_id,
-        )
-
-        # Wait for Delta to report the position.
-        for _ in range(30):
-
-            time.sleep(
-                0.2
+            logging.warning(
+                "SIZE=%s",
+                size
             )
 
-            position = get_position(
-                self.product_id
+            logging.warning(
+                "EQUITY=%s",
+                equity
             )
 
-            if (
-                direction == "LONG"
-                and position["size"] > 0
-            ) or (
-                direction == "SHORT"
-                and position["size"] < 0
-            ):
+            logging.warning(
+                "MARGIN=%s",
+                margin
+            )
 
-                self.last_position_size = (
-                    position["size"]
+            logging.warning(
+                "NOTIONAL=%s",
+                notional
+            )
+
+            logging.warning(
+                "CONTRACT VALUE=%s",
+                contract_value
+            )
+
+            logging.warning(
+                "REASON=%s",
+                reason
+            )
+
+            logging.warning(
+                "=============================================="
+            )
+
+            market_order(
+                self.product_id,
+                side,
+                size,
+                client_id,
+            )
+
+            # ------------------------------------------------
+            # If this was the opening breakout, mark it
+            # immediately so the same breakout cannot submit
+            # another 10% order.
+            # ------------------------------------------------
+
+            if initial_breakout:
+
+                self.initial_entry_day = self.day
+
+            # ------------------------------------------------
+            # Wait for Delta to report the position.
+            # ------------------------------------------------
+
+            for _ in range(30):
+
+                time.sleep(
+                    0.2
                 )
 
-                self.current_sl = None
-                self.stop_order_id = None
-
-                self.place_or_replace_sl(
-                    position["size"],
-                    force=True
+                position = get_position(
+                    self.product_id
                 )
 
-                return
+                if (
+                    direction == "LONG"
+                    and position["size"] > 0
+                ) or (
+                    direction == "SHORT"
+                    and position["size"] < 0
+                ):
 
-        raise RuntimeError(
-            "Market entry was sent but "
-            "position fill was not confirmed."
-        )
+                    self.last_position_size = (
+                        position["size"]
+                    )
+
+                    self.current_sl = None
+                    self.stop_order_id = None
+
+                    self.place_or_replace_sl(
+                        position["size"],
+                        force=True
+                    )
+
+                    return True
+
+            raise RuntimeError(
+                "Market entry was sent but "
+                "position fill was not confirmed."
+            )
+
+        finally:
+
+            self.entry_in_progress = False
 
 
     # ========================================================
@@ -1498,20 +1560,16 @@ class Strategy:
             "size"
         ]
 
-        if size == 0:
+        cancel_all_strategy_stops(
+            self.product_id
+        )
 
-            cancel_all_strategy_stops(
-                self.product_id
-            )
+        if size == 0:
 
             self.current_sl = None
             self.stop_order_id = None
 
             return
-
-        cancel_all_strategy_stops(
-            self.product_id
-        )
 
         side = (
             "sell"
@@ -1548,6 +1606,7 @@ class Strategy:
 
         self.current_sl = None
         self.stop_order_id = None
+        self.last_position_size = 0
 
 
     # ========================================================
@@ -1560,7 +1619,6 @@ class Strategy:
         new_size
     ):
 
-        # Position did not transition from open -> flat.
         if (
             old_size == 0
             or new_size != 0
@@ -1579,9 +1637,6 @@ class Strategy:
 
             return
 
-        # If LONG was stopped -> SHORT.
-        #
-        # If SHORT was stopped -> LONG.
         direction = (
             "SHORT"
             if old_size > 0
@@ -1614,13 +1669,20 @@ class Strategy:
 
         try:
 
+            # Make absolutely sure no old SL remains
+            # before the reversal market order.
+            cancel_all_strategy_stops(
+                self.product_id
+            )
+
             self.current_sl = None
             self.stop_order_id = None
 
             self.enter(
                 direction,
                 self.last_price,
-                "SL reversal"
+                "SL reversal",
+                initial_breakout=False
             )
 
         finally:
@@ -1645,15 +1707,9 @@ class Strategy:
         ticker = get_ticker()
 
         raw_price = (
-            ticker.get(
-                "close"
-            )
-            or ticker.get(
-                "last_price"
-            )
-            or ticker.get(
-                "mark_price"
-            )
+            ticker.get("close")
+            or ticker.get("last_price")
+            or ticker.get("mark_price")
         )
 
         if raw_price is None:
@@ -1664,9 +1720,7 @@ class Strategy:
             )
 
         price = Decimal(
-            str(
-                raw_price
-            )
+            str(raw_price)
         )
 
         self.last_price = price
@@ -1691,8 +1745,6 @@ class Strategy:
             now
         ):
 
-            # Execute only during the first
-            # five minutes of the Saturday boundary.
             if now.minute < 5:
 
                 self.square_off()
@@ -1726,7 +1778,7 @@ class Strategy:
         )
 
         # ----------------------------------------------------
-        # EXISTING POSITION
+        # EXISTING POSITION DETECTED
         # ----------------------------------------------------
 
         if (
@@ -1753,7 +1805,6 @@ class Strategy:
                 new_size
             )
 
-            # Re-read after reversal.
             position = get_position(
                 self.product_id
             )
@@ -1799,96 +1850,55 @@ class Strategy:
 
             self.load_opening_candle()
 
+        # ----------------------------------------------------
+        # INITIAL ENTRY ALREADY TAKEN
+        # ----------------------------------------------------
+
+        if self.initial_entry_day == self.day:
+
+            return
+
         # ====================================================
         # OPENING RANGE BREAKOUT
         # ====================================================
         #
-        # IMPORTANT CHANGE:
+        # PRIMARY TRIGGER:
         #
-        # Instead of checking only the instantaneous ticker
-        # price, check the recent 1-minute candle HIGH/LOW.
+        # CURRENT LIVE PRICE
         #
-        # This prevents the bot from missing a breakout that
-        # happens between two 0.5-second polling cycles.
+        # This means if price breaks the 05:30-05:45
+        # opening candle HIGH immediately after 05:45,
+        # the bot can enter immediately.
         #
-        # Strategy remains exactly the same:
+        # We do NOT wait for a 1-minute candle to close.
         #
-        #   Opening HIGH broken -> LONG
-        #   Opening LOW broken  -> SHORT
         # ====================================================
 
-        recent_start = now - timedelta(
-            minutes=2
-        )
+        if (
+            price > self.opening_high
+        ):
 
-        recent_candles = get_candles(
-            "1m",
-            recent_start,
-            now
-        )
-
-        for candle in recent_candles:
-
-            candle_time = (
-                datetime.fromtimestamp(
-                    int(
-                        candle[
-                            "time"
-                        ]
-                    ),
-                    UTC
-                )
-                .astimezone(IST)
+            self.enter(
+                "LONG",
+                price,
+                "opening candle HIGH breakout",
+                initial_breakout=True
             )
 
-            # Ignore the opening candle itself.
-            if candle_time <= self.day:
+            return
 
-                continue
+        if (
+            price < self.opening_low
+        ):
 
-            candle_high = Decimal(
-                str(
-                    candle[
-                        "high"
-                    ]
-                )
+            self.enter(
+                "SHORT",
+                price,
+                "opening candle LOW breakout",
+                initial_breakout=True
             )
 
-            candle_low = Decimal(
-                str(
-                    candle[
-                        "low"
-                    ]
-                )
-            )
-
-            # ------------------------------------------------
-            # LONG BREAKOUT
-            # ------------------------------------------------
-
-            if candle_high > self.opening_high:
-
-                self.enter(
-                    "LONG",
-                    price,
-                    "opening candle HIGH breakout"
-                )
-
-                return
-
-            # ------------------------------------------------
-            # SHORT BREAKOUT
-            # ------------------------------------------------
-
-            if candle_low < self.opening_low:
-
-                self.enter(
-                    "SHORT",
-                    price,
-                    "opening candle LOW breakout"
-                )
-
-                return
+            return
 
 
     # ========================================================
@@ -1966,6 +1976,15 @@ class Strategy:
             position["size"]
         )
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Clean orphaned stop orders at startup.
+        #
+        # If there is an existing position, run_once() will
+        # immediately rebuild the correct single SL.
+        # ----------------------------------------------------
+
         if position["size"] != 0:
 
             logging.warning(
@@ -1993,6 +2012,13 @@ class Strategy:
                 "=============================================="
             )
 
+        else:
+
+            # No position = no reason to keep old stops.
+            cancel_all_strategy_stops(
+                self.product_id
+            )
+
         # ----------------------------------------------------
         # CONTINUOUS LIVE LOOP
         # ----------------------------------------------------
@@ -2018,9 +2044,6 @@ class Strategy:
                     exc
                 )
 
-                # Wait before retrying.
-                # Prevents API spam if Delta temporarily
-                # returns an error.
                 time.sleep(
                     3
                 )
