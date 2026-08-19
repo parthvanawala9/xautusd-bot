@@ -20,40 +20,50 @@ from dotenv import load_dotenv
 # TRADING DAY:
 #   05:30 IST -> next day 05:30 IST
 #
-# FIRST TRADE:
+# FIRST ENTRY:
+#
 #   After 05:45:
 #
-#   Price > 05:30-05:45 HIGH
+#   Price > 05:30 candle HIGH
 #       -> LONG
 #
-#   Price < 05:30-05:45 LOW
+#   Price < 05:30 candle LOW
 #       -> SHORT
 #
-#   First LONG SL  = 05:30 candle LOW
-#   First SHORT SL = 05:30 candle HIGH
+#
+# STOP LOSS:
+#
+#   IMPORTANT:
+#
+#   05:30 candle HIGH/LOW is ONLY the first ENTRY trigger.
+#
+#   IT IS NEVER USED AS STOP LOSS.
+#
+#   ALL LONG POSITIONS:
+#       SL = CURRENT TODAY LOW
+#
+#   ALL SHORT POSITIONS:
+#       SL = CURRENT TODAY HIGH
 #
 #
-# AFTER FIRST TRADE:
+# AFTER ANY POSITION:
 #
 #   NEW TODAY HIGH -> LONG
 #   NEW TODAY LOW  -> SHORT
 #
-#   LONG SL  = TODAY LOW
-#   SHORT SL = TODAY HIGH
-#
 #
 # MANUAL CLOSE:
 #
-#   If user manually closes the position:
+#   If user manually closes a position:
 #
-#       position = FLAT
+#       Bot remains active.
 #
-#   Bot DOES NOT wait for tomorrow.
+#       It does NOT wait for tomorrow.
 #
-#   It continues watching today's:
+#       It waits for:
 #
-#       NEW HIGH -> LONG
-#       NEW LOW  -> SHORT
+#           NEW TODAY HIGH -> LONG
+#           NEW TODAY LOW  -> SHORT
 #
 #
 # STOP LOSS:
@@ -69,15 +79,6 @@ from dotenv import load_dotenv
 #
 #   10% account balance as margin
 #   50x leverage
-#
-#
-# IMPORTANT:
-#
-#   Today's HIGH/LOW is reconstructed from historical
-#   15-minute candles when the bot starts.
-#
-#   Therefore restarting the bot does not make it forget
-#   today's trading range.
 #
 # ============================================================
 
@@ -175,7 +176,7 @@ session.headers.update(
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": (
-            "XAUTUSD-OpeningRange-Live-Bot/5.0"
+            "XAUTUSD-OpeningRange-Live-Bot/6.0"
         ),
     }
 )
@@ -186,10 +187,15 @@ session.headers.update(
 # ============================================================
 
 def now_ist():
-    return datetime.now(IST)
+
+    return datetime.now(
+        IST
+    )
 
 
-def trading_day_start(dt=None):
+def trading_day_start(
+    dt=None
+):
 
     dt = dt or now_ist()
 
@@ -209,14 +215,18 @@ def trading_day_start(dt=None):
     return boundary
 
 
-def opening_end(day):
+def opening_end(
+    day
+):
 
     return day + timedelta(
         minutes=15
     )
 
 
-def weekend_block(dt=None):
+def weekend_block(
+    dt=None
+):
 
     dt = dt or now_ist()
 
@@ -252,7 +262,9 @@ def weekend_block(dt=None):
     return False
 
 
-def force_squareoff(dt=None):
+def force_squareoff(
+    dt=None
+):
 
     dt = dt or now_ist()
 
@@ -431,9 +443,15 @@ def ticker_price():
     ticker = get_ticker()
 
     raw_price = (
-        ticker.get("close")
-        or ticker.get("last_price")
-        or ticker.get("mark_price")
+        ticker.get(
+            "close"
+        )
+        or ticker.get(
+            "last_price"
+        )
+        or ticker.get(
+            "mark_price"
+        )
     )
 
     if raw_price is None:
@@ -443,7 +461,9 @@ def ticker_price():
         )
 
     return Decimal(
-        str(raw_price)
+        str(
+            raw_price
+        )
     )
 
 
@@ -451,7 +471,9 @@ def ticker_price():
 # POSITION
 # ============================================================
 
-def get_position(product_id):
+def get_position(
+    product_id
+):
 
     result = api(
         "GET",
@@ -532,7 +554,9 @@ def get_balance():
             ):
 
                 return Decimal(
-                    str(value)
+                    str(
+                        value
+                    )
                 )
 
     meta = data.get(
@@ -554,7 +578,8 @@ def get_balance():
         )
 
     raise RuntimeError(
-        "Could not find USD/USDT balance."
+        "Could not find "
+        "USD/USDT balance."
     )
 
 
@@ -613,7 +638,9 @@ def market_order(
         ),
         "side": side,
         "order_type": "market_order",
-        "client_order_id": client_id[:32],
+        "client_order_id": (
+            client_id[:32]
+        ),
     }
 
     logging.warning(
@@ -651,13 +678,19 @@ def stop_order(
         ),
         "side": side,
         "order_type": "market_order",
-        "stop_order_type": "stop_loss_order",
+        "stop_order_type": (
+            "stop_loss_order"
+        ),
         "stop_price": str(
             price
         ),
-        "stop_trigger_method": "last_traded_price",
+        "stop_trigger_method": (
+            "last_traded_price"
+        ),
         "reduce_only": True,
-        "client_order_id": client_id[:32],
+        "client_order_id": (
+            client_id[:32]
+        ),
     }
 
     logging.warning(
@@ -677,7 +710,9 @@ def stop_order(
 # CANCEL ORDER
 # ============================================================
 
-def cancel_order(order_id):
+def cancel_order(
+    order_id
+):
 
     if not order_id:
 
@@ -693,10 +728,10 @@ def cancel_order(order_id):
 
     except RuntimeError as exc:
 
-        # 404 means the order is already gone.
-        # This commonly happens when a stop was already
-        # triggered/cancelled by the exchange.
-        if "HTTP 404" in str(exc):
+        # 404 = order is already gone.
+        if "HTTP 404" in str(
+            exc
+        ):
 
             logging.info(
                 "Stop order %s already gone.",
@@ -712,7 +747,9 @@ def cancel_order(order_id):
 # OPEN STOP ORDERS
 # ============================================================
 
-def open_stops(product_id):
+def open_stops(
+    product_id
+):
 
     data = api(
         "GET",
@@ -748,7 +785,9 @@ def open_stops(product_id):
 # CANCEL ALL STOPS
 # ============================================================
 
-def cancel_all_stops(product_id):
+def cancel_all_stops(
+    product_id
+):
 
     orders = open_stops(
         product_id
@@ -759,14 +798,18 @@ def cancel_all_stops(product_id):
         try:
 
             cancel_order(
-                order.get("id")
+                order.get(
+                    "id"
+                )
             )
 
         except Exception as exc:
 
             logging.error(
                 "Could not cancel stop %s: %s",
-                order.get("id"),
+                order.get(
+                    "id"
+                ),
                 exc
             )
 
@@ -775,11 +818,14 @@ def cancel_all_stops(product_id):
 # LEVERAGE
 # ============================================================
 
-def set_leverage(product_id):
+def set_leverage(
+    product_id
+):
 
     api(
         "POST",
-        f"/v2/products/{product_id}/orders/leverage",
+        f"/v2/products/"
+        f"{product_id}/orders/leverage",
         body={
             "leverage": str(
                 LEVERAGE
@@ -817,7 +863,9 @@ def dfield(
         try:
 
             return Decimal(
-                str(value)
+                str(
+                    value
+                )
             )
 
         except Exception:
@@ -838,11 +886,13 @@ def contract_size(
 
     balance = get_balance()
 
+    # 10% balance as margin.
     margin = (
         balance
         * BALANCE_FRACTION
     )
 
+    # 50x leverage.
     notional = (
         margin
         * LEVERAGE
@@ -952,7 +1002,9 @@ def load_state():
         return {}
 
 
-def save_state(state):
+def save_state(
+    state
+):
 
     temp_file = (
         STATE_FILE
@@ -977,14 +1029,18 @@ def save_state(state):
     )
 
 
-def to_decimal(value):
+def to_decimal(
+    value
+):
 
     if value is None:
 
         return None
 
     return Decimal(
-        str(value)
+        str(
+            value
+        )
     )
 
 
@@ -1007,33 +1063,45 @@ class Strategy:
 
         self.day = None
 
-        # Opening 05:30 candle.
+        # ----------------------------------------------------
+        # 05:30 CANDLE
+        #
+        # ONLY ENTRY TRIGGER.
+        # NEVER USED AS SL.
+        # ----------------------------------------------------
+
         self.opening_high = None
         self.opening_low = None
         self.opening_ready = False
 
-        # TODAY'S running extremes.
+        # ----------------------------------------------------
+        # TODAY RUNNING EXTREMES
+        # ----------------------------------------------------
+
         self.day_high = None
         self.day_low = None
 
-        # First trade of current trading day.
+        # ----------------------------------------------------
+        # FIRST TRADE
+        # ----------------------------------------------------
+
         self.first_trade_taken = False
         self.first_position = False
 
-        # Manual exit state.
+        # ----------------------------------------------------
+        # MANUAL CLOSE
         #
-        # True means:
-        #   We are flat because user manually closed.
-        #
-        # IMPORTANT:
-        #   This does NOT disable trading.
-        #
-        #   We wait for a NEW TODAY HIGH/LOW.
+        # This does NOT stop trading.
+        # It simply records that we are flat after manual exit.
+        # ----------------------------------------------------
+
         self.manual_flat = False
 
         self.last_position = 0
 
+        # Current protective SL.
         self.current_sl = None
+
         self.stop_id = None
 
         self.entry_lock = False
@@ -1044,10 +1112,12 @@ class Strategy:
 
 
     # ========================================================
-    # RESTORE
+    # RESTORE STATE
     # ========================================================
 
-    def restore_state(self):
+    def restore_state(
+        self
+    ):
 
         saved_day = self.state.get(
             "day"
@@ -1057,8 +1127,10 @@ class Strategy:
 
             try:
 
-                self.day = datetime.fromisoformat(
-                    saved_day
+                self.day = (
+                    datetime.fromisoformat(
+                        saved_day
+                    )
                 )
 
             except ValueError:
@@ -1119,10 +1191,12 @@ class Strategy:
 
 
     # ========================================================
-    # SAVE
+    # SAVE STATE
     # ========================================================
 
-    def persist(self):
+    def persist(
+        self
+    ):
 
         save_state(
             {
@@ -1172,7 +1246,7 @@ class Strategy:
 
 
     # ========================================================
-    # NEW DAY
+    # NEW TRADING DAY
     # ========================================================
 
     def new_day(
@@ -1230,10 +1304,12 @@ class Strategy:
 
 
     # ========================================================
-    # OPENING CANDLE
+    # LOAD 05:30-05:45 CANDLE
     # ========================================================
 
-    def load_opening(self):
+    def load_opening(
+        self
+    ):
 
         if self.opening_ready:
 
@@ -1282,7 +1358,8 @@ class Strategy:
         if target is None:
 
             raise RuntimeError(
-                "05:30-05:45 candle was not found."
+                "05:30-05:45 candle "
+                "was not found."
             )
 
         self.opening_high = Decimal(
@@ -1310,10 +1387,12 @@ class Strategy:
 
 
     # ========================================================
-    # REBUILD TODAY'S HIGH / LOW
+    # REBUILD TODAY HIGH/LOW
     # ========================================================
 
-    def rebuild_today_extremes(self):
+    def rebuild_today_extremes(
+        self
+    ):
 
         if self.day is None:
 
@@ -1331,12 +1410,8 @@ class Strategy:
 
             return
 
-        # We fetch today's 15m candles.
-        #
-        # We use COMPLETED candles only here.
-        #
-        # The current running candle is handled using
-        # the live ticker below.
+        # Current running 15m candle is excluded.
+        # Its live price is handled separately.
         current_candle_start = (
             now.replace(
                 minute=(
@@ -1371,7 +1446,6 @@ class Strategy:
                 )
             )
 
-            # Ignore anything before opening candle.
             if candle_time < self.day:
 
                 continue
@@ -1410,9 +1484,9 @@ class Strategy:
 
 
     # ========================================================
-    # UPDATE TODAY'S RANGE
+    # UPDATE TODAY RANGE
     #
-    # Returns the OLD range before updating.
+    # Returns previous high/low BEFORE changing them.
     # ========================================================
 
     def update_today_range(
@@ -1463,7 +1537,9 @@ class Strategy:
     # ========================================================
 
     @staticmethod
-    def stop_side(size):
+    def stop_side(
+        size
+    ):
 
         if size > 0:
 
@@ -1481,7 +1557,9 @@ class Strategy:
     # ========================================================
 
     @staticmethod
-    def stop_price(order):
+    def stop_price(
+        order
+    ):
 
         for key in (
             "stop_price",
@@ -1501,7 +1579,9 @@ class Strategy:
                 try:
 
                     return Decimal(
-                        str(value)
+                        str(
+                            value
+                        )
                     )
 
                 except Exception:
@@ -1512,7 +1592,17 @@ class Strategy:
 
 
     # ========================================================
-    # DESIRED SL
+    # DESIRED STOP LOSS
+    #
+    # THIS IS THE IMPORTANT FIX.
+    #
+    # 05:30 candle is NEVER used here.
+    #
+    # LONG:
+    #   SL = TODAY LOW
+    #
+    # SHORT:
+    #   SL = TODAY HIGH
     # ========================================================
 
     def desired_sl(
@@ -1520,24 +1610,6 @@ class Strategy:
         size
     ):
 
-        # FIRST POSITION
-        if self.first_position:
-
-            if (
-                size > 0
-                and self.opening_low is not None
-            ):
-
-                return self.opening_low
-
-            if (
-                size < 0
-                and self.opening_high is not None
-            ):
-
-                return self.opening_high
-
-        # ALL LATER POSITIONS
         if size > 0:
 
             return self.day_low
@@ -1550,7 +1622,7 @@ class Strategy:
 
 
     # ========================================================
-    # SYNC ONE SL
+    # SYNC EXACTLY ONE SL
     # ========================================================
 
     def sync_sl(
@@ -1566,9 +1638,19 @@ class Strategy:
 
         if desired is None:
 
+            logging.warning(
+                "SL NOT READY | "
+                "POSITION=%s | "
+                "TODAY HIGH=%s | "
+                "TODAY LOW=%s",
+                size,
+                self.day_high,
+                self.day_low
+            )
+
             return
 
-        # LONG SL must be below market.
+        # LONG SL must be BELOW current price.
         if (
             size > 0
             and desired >= price
@@ -1576,14 +1658,15 @@ class Strategy:
 
             logging.warning(
                 "LONG SL INVALID | "
-                "SL=%s | PRICE=%s",
+                "TODAY LOW=%s | "
+                "PRICE=%s",
                 desired,
                 price
             )
 
             return
 
-        # SHORT SL must be above market.
+        # SHORT SL must be ABOVE current price.
         if (
             size < 0
             and desired <= price
@@ -1591,7 +1674,8 @@ class Strategy:
 
             logging.warning(
                 "SHORT SL INVALID | "
-                "SL=%s | PRICE=%s",
+                "TODAY HIGH=%s | "
+                "PRICE=%s",
                 desired,
                 price
             )
@@ -1658,7 +1742,7 @@ class Strategy:
                             exc
                         )
 
-        # Keep exactly one correct stop.
+        # Keep exactly one matching stop.
         if len(valid) > 1:
 
             for extra in valid[1:]:
@@ -1666,7 +1750,9 @@ class Strategy:
                 try:
 
                     cancel_order(
-                        extra.get("id")
+                        extra.get(
+                            "id"
+                        )
                     )
 
                 except Exception:
@@ -1682,19 +1768,23 @@ class Strategy:
             and self.current_sl == desired
         ):
 
-            self.stop_id = valid[0].get(
-                "id"
+            self.stop_id = (
+                valid[0].get(
+                    "id"
+                )
             )
 
             return
 
-        # Replace old valid stop.
+        # Remove existing matching stop if replacing.
         for order in valid:
 
             try:
 
                 cancel_order(
-                    order.get("id")
+                    order.get(
+                        "id"
+                    )
                 )
 
             except Exception:
@@ -1748,19 +1838,44 @@ class Strategy:
             )
 
         logging.warning(
-            "ONE SL ACTIVE | "
-            "POSITION=%s | "
-            "SIDE=%s | "
-            "TRIGGER=%s | "
-            "ID=%s",
+            "=============================================="
+        )
+
+        logging.warning(
+            "ONE SL ACTIVE"
+        )
+
+        logging.warning(
+            "POSITION=%s",
             (
                 "LONG"
                 if size > 0
                 else "SHORT"
-            ),
-            expected_side,
-            desired,
-            self.stop_id,
+            )
+        )
+
+        logging.warning(
+            "TODAY HIGH=%s",
+            self.day_high
+        )
+
+        logging.warning(
+            "TODAY LOW=%s",
+            self.day_low
+        )
+
+        logging.warning(
+            "SL=%s",
+            desired
+        )
+
+        logging.warning(
+            "ID=%s",
+            self.stop_id
+        )
+
+        logging.warning(
+            "=============================================="
         )
 
 
@@ -1795,6 +1910,19 @@ class Strategy:
             )
 
             return False
+
+        # ----------------------------------------------------
+        # VERY IMPORTANT:
+        #
+        # Before entering, today's range must exist.
+        # ----------------------------------------------------
+
+        if (
+            self.day_high is None
+            or self.day_low is None
+        ):
+
+            self.rebuild_today_extremes()
 
         size, balance, margin, notional = (
             contract_size(
@@ -1831,6 +1959,15 @@ class Strategy:
         logging.warning(
             "TODAY LOW=%s",
             self.day_low
+        )
+
+        logging.warning(
+            "SL WILL BE=%s",
+            (
+                self.day_low
+                if direction == "LONG"
+                else self.day_high
+            )
         )
 
         logging.warning(
@@ -1879,6 +2016,7 @@ class Strategy:
                 ),
             )
 
+            # Wait for actual fill.
             for _ in range(30):
 
                 time.sleep(
@@ -1920,9 +2058,11 @@ class Strategy:
                     self.current_sl = None
                     self.stop_id = None
 
-                    # Use the actual current ticker after fill.
-                    actual_price = ticker_price()
+                    actual_price = (
+                        ticker_price()
+                    )
 
+                    # ALL positions use today's high/low.
                     self.sync_sl(
                         position["size"],
                         actual_price,
@@ -1932,7 +2072,8 @@ class Strategy:
                     return True
 
             raise RuntimeError(
-                "Entry sent but fill was not confirmed."
+                "Entry sent but "
+                "fill was not confirmed."
             )
 
         finally:
@@ -1941,7 +2082,7 @@ class Strategy:
 
 
     # ========================================================
-    # DETECT CLOSE
+    # DETECT FLAT EVENT
     # ========================================================
 
     def detect_flat_event(
@@ -1954,7 +2095,8 @@ class Strategy:
 
             return "none"
 
-        # If tracked SL was crossed, this is an SL event.
+        # If price crossed the tracked SL,
+        # classify it as SL.
         if self.current_sl is not None:
 
             if (
@@ -1971,7 +2113,7 @@ class Strategy:
 
                 return "sl"
 
-        # Otherwise it was manually closed.
+        # Otherwise user manually closed it.
         return "manual"
 
 
@@ -2025,11 +2167,11 @@ class Strategy:
             )
 
             logging.warning(
-                "BOT WILL CONTINUE TRADING TODAY"
+                "BOT REMAINS ACTIVE"
             )
 
             logging.warning(
-                "WAITING FOR NEXT NEW TODAY HIGH/LOW"
+                "WAITING FOR NEW TODAY HIGH/LOW"
             )
 
             logging.warning(
@@ -2042,16 +2184,6 @@ class Strategy:
                 "=============================================="
             )
 
-            # IMPORTANT:
-            #
-            # This DOES NOT stop the strategy.
-            #
-            # It simply records that the current position
-            # was manually closed.
-            #
-            # post_first_breakout() will continue watching
-            # for a NEW high or NEW low.
-
             self.manual_flat = True
 
             self.first_position = False
@@ -2062,7 +2194,7 @@ class Strategy:
 
 
         # ----------------------------------------------------
-        # SL HIT
+        # STOP LOSS
         # ----------------------------------------------------
 
         logging.warning(
@@ -2107,7 +2239,9 @@ class Strategy:
 
 
     # ========================================================
-    # FIRST TRADE
+    # FIRST ENTRY
+    #
+    # 05:30 CANDLE IS USED ONLY HERE.
     # ========================================================
 
     def first_breakout(
@@ -2130,60 +2264,109 @@ class Strategy:
 
             return
 
-        # LONG.
+        # ----------------------------------------------------
+        # FIRST LONG
+        # ----------------------------------------------------
+
         if price > self.opening_high:
 
             logging.warning(
-                "FIRST TRADE BREAKOUT | "
-                "PRICE=%s > OPENING HIGH=%s",
-                price,
+                "=============================================="
+            )
+
+            logging.warning(
+                "FIRST LONG BREAKOUT"
+            )
+
+            logging.warning(
+                "PRICE=%s",
+                price
+            )
+
+            logging.warning(
+                "05:30 HIGH=%s",
                 self.opening_high
+            )
+
+            logging.warning(
+                "TODAY LOW=%s",
+                self.day_low
+            )
+
+            logging.warning(
+                "SL WILL BE TODAY LOW=%s",
+                self.day_low
+            )
+
+            logging.warning(
+                "=============================================="
             )
 
             self.enter(
                 "LONG",
                 price,
-                "FIRST TRADE: 05:30-05:45 HIGH BREAKOUT",
+                "FIRST TRADE: 05:30 HIGH BREAKOUT",
                 first=True
             )
 
             return
 
-        # SHORT.
+        # ----------------------------------------------------
+        # FIRST SHORT
+        # ----------------------------------------------------
+
         if price < self.opening_low:
 
             logging.warning(
-                "FIRST TRADE BREAKOUT | "
-                "PRICE=%s < OPENING LOW=%s",
-                price,
+                "=============================================="
+            )
+
+            logging.warning(
+                "FIRST SHORT BREAKOUT"
+            )
+
+            logging.warning(
+                "PRICE=%s",
+                price
+            )
+
+            logging.warning(
+                "05:30 LOW=%s",
                 self.opening_low
+            )
+
+            logging.warning(
+                "TODAY HIGH=%s",
+                self.day_high
+            )
+
+            logging.warning(
+                "SL WILL BE TODAY HIGH=%s",
+                self.day_high
+            )
+
+            logging.warning(
+                "=============================================="
             )
 
             self.enter(
                 "SHORT",
                 price,
-                "FIRST TRADE: 05:30-05:45 LOW BREAKOUT",
+                "FIRST TRADE: 05:30 LOW BREAKOUT",
                 first=True
             )
 
 
     # ========================================================
-    # AFTER FIRST TRADE
+    # POST-FIRST BREAKOUT
     #
-    # IMPORTANT:
+    # Works after:
+    #   - normal exit
+    #   - manual exit
+    #   - restart
     #
-    # We compare CURRENT PRICE with the PREVIOUS TODAY
+    # Current price is compared against TODAY'S PREVIOUS
     # EXTREME before updating the extreme.
-    #
-    # Therefore:
-    #
-    # previous high = 4446.55
-    # current price = 4446.60
-    #
-    # => NEW TODAY HIGH
-    # => LONG
-    #
-    # This works even after a manual close.
     # ========================================================
 
     def post_first_breakout(
@@ -2225,12 +2408,17 @@ class Strategy:
             )
 
             logging.warning(
-                "MANUAL FLAT=%s",
-                self.manual_flat
+                "TODAY LOW=%s",
+                self.day_low
             )
 
             logging.warning(
                 "ENTERING LONG"
+            )
+
+            logging.warning(
+                "LONG SL WILL BE TODAY LOW=%s",
+                self.day_low
             )
 
             logging.warning(
@@ -2241,21 +2429,14 @@ class Strategy:
 
             self.persist()
 
-            entered = self.enter(
+            self.enter(
                 "LONG",
                 price,
                 "NEW TODAY HIGH BREAKOUT",
                 first=False
             )
 
-            if entered:
-
-                self.day_high = price
-
-                self.persist()
-
             return
-
 
         # ----------------------------------------------------
         # NEW TODAY LOW
@@ -2285,12 +2466,17 @@ class Strategy:
             )
 
             logging.warning(
-                "MANUAL FLAT=%s",
-                self.manual_flat
+                "TODAY HIGH=%s",
+                self.day_high
             )
 
             logging.warning(
                 "ENTERING SHORT"
+            )
+
+            logging.warning(
+                "SHORT SL WILL BE TODAY HIGH=%s",
+                self.day_high
             )
 
             logging.warning(
@@ -2301,22 +2487,16 @@ class Strategy:
 
             self.persist()
 
-            entered = self.enter(
+            self.enter(
                 "SHORT",
                 price,
                 "NEW TODAY LOW BREAKOUT",
                 first=False
             )
 
-            if entered:
-
-                self.day_low = price
-
-                self.persist()
-
 
     # ========================================================
-    # STATUS LOG
+    # STATUS
     # ========================================================
 
     def status_log(
@@ -2324,8 +2504,6 @@ class Strategy:
         price,
         position_size
     ):
-
-        position_name = "FLAT"
 
         if position_size > 0:
 
@@ -2335,18 +2513,24 @@ class Strategy:
 
             position_name = "SHORT"
 
+        else:
+
+            position_name = "FLAT"
+
         logging.info(
             "STATUS | "
             "PRICE=%s | "
             "TODAY_HIGH=%s | "
             "TODAY_LOW=%s | "
             "POSITION=%s | "
+            "SL=%s | "
             "FIRST_TRADE=%s | "
             "MANUAL_FLAT=%s",
             price,
             self.day_high,
             self.day_low,
             position_name,
+            self.current_sl,
             self.first_trade_taken,
             self.manual_flat
         )
@@ -2356,7 +2540,9 @@ class Strategy:
     # ONE LOOP
     # ========================================================
 
-    def run_once(self):
+    def run_once(
+        self
+    ):
 
         now = now_ist()
 
@@ -2388,7 +2574,7 @@ class Strategy:
             self.load_opening()
 
         # ----------------------------------------------------
-        # REBUILD TODAY RANGE IF NEEDED
+        # TODAY RANGE
         # ----------------------------------------------------
 
         if (
@@ -2414,12 +2600,14 @@ class Strategy:
                 self.product_id
             )
 
-            size = position["size"]
+            size = position[
+                "size"
+            ]
 
             if size != 0:
 
                 logging.warning(
-                    "FRIDAY/SATURDAY SQUARE OFF | SIZE=%s",
+                    "SATURDAY SQUARE OFF | SIZE=%s",
                     size
                 )
 
@@ -2464,7 +2652,9 @@ class Strategy:
             self.product_id
         )
 
-        new_size = position["size"]
+        new_size = position[
+            "size"
+        ]
 
         old_size = self.last_position
 
@@ -2482,10 +2672,10 @@ class Strategy:
                 new_size
             )
 
-            # An externally opened position is considered
-            # post-first-trade.
             self.first_trade_taken = True
+
             self.first_position = False
+
             self.manual_flat = False
 
             self.last_position = new_size
@@ -2584,7 +2774,7 @@ class Strategy:
             )
 
         # ----------------------------------------------------
-        # BEFORE OPENING RANGE COMPLETE
+        # BEFORE OPENING RANGE
         # ----------------------------------------------------
 
         if now < opening_end(
@@ -2612,15 +2802,16 @@ class Strategy:
         # ----------------------------------------------------
         # IMPORTANT:
         #
-        # We must check breakout BEFORE updating today's
-        # extreme.
+        # SAVE TODAY'S OLD HIGH/LOW FIRST.
+        #
+        # Then check whether current price broke them.
         # ----------------------------------------------------
 
         previous_high = self.day_high
         previous_low = self.day_low
 
         # ----------------------------------------------------
-        # AFTER FIRST TRADE
+        # NEW TODAY HIGH / LOW
         # ----------------------------------------------------
 
         self.post_first_breakout(
@@ -2630,9 +2821,8 @@ class Strategy:
         )
 
         # ----------------------------------------------------
-        # UPDATE TODAY RANGE
-        #
-        # Only update after breakout decision.
+        # ONLY AFTER BREAKOUT CHECK:
+        # update today's extremes.
         # ----------------------------------------------------
 
         if (
@@ -2663,7 +2853,9 @@ class Strategy:
     # RUN
     # ========================================================
 
-    def run(self):
+    def run(
+        self
+    ):
 
         logging.warning(
             "=============================================="
@@ -2682,11 +2874,47 @@ class Strategy:
         )
 
         logging.warning(
-            "TODAY HIGH/LOW BREAKOUT MODE"
+            "=============================================="
         )
 
         logging.warning(
-            "MANUAL EXIT -> CONTINUE TODAY"
+            "ENTRY:"
+        )
+
+        logging.warning(
+            "05:30 HIGH/LOW = FIRST ENTRY TRIGGER"
+        )
+
+        logging.warning(
+            "=============================================="
+        )
+
+        logging.warning(
+            "STOP LOSS:"
+        )
+
+        logging.warning(
+            "LONG  = TODAY LOW"
+        )
+
+        logging.warning(
+            "SHORT = TODAY HIGH"
+        )
+
+        logging.warning(
+            "=============================================="
+        )
+
+        logging.warning(
+            "MANUAL EXIT:"
+        )
+
+        logging.warning(
+            "CONTINUE TODAY"
+        )
+
+        logging.warning(
+            "NEW TODAY HIGH/LOW = NEXT ENTRY"
         )
 
         logging.warning(
@@ -2706,10 +2934,6 @@ class Strategy:
         self.new_day(
             now
         )
-
-        # ----------------------------------------------------
-        # REBUILD TODAY RANGE
-        # ----------------------------------------------------
 
         if now >= opening_end(
             self.day
@@ -2734,14 +2958,17 @@ class Strategy:
         if position["size"] != 0:
 
             logging.warning(
-                "STARTED WITH OPEN POSITION | SIZE=%s",
+                "STARTED WITH OPEN POSITION | "
+                "SIZE=%s",
                 position["size"]
             )
 
-            # Existing position means the first trade
-            # already happened.
+            # Existing position means first trade already
+            # happened.
             self.first_trade_taken = True
+
             self.first_position = False
+
             self.manual_flat = False
 
             self.persist()
@@ -2803,7 +3030,7 @@ class Strategy:
                 )
 
         # ----------------------------------------------------
-        # LOOP
+        # MAIN LOOP
         # ----------------------------------------------------
 
         while True:
