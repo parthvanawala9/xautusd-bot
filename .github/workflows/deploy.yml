@@ -25,11 +25,30 @@ jobs:
         run: |
           set -e
 
-          test -n "$ORACLE_PRIVATE_KEY" || { echo "ERROR: ORACLE_PRIVATE_KEY missing"; exit 1; }
-          test -n "$ORACLE_HOST" || { echo "ERROR: ORACLE_HOST missing"; exit 1; }
-          test -n "$ORACLE_USER" || { echo "ERROR: ORACLE_USER missing"; exit 1; }
-          test -n "$DELTA_API_KEY" || { echo "ERROR: DELTA_API_KEY missing"; exit 1; }
-          test -n "$DELTA_API_SECRET" || { echo "ERROR: DELTA_API_SECRET missing"; exit 1; }
+          if [ -z "$ORACLE_PRIVATE_KEY" ]; then
+            echo "ERROR: ORACLE_PRIVATE_KEY is missing."
+            exit 1
+          fi
+
+          if [ -z "$ORACLE_HOST" ]; then
+            echo "ERROR: ORACLE_HOST is missing."
+            exit 1
+          fi
+
+          if [ -z "$ORACLE_USER" ]; then
+            echo "ERROR: ORACLE_USER is missing."
+            exit 1
+          fi
+
+          if [ -z "$DELTA_API_KEY" ]; then
+            echo "ERROR: DELTA_API_KEY is missing."
+            exit 1
+          fi
+
+          if [ -z "$DELTA_API_SECRET" ]; then
+            echo "ERROR: DELTA_API_SECRET is missing."
+            exit 1
+          fi
 
           echo "All required secrets are present."
 
@@ -40,7 +59,9 @@ jobs:
           set -e
 
           mkdir -p ~/.ssh
+
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+
           chmod 600 ~/.ssh/oracle.key
 
           echo "SSH key prepared."
@@ -52,20 +73,48 @@ jobs:
         run: |
           set -e
 
-          echo "Testing SSH connection to Oracle..."
+          echo "=================================="
+          echo "TESTING SSH CONNECTION"
+          echo "=================================="
 
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=60 \
-            -o ConnectionAttempts=3 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            -o PreferredAuthentications=publickey \
-            -o PasswordAuthentication=no \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "echo SSH connection successful"
+          for i in 1 2 3 4 5; do
+
+            echo "SSH attempt $i of 5..."
+
+            if ssh \
+              -i ~/.ssh/oracle.key \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=30 \
+              -o ConnectionAttempts=1 \
+              -o ServerAliveInterval=10 \
+              -o ServerAliveCountMax=3 \
+              -o PreferredAuthentications=publickey \
+              -o PasswordAuthentication=no \
+              "$ORACLE_USER@$ORACLE_HOST" \
+              "echo SSH connection successful"; then
+
+              echo "=================================="
+              echo "SSH CONNECTION SUCCESSFUL"
+              echo "=================================="
+
+              exit 0
+            fi
+
+            echo "SSH attempt $i failed."
+
+            if [ "$i" -lt 5 ]; then
+              echo "Waiting 10 seconds before retry..."
+              sleep 10
+            fi
+
+          done
+
+          echo "=================================="
+          echo "ERROR: SSH CONNECTION FAILED"
+          echo "=================================="
+
+          exit 1
 
       - name: Create bot directory
         env:
@@ -84,6 +133,8 @@ jobs:
             -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "mkdir -p /home/opc/xautusd-bot"
+
+          echo "Bot directory ready."
 
       - name: Copy bot files to Oracle
         env:
@@ -108,6 +159,8 @@ jobs:
               -o ServerAliveCountMax=4" \
             ./ \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/"
+
+          echo "Bot files copied successfully."
 
       - name: Create Delta .env on Oracle
         env:
@@ -169,9 +222,13 @@ jobs:
               echo "Pip is already installed."
           else
               echo "Pip is missing."
+
               python3 -m ensurepip --upgrade || true
 
               if ! python3 -m pip --version >/dev/null 2>&1; then
+
+                  echo "Downloading official pip installer..."
+
                   curl -fsSL \
                     --connect-timeout 15 \
                     --max-time 60 \
@@ -181,8 +238,13 @@ jobs:
                   python3 /tmp/get-pip.py --user
 
                   rm -f /tmp/get-pip.py
+
               fi
           fi
+
+          echo "=================================="
+          echo "PIP VERSION"
+          echo "=================================="
 
           python3 -m pip --version
 
@@ -197,10 +259,14 @@ jobs:
 
           if grep -q '^DELTA_API_KEY=' .env && \
              grep -q '^DELTA_API_SECRET=' .env; then
+
               echo "Delta API credentials are present."
+
           else
+
               echo "ERROR: Delta API credentials are missing."
               exit 1
+
           fi
 
           echo "=================================="
@@ -223,14 +289,18 @@ jobs:
           echo "Python syntax check PASSED."
 
           echo "=================================="
-          echo "INSTALLING DEPENDENCIES"
+          echo "INSTALLING BOT DEPENDENCIES"
           echo "=================================="
 
           if [ -f requirements.txt ]; then
+
               python3 -m pip install --user -r requirements.txt
+
           else
+
               echo "ERROR: requirements.txt not found."
               exit 1
+
           fi
 
           echo "=================================="
@@ -240,6 +310,12 @@ jobs:
           pkill -f "/home/opc/xautusd-bot/bot.py" || true
 
           sleep 3
+
+          echo "=================================="
+          echo "CLEARING OLD BOT LOG"
+          echo "=================================="
+
+          : > /home/opc/xautusd-bot/bot.log
 
           echo "=================================="
           echo "STARTING XAUTUSD BOT"
@@ -252,7 +328,10 @@ jobs:
 
           echo "Bot PID: $BOT_PID"
 
-          echo "Waiting for bot startup..."
+          echo "=================================="
+          echo "WAITING FOR BOT STARTUP"
+          echo "=================================="
+
           sleep 10
 
           echo "=================================="
@@ -260,35 +339,49 @@ jobs:
           echo "=================================="
 
           if ps -p "$BOT_PID" >/dev/null 2>&1; then
+
               echo "BOT PROCESS IS RUNNING."
+
           else
+
               echo "BOT PROCESS STOPPED."
 
               echo "========== BOT LOG =========="
+
               cat /home/opc/xautusd-bot/bot.log || true
+
               echo "============================="
 
               exit 1
+
           fi
 
           echo "=================================="
-          echo "BOT LOG"
+          echo "BOT LOG - LAST 100 LINES"
           echo "=================================="
 
           tail -n 100 /home/opc/xautusd-bot/bot.log || true
 
           echo "=================================="
-          echo "FINAL BOT CHECK"
+          echo "FINAL BOT PROCESS CHECK"
           echo "=================================="
 
           if pgrep -f "/home/opc/xautusd-bot/bot.py" >/dev/null; then
+
+              echo "=================================="
               echo "BOT IS RUNNING SUCCESSFULLY."
+              echo "=================================="
+
           else
+
+              echo "=================================="
               echo "BOT FAILED TO START."
+              echo "=================================="
 
               cat /home/opc/xautusd-bot/bot.log || true
 
               exit 1
+
           fi
 
           EOF
