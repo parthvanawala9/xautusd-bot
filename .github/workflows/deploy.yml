@@ -1,401 +1,44 @@
-name: Deploy XAUTUSD Bot
+name: Test Oracle Connection
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 jobs:
-  deploy:
+  test:
     runs-on: ubuntu-latest
 
     steps:
-
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # ============================================================
-      # CHECK SECRETS
-      # ============================================================
-
-      - name: Check required secrets
-        env:
-          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
-          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
-        run: |
-          set -e
-
-          if [ -z "$ORACLE_PRIVATE_KEY" ]; then
-            echo "ERROR: ORACLE_PRIVATE_KEY is missing."
-            exit 1
-          fi
-
-          if [ -z "$ORACLE_HOST" ]; then
-            echo "ERROR: ORACLE_HOST is missing."
-            exit 1
-          fi
-
-          if [ -z "$ORACLE_USER" ]; then
-            echo "ERROR: ORACLE_USER is missing."
-            exit 1
-          fi
-
-          if [ -z "$DELTA_API_KEY" ]; then
-            echo "ERROR: DELTA_API_KEY is missing."
-            exit 1
-          fi
-
-          if [ -z "$DELTA_API_SECRET" ]; then
-            echo "ERROR: DELTA_API_SECRET is missing."
-            exit 1
-          fi
-
-          echo "All required secrets are present."
-
-      # ============================================================
-      # PREPARE SSH
-      # ============================================================
-
-      - name: Prepare SSH
-        env:
-          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
-        run: |
-          set -e
-
-          mkdir -p ~/.ssh
-
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
-
-          chmod 600 ~/.ssh/oracle.key
-
-          echo "SSH key prepared."
-
-      # ============================================================
-      # TEST SSH
-      # ============================================================
-
-      - name: Test SSH connection
+      - name: Test Oracle Network
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
           set -e
 
           echo "=================================="
-          echo "TESTING SSH CONNECTION"
+          echo "ORACLE HOST CHECK"
           echo "=================================="
 
-          SUCCESS=0
+          echo "Testing host: $ORACLE_HOST"
 
-          for ATTEMPT in 1 2 3 4 5
-          do
-            echo ""
-            echo "SSH attempt $ATTEMPT of 5..."
+          echo ""
+          echo "DNS / HOST:"
+          getent hosts "$ORACLE_HOST" || true
 
-            if ssh \
-              -i ~/.ssh/oracle.key \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=60 \
-              -o ConnectionAttempts=3 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=4 \
-              -o PreferredAuthentications=publickey \
-              -o PasswordAuthentication=no \
-              "$ORACLE_USER@$ORACLE_HOST" \
-              "echo SSH connection successful"
-            then
-              SUCCESS=1
-              echo ""
-              echo "SSH CONNECTION SUCCESSFUL."
-              break
-            fi
+          echo ""
+          echo "PING:"
+          ping -c 3 "$ORACLE_HOST" || true
 
-            echo "SSH attempt $ATTEMPT failed."
+          echo ""
+          echo "PORT 22:"
+          timeout 15 bash -c "</dev/tcp/$ORACLE_HOST/22" \
+            && echo "PORT 22 IS OPEN" \
+            || echo "PORT 22 IS NOT REACHABLE"
 
-            if [ "$ATTEMPT" -lt 5 ]; then
-              echo "Waiting 15 seconds before retry..."
-              sleep 15
-            fi
-          done
+          echo ""
+          echo "NETCAT:"
+          nc -vz -w 15 "$ORACLE_HOST" 22 || true
 
-          if [ "$SUCCESS" -ne 1 ]; then
-            echo ""
-            echo "=================================="
-            echo "SSH CONNECTION FAILED"
-            echo "=================================="
-            echo "GitHub could not establish SSH with Oracle after 5 attempts."
-            exit 1
-          fi
-
-      # ============================================================
-      # CREATE BOT DIRECTORY
-      # ============================================================
-
-      - name: Create bot directory
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          set -e
-
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=60 \
-            -o ConnectionAttempts=3 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "mkdir -p /home/opc/xautusd-bot"
-
-      # ============================================================
-      # COPY BOT FILES
-      # ============================================================
-
-      - name: Copy bot files to Oracle
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          set -e
-
+          echo ""
           echo "=================================="
-          echo "COPYING BOT FILES"
-          echo "=================================="
-
-          rsync -avz \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='.env' \
-            --exclude='bot.log' \
-            --exclude='xautusd_state.json' \
-            -e "ssh \
-              -i ~/.ssh/oracle.key \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=60 \
-              -o ConnectionAttempts=3 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=4" \
-            ./ \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/"
-
-      # ============================================================
-      # CREATE DELTA ENV
-      # ============================================================
-
-      - name: Create Delta .env on Oracle
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
-          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
-        run: |
-          set -e
-
-          printf 'DELTA_API_KEY=%s\nDELTA_API_SECRET=%s\n' \
-            "$DELTA_API_KEY" \
-            "$DELTA_API_SECRET" \
-          | ssh \
-              -i ~/.ssh/oracle.key \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=60 \
-              -o ConnectionAttempts=3 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=4 \
-              "$ORACLE_USER@$ORACLE_HOST" \
-              "cat > /home/opc/xautusd-bot/.env && chmod 600 /home/opc/xautusd-bot/.env"
-
-          echo "Delta .env created successfully."
-
-      # ============================================================
-      # INSTALL + START BOT
-      # ============================================================
-
-      - name: Install dependencies and start bot
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          set -e
-
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=60 \
-            -o ConnectionAttempts=3 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=4 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
-          set -e
-
-          cd /home/opc/xautusd-bot
-
-          echo "=================================="
-          echo "CHECKING PYTHON"
-          echo "=================================="
-
-          python3 --version
-
-          echo "=================================="
-          echo "CHECKING PIP"
-          echo "=================================="
-
-          if python3 -m pip --version >/dev/null 2>&1; then
-              echo "Pip is already installed."
-          else
-              echo "Pip is missing."
-              echo "Trying ensurepip..."
-
-              python3 -m ensurepip --upgrade || true
-
-              if ! python3 -m pip --version >/dev/null 2>&1; then
-                  echo "ensurepip unavailable."
-                  echo "Downloading official pip installer..."
-
-                  curl -fsSL \
-                    --connect-timeout 15 \
-                    --max-time 60 \
-                    https://bootstrap.pypa.io/get-pip.py \
-                    -o /tmp/get-pip.py
-
-                  python3 /tmp/get-pip.py --user
-
-                  rm -f /tmp/get-pip.py
-              fi
-          fi
-
-          python3 -m pip --version
-
-          echo "=================================="
-          echo "CHECKING DELTA ENV"
-          echo "=================================="
-
-          if [ ! -f .env ]; then
-              echo "ERROR: .env file was not created."
-              exit 1
-          fi
-
-          if grep -q '^DELTA_API_KEY=' .env && \
-             grep -q '^DELTA_API_SECRET=' .env; then
-              echo "Delta API credentials are present."
-          else
-              echo "ERROR: Delta API credentials are missing."
-              exit 1
-          fi
-
-          echo "=================================="
-          echo "CHECKING BOT FILE"
-          echo "=================================="
-
-          if [ ! -f bot.py ]; then
-              echo "ERROR: bot.py not found."
-              exit 1
-          fi
-
-          echo "bot.py found."
-
-          echo "=================================="
-          echo "CHECKING PYTHON SYNTAX"
-          echo "=================================="
-
-          python3 -m py_compile bot.py
-
-          echo "Python syntax check PASSED."
-
-          echo "=================================="
-          echo "INSTALLING DEPENDENCIES"
-          echo "=================================="
-
-          if [ -f requirements.txt ]; then
-              python3 -m pip install --user -r requirements.txt
-          else
-              echo "ERROR: requirements.txt not found."
-              exit 1
-          fi
-
-          echo "=================================="
-          echo "STOPPING OLD BOT"
-          echo "=================================="
-
-          pkill -f "/home/opc/xautusd-bot/bot.py" || true
-
-          sleep 3
-
-          echo "=================================="
-          echo "STARTING XAUTUSD BOT"
-          echo "=================================="
-
-          nohup python3 /home/opc/xautusd-bot/bot.py \
-            > /home/opc/xautusd-bot/bot.log 2>&1 &
-
-          BOT_PID=$!
-
-          echo "Bot PID: $BOT_PID"
-
-          echo "=================================="
-          echo "WAITING FOR BOT"
-          echo "=================================="
-
-          sleep 10
-
-          echo "=================================="
-          echo "CHECKING BOT PROCESS"
-          echo "=================================="
-
-          if ps -p "$BOT_PID" >/dev/null 2>&1; then
-              echo "BOT PROCESS IS RUNNING."
-          else
-              echo "BOT PROCESS STOPPED."
-
-              echo "========== BOT LOG =========="
-              cat /home/opc/xautusd-bot/bot.log || true
-              echo "============================="
-
-              exit 1
-          fi
-
-          echo "=================================="
-          echo "BOT LOG"
-          echo "=================================="
-
-          tail -n 100 /home/opc/xautusd-bot/bot.log || true
-
-          echo "=================================="
-          echo "FINAL BOT CHECK"
-          echo "=================================="
-
-          if pgrep -f "/home/opc/xautusd-bot/bot.py" >/dev/null; then
-              echo "=================================="
-              echo "BOT IS RUNNING SUCCESSFULLY."
-              echo "=================================="
-          else
-              echo "=================================="
-              echo "BOT FAILED TO START."
-              echo "=================================="
-
-              cat /home/opc/xautusd-bot/bot.log || true
-
-              exit 1
-          fi
-
-          EOF
-
-      # ============================================================
-      # COMPLETE
-      # ============================================================
-
-      - name: Deployment complete
-        run: |
-          echo "=================================="
-          echo "XAUTUSD BOT DEPLOYMENT COMPLETE"
+          echo "TEST COMPLETE"
           echo "=================================="
