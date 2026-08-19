@@ -2272,11 +2272,28 @@ class Strategy:
             self.load_opening()
 
         # ----------------------------------------------------
-        # IMPORTANT:
+        # IMPORTANT BREAKOUT ORDER
+        # ----------------------------------------------------
         #
-        # If the bot restarted during the trading day and
-        # day extremes are missing, reconstruct them BEFORE
-        # using the current price.
+        # We MUST check today's previous high/low BEFORE
+        # adding the current live price to day_high/day_low.
+        #
+        # Example:
+        #
+        # Previous today's high = 4365
+        # Current live price     = 4427
+        #
+        # The bot must see:
+        #
+        #     4427 > 4365
+        #
+        # and enter LONG.
+        #
+        # If we update day_high first, day_high becomes 4427
+        # and the breakout disappears.
+        #
+        # This is the exact bug we are fixing.
+        #
         # ----------------------------------------------------
 
         if (
@@ -2288,16 +2305,8 @@ class Strategy:
                 now
             )
 
-        # ----------------------------------------------------
-        # LIVE EXTREMES
-        # ----------------------------------------------------
-
-        (
-            previous_high,
-            previous_low
-        ) = self.update_extremes(
-            price
-        )
+        previous_high = self.day_high
+        previous_low = self.day_low
 
         # ----------------------------------------------------
         # SATURDAY SQUARE OFF
@@ -2429,6 +2438,13 @@ class Strategy:
 
         if new_size != 0:
 
+            # For an OPEN position, the current price must first
+            # become part of today's actual range so the dynamic
+            # day HIGH/LOW stop can trail correctly.
+            self.update_extremes(
+                price
+            )
+
             self.last_position = (
                 new_size
             )
@@ -2470,6 +2486,12 @@ class Strategy:
             self.day
         ):
 
+            # Before the first trade window is complete,
+            # simply build today's running range.
+            self.update_extremes(
+                price
+            )
+
             return
 
         if not self.opening_ready:
@@ -2486,16 +2508,74 @@ class Strategy:
                 price
             )
 
+            # If first_breakout() entered a position, do NOT
+            # update the range here. enter() rebuilds the range
+            # and installs the correct SL.
+            current_after_entry = get_position(
+                self.product_id
+            )
+
+            if current_after_entry["size"] != 0:
+
+                return
+
+            # No entry happened. Now this live price becomes
+            # part of today's running high/low.
+            self.update_extremes(
+                price
+            )
+
             return
 
         # ----------------------------------------------------
         # AFTER FIRST TRADE
         # ----------------------------------------------------
+        #
+        # THIS IS THE CRITICAL FIX:
+        #
+        # Compare current price with the PREVIOUS today's
+        # running high/low first.
+        #
+        # Only AFTER the comparison do we update day_high/
+        # day_low.
+        #
+        # Therefore:
+        #
+        #   previous day high = 4365
+        #   current price     = 4427
+        #
+        # becomes a valid NEW DAY HIGH BREAKOUT.
+        #
+        # ----------------------------------------------------
+
+        logging.warning(
+            "DAY BREAKOUT CHECK | "
+            "PRICE=%s | TODAY_PREVIOUS_HIGH=%s | "
+            "TODAY_PREVIOUS_LOW=%s",
+            price,
+            previous_high,
+            previous_low,
+        )
 
         self.post_first_breakout(
             price,
             previous_high,
             previous_low
+        )
+
+        # If a breakout entered a position, enter() has already
+        # rebuilt today's range and installed the SL.
+        current_after_entry = get_position(
+            self.product_id
+        )
+
+        if current_after_entry["size"] != 0:
+
+            return
+
+        # No breakout. Now update today's running range.
+        self.update_extremes(
+            price
         )
 
 
