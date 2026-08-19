@@ -17,38 +17,36 @@ from dotenv import load_dotenv
 # XAUTUSD LIVE BOT
 # ============================================================
 #
-# Trading day:
+# TRADING DAY:
 #   05:30 IST -> next day 05:30 IST
 #
 # FIRST TRADE:
-#   05:30-05:45 candle HIGH -> LONG
-#   05:30-05:45 candle LOW  -> SHORT
-#
-#   First LONG SL  = 05:30 candle LOW
-#   First SHORT SL = 05:30 candle HIGH
+#   After 05:45:
+#       05:30 candle HIGH breakout -> LONG
+#       05:30 candle LOW  breakout -> SHORT
 #
 # AFTER FIRST TRADE:
-#   05:30 candle is no longer a special trigger.
+#       NEW DAY HIGH -> LONG
+#       NEW DAY LOW  -> SHORT
 #
-#   NEW DAY HIGH  -> LONG
-#   NEW DAY LOW   -> SHORT
+# STOP LOSS:
+#       LONG  -> CURRENT DAY LOW
+#       SHORT -> CURRENT DAY HIGH
 #
-#   LONG SL  = current running DAY LOW
-#   SHORT SL = current running DAY HIGH
+# IMPORTANT:
+#   The 05:30 candle is ONLY used as the first breakout
+#   reference. It is NOT permanently used as the SL.
 #
 # MANUAL CLOSE:
 #   No immediate re-entry.
 #   Bot waits for a NEW day-high/day-low breakout.
 #
-# STOP LOSS:
-#   SL hit -> reverse direction.
+# SL HIT:
+#   Reverse direction immediately.
 #
 # POSITION SIZE:
-#   10% of account balance as margin.
+#   10% account balance as margin.
 #   50x leverage.
-#
-# STOP ORDERS:
-#   Exactly ONE protective stop.
 #
 # ============================================================
 
@@ -103,9 +101,6 @@ POLL_SECONDS = float(
     )
 )
 
-# Persistent strategy state.
-# This prevents a restart from making the bot forget
-# that the first trade already happened.
 STATE_FILE = os.getenv(
     "STATE_FILE",
     "xautusd_state.json"
@@ -149,7 +144,7 @@ session.headers.update(
         "Accept": "application/json",
         "Content-Type": "application/json",
         "User-Agent": (
-            "XAUTUSD-OpeningRange-Live-Bot/4.0"
+            "XAUTUSD-DayBreakout-Live-Bot/5.0"
         ),
     }
 )
@@ -163,9 +158,7 @@ def now_ist():
     return datetime.now(IST)
 
 
-def trading_day_start(
-    dt=None
-):
+def trading_day_start(dt=None):
 
     dt = dt or now_ist()
 
@@ -177,30 +170,23 @@ def trading_day_start(
     )
 
     if dt < boundary:
-
-        boundary -= timedelta(
-            days=1
-        )
+        boundary -= timedelta(days=1)
 
     return boundary
 
 
-def opening_end(
-    day
-):
+def opening_end(day):
 
     return day + timedelta(
         minutes=15
     )
 
 
-def weekend_block(
-    dt=None
-):
+def weekend_block(dt=None):
 
     dt = dt or now_ist()
 
-    # Saturday after 05:00
+    # Saturday from 05:00 IST
     if (
         dt.weekday() == 5
         and dt.time()
@@ -209,12 +195,10 @@ def weekend_block(
             "%H:%M"
         ).time()
     ):
-
         return True
 
     # Sunday
     if dt.weekday() == 6:
-
         return True
 
     # Monday before 05:45
@@ -226,15 +210,12 @@ def weekend_block(
             "%H:%M"
         ).time()
     ):
-
         return True
 
     return False
 
 
-def force_squareoff(
-    dt=None
-):
+def force_squareoff(dt=None):
 
     dt = dt or now_ist()
 
@@ -408,6 +389,27 @@ def get_ticker():
     )["result"]
 
 
+def ticker_price():
+
+    ticker = get_ticker()
+
+    raw_price = (
+        ticker.get("close")
+        or ticker.get("last_price")
+        or ticker.get("mark_price")
+    )
+
+    if raw_price is None:
+
+        raise RuntimeError(
+            "Ticker returned no price."
+        )
+
+    return Decimal(
+        str(raw_price)
+    )
+
+
 # ============================================================
 # POSITION
 # ============================================================
@@ -477,7 +479,6 @@ def get_balance():
             "USDT",
             "USD"
         ):
-
             continue
 
         for key in (
@@ -517,8 +518,7 @@ def get_balance():
         )
 
     raise RuntimeError(
-        "Could not find "
-        "USD/USDT balance."
+        "Could not find USD/USDT balance."
     )
 
 
@@ -654,7 +654,6 @@ def cancel_order(
 ):
 
     if not order_id:
-
         return
 
     api(
@@ -775,7 +774,6 @@ def dfield(
         )
 
         if value is None:
-
             continue
 
         try:
@@ -785,7 +783,6 @@ def dfield(
             )
 
         except Exception:
-
             pass
 
     return default
@@ -950,7 +947,6 @@ def to_decimal(
 ):
 
     if value is None:
-
         return None
 
     return Decimal(
@@ -977,30 +973,31 @@ class Strategy:
 
         self.day = None
 
-        # 05:30 candle.
+        # 05:30-05:45 candle
         self.opening_high = None
         self.opening_low = None
         self.opening_ready = False
 
-        # Running day extremes.
+        # ACTUAL running day extremes
         self.day_high = None
         self.day_low = None
 
-        # IMPORTANT:
-        # Once true, 05:30 candle is never treated as
-        # the first-trade trigger again during this day.
+        # First trade of current trading day
         self.first_trade_taken = False
 
-        # True only for the first position of the day.
+        # Only identifies whether the current position
+        # was the special first position.
         self.first_position = False
 
-        # Manual close does NOT permanently lock the bot.
-        # It only means we wait for a NEW breakout.
+        # Manual close protection
         self.manual_flat = False
 
+        # Last exchange position seen by bot
         self.last_position = 0
 
+        # Current protective SL
         self.current_sl = None
+
         self.stop_id = None
 
         self.entry_lock = False
@@ -1158,7 +1155,6 @@ class Strategy:
         )
 
         if self.day == day:
-
             return
 
         logging.warning(
@@ -1193,6 +1189,14 @@ class Strategy:
 
         self.persist()
 
+        # Rebuild the entire trading day's extremes
+        # if enough market data already exists.
+        if now > day:
+
+            self.rebuild_day_extremes(
+                now
+            )
+
         if now >= opening_end(
             day
         ):
@@ -1201,7 +1205,7 @@ class Strategy:
 
 
     # ========================================================
-    # LOAD 05:30-05:45 CANDLE
+    # LOAD OPENING CANDLE
     # ========================================================
 
     def load_opening(
@@ -1209,11 +1213,9 @@ class Strategy:
     ):
 
         if self.opening_ready:
-
             return
 
         if self.day is None:
-
             return
 
         end = (
@@ -1284,26 +1286,146 @@ class Strategy:
 
 
     # ========================================================
-    # UPDATE DAY EXTREMES
+    # REBUILD ACTUAL DAY HIGH / LOW
+    # ========================================================
+    #
+    # THIS IS THE IMPORTANT FIX.
+    #
+    # When bot restarts, we do NOT set day_high/day_low
+    # from the current ticker.
+    #
+    # We rebuild today's actual high and low from 1-minute
+    # candles and then include the current price.
+    #
+    # This prevents:
+    #
+    #   SL = current price
+    #
+    # and prevents the bot from forgetting today's
+    # previous high/low after restart.
+    #
+    # ========================================================
+
+    def rebuild_day_extremes(
+        self,
+        now
+    ):
+
+        if self.day is None:
+            return
+
+        if now <= self.day:
+            return
+
+        try:
+
+            rows = candles(
+                "1m",
+                self.day,
+                now
+            )
+
+        except Exception as exc:
+
+            logging.error(
+                "Could not rebuild day extremes: %s",
+                exc
+            )
+
+            return
+
+        high = None
+        low = None
+
+        for row in rows:
+
+            try:
+
+                candle_high = Decimal(
+                    str(
+                        row["high"]
+                    )
+                )
+
+                candle_low = Decimal(
+                    str(
+                        row["low"]
+                    )
+                )
+
+            except (
+                KeyError,
+                ValueError,
+                TypeError
+            ):
+
+                continue
+
+            if (
+                high is None
+                or candle_high > high
+            ):
+
+                high = candle_high
+
+            if (
+                low is None
+                or candle_low < low
+            ):
+
+                low = candle_low
+
+        # Always include current live price.
+        try:
+
+            live_price = ticker_price()
+
+            if (
+                high is None
+                or live_price > high
+            ):
+
+                high = live_price
+
+            if (
+                low is None
+                or live_price < low
+            ):
+
+                low = live_price
+
+        except Exception as exc:
+
+            logging.error(
+                "Could not get live price "
+                "while rebuilding extremes: %s",
+                exc
+            )
+
+        if high is not None:
+            self.day_high = high
+
+        if low is not None:
+            self.day_low = low
+
+        self.persist()
+
+        logging.warning(
+            "DAY EXTREMES REBUILT | "
+            "HIGH=%s | LOW=%s",
+            self.day_high,
+            self.day_low,
+        )
+
+
+    # ========================================================
+    # UPDATE LIVE DAY EXTREMES
     # ========================================================
 
     def update_extremes(
         self,
         price
     ):
-
-        # IMPORTANT:
-        # Return previous values BEFORE updating them.
-        #
-        # Example:
-        #
-        # Previous day high = 4362
-        # Current price     = 4365
-        #
-        # This is a NEW HIGH breakout.
-        #
-        # If we update day_high first and then compare,
-        # we lose the breakout signal.
 
         previous_high = self.day_high
         previous_low = self.day_low
@@ -1322,7 +1444,12 @@ class Strategy:
 
             self.day_low = price
 
-        self.persist()
+        if (
+            previous_high != self.day_high
+            or previous_low != self.day_low
+        ):
+
+            self.persist()
 
         return (
             previous_high,
@@ -1340,18 +1467,16 @@ class Strategy:
     ):
 
         if size > 0:
-
             return "sell"
 
         if size < 0:
-
             return "buy"
 
         return None
 
 
     # ========================================================
-    # READ STOP PRICE
+    # STOP PRICE
     # ========================================================
 
     @staticmethod
@@ -1390,39 +1515,20 @@ class Strategy:
     # ========================================================
     # DESIRED SL
     # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # The 05:30 candle is NOT the permanent SL.
+    #
+    # LONG  -> current DAY LOW
+    # SHORT -> current DAY HIGH
+    #
+    # ========================================================
 
     def desired_sl(
         self,
         size
     ):
-
-        # FIRST POSITION ONLY
-        #
-        # LONG  -> 05:30 candle LOW
-        # SHORT -> 05:30 candle HIGH
-
-        if self.first_position:
-
-            if (
-                size > 0
-                and self.opening_low
-                is not None
-            ):
-
-                return self.opening_low
-
-            if (
-                size < 0
-                and self.opening_high
-                is not None
-            ):
-
-                return self.opening_high
-
-        # ALL LATER POSITIONS
-        #
-        # LONG  -> current day LOW
-        # SHORT -> current day HIGH
 
         if size > 0:
 
@@ -1452,9 +1558,14 @@ class Strategy:
 
         if desired is None:
 
+            logging.warning(
+                "SL WAITING | "
+                "DAY HIGH/LOW NOT READY"
+            )
+
             return
 
-        # Long SL must be below price.
+        # LONG SL must be BELOW current price.
         if (
             size > 0
             and desired >= price
@@ -1469,7 +1580,7 @@ class Strategy:
 
             return
 
-        # Short SL must be above price.
+        # SHORT SL must be ABOVE current price.
         if (
             size < 0
             and desired <= price
@@ -1527,23 +1638,24 @@ class Strategy:
 
             else:
 
-                try:
+                if order_id:
 
-                    cancel_order(
-                        order_id
-                    )
+                    try:
 
-                except Exception as exc:
+                        cancel_order(
+                            order_id
+                        )
 
-                    logging.error(
-                        "Could not cancel "
-                        "extra stop %s: %s",
-                        order_id,
-                        exc
-                    )
+                    except Exception as exc:
 
-        # If more than one correct SL exists,
-        # keep exactly one.
+                        logging.error(
+                            "Could not cancel "
+                            "extra stop %s: %s",
+                            order_id,
+                            exc
+                        )
+
+        # Keep exactly one correct stop.
         if len(valid) > 1:
 
             for extra in valid[1:]:
@@ -1569,13 +1681,15 @@ class Strategy:
             and self.current_sl == desired
         ):
 
-            self.stop_id = valid[0].get(
-                "id"
+            self.stop_id = (
+                valid[0].get(
+                    "id"
+                )
             )
 
             return
 
-        # Remove current valid SL if we are replacing it.
+        # Cancel existing correct SL if replacing.
         for order in valid:
 
             try:
@@ -1666,15 +1780,12 @@ class Strategy:
     ):
 
         if self.entry_lock:
-
             return False
 
         if self.manual_flat:
-
             return False
 
         if weekend_block():
-
             return False
 
         current = get_position(
@@ -1805,9 +1916,18 @@ class Strategy:
                     self.current_sl = None
                     self.stop_id = None
 
+                    # Rebuild day extremes once more
+                    # immediately after entry so the SL
+                    # uses the true current day low/high.
+                    self.rebuild_day_extremes(
+                        now_ist()
+                    )
+
+                    live_price = ticker_price()
+
                     self.sync_sl(
                         position["size"],
-                        price,
+                        live_price,
                         force=True
                     )
 
@@ -1834,18 +1954,10 @@ class Strategy:
     ):
 
         if old_size == 0:
-
             return "none"
 
-        # We determine an SL event from the price crossing
-        # our tracked SL.
-        #
-        # This is intentionally NOT based on whether an open
-        # order happens to remain on the exchange.
-        #
-        # Therefore manually cancelling the position does not
-        # automatically become a reversal.
-
+        # SL event is identified from price crossing
+        # the bot's tracked SL.
         if self.current_sl is not None:
 
             if (
@@ -1915,21 +2027,18 @@ class Strategy:
             )
 
             logging.warning(
-                "WAITING FOR A NEW DAY HIGH/LOW BREAKOUT"
+                "WAITING FOR NEW DAY HIGH/LOW BREAKOUT"
             )
 
             logging.warning(
                 "=============================================="
             )
 
-            # This does NOT disable the strategy.
-            # It only prevents an entry on the current price.
             self.manual_flat = True
 
             self.persist()
 
             return
-
 
         # ----------------------------------------------------
         # SL HIT
@@ -1944,7 +2053,7 @@ class Strategy:
         )
 
         logging.warning(
-            "REVERSAL WILL USE THE BROKEN DAY EXTREME"
+            "REVERSING DIRECTION"
         )
 
         logging.warning(
@@ -1952,20 +2061,11 @@ class Strategy:
         )
 
         self.manual_flat = False
-
-        # The opening candle is no longer special.
         self.first_position = False
 
         self.persist()
 
         if old_size > 0:
-
-            # LONG stopped at day LOW.
-            #
-            # Now SHORT.
-            #
-            # The current price is the actual break
-            # of the day low.
 
             self.enter(
                 "SHORT",
@@ -1975,10 +2075,6 @@ class Strategy:
             )
 
         else:
-
-            # SHORT stopped at day HIGH.
-            #
-            # Now LONG.
 
             self.enter(
                 "LONG",
@@ -1998,25 +2094,21 @@ class Strategy:
     ):
 
         if self.first_trade_taken:
-
             return
 
         if self.manual_flat:
-
             return
 
         if not self.opening_ready:
-
             return
 
         if (
             self.opening_high is None
             or self.opening_low is None
         ):
-
             return
 
-        # FIRST TRADE LONG.
+        # FIRST LONG
         if price > self.opening_high:
 
             self.enter(
@@ -2028,7 +2120,7 @@ class Strategy:
 
             return
 
-        # FIRST TRADE SHORT.
+        # FIRST SHORT
         if price < self.opening_low:
 
             self.enter(
@@ -2051,18 +2143,7 @@ class Strategy:
     ):
 
         if not self.first_trade_taken:
-
             return
-
-        if self.manual_flat:
-
-            # We still allow a future NEW breakout.
-            #
-            # Current price itself is not enough.
-            # previous_high / previous_low must exist and
-            # current price must break beyond them.
-
-            pass
 
         # ----------------------------------------------------
         # NEW DAY HIGH
@@ -2118,7 +2199,7 @@ class Strategy:
         now = now_ist()
 
         # ----------------------------------------------------
-        # DAY
+        # TRADING DAY
         # ----------------------------------------------------
 
         self.new_day(
@@ -2129,31 +2210,7 @@ class Strategy:
         # PRICE
         # ----------------------------------------------------
 
-        ticker = get_ticker()
-
-        raw_price = (
-            ticker.get(
-                "close"
-            )
-            or ticker.get(
-                "last_price"
-            )
-            or ticker.get(
-                "mark_price"
-            )
-        )
-
-        if raw_price is None:
-
-            raise RuntimeError(
-                "Ticker returned no price."
-            )
-
-        price = Decimal(
-            str(
-                raw_price
-            )
-        )
+        price = ticker_price()
 
         # ----------------------------------------------------
         # OPENING CANDLE
@@ -2169,7 +2226,24 @@ class Strategy:
             self.load_opening()
 
         # ----------------------------------------------------
-        # EXTREMES
+        # IMPORTANT:
+        #
+        # If the bot restarted during the trading day and
+        # day extremes are missing, reconstruct them BEFORE
+        # using the current price.
+        # ----------------------------------------------------
+
+        if (
+            self.day_high is None
+            or self.day_low is None
+        ):
+
+            self.rebuild_day_extremes(
+                now
+            )
+
+        # ----------------------------------------------------
+        # LIVE EXTREMES
         # ----------------------------------------------------
 
         (
@@ -2261,20 +2335,10 @@ class Strategy:
                 new_size
             )
 
-            # Never treat an already-open position as
-            # another first trade.
-
+            # Existing/manual position is NOT considered
+            # a new first trade.
             self.first_trade_taken = True
-
-            # If persistent state already knows that a
-            # first trade happened, preserve it.
-            #
-            # Otherwise an externally/manual position is
-            # considered a post-first-trade position so
-            # the 05:30 candle cannot become an entry trigger.
-
             self.first_position = False
-
             self.manual_flat = False
 
             self.last_position = (
@@ -2282,6 +2346,12 @@ class Strategy:
             )
 
             self.persist()
+
+            # Make absolutely sure today's actual
+            # high/low are available before SL creation.
+            self.rebuild_day_extremes(
+                now
+            )
 
             self.sync_sl(
                 new_size,
@@ -2346,7 +2416,10 @@ class Strategy:
             self.current_sl = None
             self.stop_id = None
 
-        # Wait for opening candle.
+        # ----------------------------------------------------
+        # WAIT UNTIL 05:45
+        # ----------------------------------------------------
+
         if now < opening_end(
             self.day
         ):
@@ -2405,6 +2478,10 @@ class Strategy:
         )
 
         logging.warning(
+            "DAY HIGH/LOW SL MODE"
+        )
+
+        logging.warning(
             "=============================================="
         )
 
@@ -2432,37 +2509,68 @@ class Strategy:
                 position["size"]
             )
 
-            # Existing position means the first trade has
-            # already happened. Never allow the opening
-            # candle to become a fresh first trade.
-
+            # Existing position means we are NOT looking
+            # for the special first 05:30 trade.
             self.first_trade_taken = True
-
             self.first_position = False
-
             self.manual_flat = False
 
             self.persist()
 
+            # FIX:
+            # Rebuild actual day's high/low BEFORE creating SL.
+            current_day = trading_day_start(
+                now_ist()
+            )
+
+            if self.day != current_day:
+
+                self.day = current_day
+
+                self.opening_high = None
+                self.opening_low = None
+                self.opening_ready = False
+
+                self.day_high = None
+                self.day_low = None
+
+                self.persist()
+
+            self.rebuild_day_extremes(
+                now_ist()
+            )
+
+            if now_ist() >= opening_end(
+                self.day
+            ):
+
+                try:
+
+                    self.load_opening()
+
+                except Exception as exc:
+
+                    logging.error(
+                        "Opening candle load failed: %s",
+                        exc
+                    )
+
             try:
+
+                current_price = (
+                    ticker_price()
+                )
+
+                logging.warning(
+                    "STARTUP DAY RANGE | "
+                    "HIGH=%s | LOW=%s",
+                    self.day_high,
+                    self.day_low
+                )
 
                 self.sync_sl(
                     position["size"],
-                    Decimal(
-                        str(
-                            (
-                                get_ticker().get(
-                                    "close"
-                                )
-                                or get_ticker().get(
-                                    "last_price"
-                                )
-                                or get_ticker().get(
-                                    "mark_price"
-                                )
-                            )
-                        )
-                    ),
+                    current_price,
                     force=True
                 )
 
@@ -2475,8 +2583,6 @@ class Strategy:
 
         else:
 
-            # Flat at startup:
-            # remove orphan stops.
             try:
 
                 cancel_all_stops(
@@ -2491,7 +2597,7 @@ class Strategy:
                 )
 
         # ----------------------------------------------------
-        # LOOP
+        # MAIN LOOP
         # ----------------------------------------------------
 
         while True:
