@@ -1809,9 +1809,9 @@ class Strategy:
         if self.entry_lock:
             return False
 
-        if self.manual_flat:
-            return False
-
+        # A manual close does NOT disable the strategy.
+        # The bot remains eligible for the next NEW
+        # TODAY HIGH / TODAY LOW breakout.
         if weekend_block():
             return False
 
@@ -2064,6 +2064,11 @@ class Strategy:
                 "=============================================="
             )
 
+            # IMPORTANT:
+            # Manual exit only makes the bot FLAT.
+            # It does NOT disable trading for the day.
+            # The next NEW TODAY HIGH / TODAY LOW breakout
+            # is allowed to trigger a new trade.
             self.manual_flat = True
 
             self.persist()
@@ -2192,9 +2197,12 @@ class Strategy:
         )
 
         # ----------------------------------------------------
-        # NEW DAY HIGH
+        # NEW TODAY HIGH
         # ----------------------------------------------------
-
+        #
+        # This is valid even after a MANUAL CLOSE.
+        # Manual close never disables the strategy.
+        #
         if (
             previous_high is not None
             and price > previous_high
