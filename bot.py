@@ -14,100 +14,113 @@ from dotenv import load_dotenv
 
 
 # ============================================================
-# XAUTUSD FIXED SL BREAKOUT BOT
+# XAUTUSD FIXED-SL BREAKOUT BOT
 # ============================================================
 #
 # TRADING DAY
-#   05:30 IST -> next day 05:30 IST
+# ------------------------------------------------------------
+# 05:30 IST -> next day 05:30 IST
 #
 # TRADING START
-#   05:45 IST
+# ------------------------------------------------------------
+# 05:45 IST
+#
+# DAY RANGE
+# ------------------------------------------------------------
+# From 05:30 onward:
+#
+#   DAY HIGH = highest price of current trading day
+#   DAY LOW  = lowest price of current trading day
+#
+# At 05:45 trading begins.
 #
 # ENTRY
-#   After 05:45:
+# ------------------------------------------------------------
+# If flat:
 #
-#   NEW DAY HIGH -> LONG
-#   NEW DAY LOW  -> SHORT
-#
-# STOP LOSS
-#
-#   LONG:
-#       SL = DAY LOW AT THE MOMENT OF ENTRY
-#
-#   SHORT:
-#       SL = DAY HIGH AT THE MOMENT OF ENTRY
+#   price > DAY HIGH -> LONG
+#   price < DAY LOW  -> SHORT
 #
 # IMPORTANT:
-#   SL DOES NOT TRAIL.
+# Breakout is checked BEFORE updating the day range.
 #
-#   Once LONG is entered with SL=4437:
-#       SL remains 4437.
+# FIXED STOP
+# ------------------------------------------------------------
+# LONG:
+#   SL = DAY LOW at entry
 #
-#   If that SL is hit:
-#       LONG closes
-#       SHORT opens
-#       SHORT SL = CURRENT DAY HIGH
+# SHORT:
+#   SL = DAY HIGH at entry
 #
-#   If SHORT SL is hit:
-#       SHORT closes
-#       LONG opens
-#       LONG SL = CURRENT DAY LOW
+# Once entered:
 #
+#   SL NEVER MOVES.
 #
-# STOP MANAGEMENT
+# Day high/low may continue changing, but current_sl
+# remains exactly where it was placed.
 #
-#   Before ANY new SL:
-#       1. Cancel ALL existing stops.
-#       2. Verify ALL stops are gone.
-#       3. Create exactly ONE new stop.
+# STOP LOSS REVERSAL
+# ------------------------------------------------------------
+# LONG SL HIT:
+#   close LONG
+#   open SHORT
+#   SHORT SL = CURRENT DAY HIGH
 #
-#   This prevents old stops such as:
-#       4486
-#       4457
-#   remaining together with the correct stop.
+# SHORT SL HIT:
+#   close SHORT
+#   open LONG
+#   LONG SL = CURRENT DAY LOW
 #
+# The old SL is ALWAYS removed before the new SL is created.
 #
 # OVERNIGHT
+# ------------------------------------------------------------
+# If a position survives into a new trading day:
 #
-#   Existing position at 05:30:
-#       NO NEW TRADE.
+#   NO NEW ENTRY.
 #
-#   At 05:45:
-#       Build new day's range.
+# At/after 05:45:
 #
-#   Carried LONG:
-#       new SL = new day's LOW
+#   delete old SL
+#   calculate new day's HIGH/LOW
+#   LONG  -> new SL = new DAY LOW
+#   SHORT -> new SL = new DAY HIGH
 #
-#   Carried SHORT:
-#       new SL = new day's HIGH
+# Then the new SL remains FIXED for that position.
 #
-#   That new SL then remains fixed.
+# MANUAL CLOSE
+# ------------------------------------------------------------
+# Manual close:
 #
+#   no immediate re-entry at the same level.
 #
-# STARTING BOT LATE
-#
-#   If bot starts at 08:30 with an existing LONG:
-#       Rebuild today's actual range from 05:30
-#       until current time.
-#
-#       LONG SL = actual current DAY LOW.
-#
-#   Therefore if DAY LOW = 4437:
-#       SL = 4437.
-#
+# The bot waits for a genuinely new HIGH or LOW.
 #
 # WEEKEND
+# ------------------------------------------------------------
+# Saturday 05:00 IST:
+#   square off
 #
-#   Saturday 05:00 -> square off.
-#   Saturday -> no trading.
-#   Sunday   -> no trading.
-#   Monday 05:45 -> trading resumes.
+# Saturday:
+#   no trading
 #
+# Sunday:
+#   no trading
+#
+# Monday:
+#   05:30 new trading day
+#   05:45 trading begins
 #
 # POSITION SIZE
+# ------------------------------------------------------------
+# 10% balance as margin
+# 50x leverage
 #
-#   10% balance margin
-#   50x leverage
+# ORDER
+# ------------------------------------------------------------
+# Market order for entries/reversals.
+#
+# Exactly ONE protective stop for an open position.
 #
 # ============================================================
 
@@ -205,7 +218,7 @@ session.headers.update(
         "Content-Type": "application/json",
         "User-Agent": (
             "XAUTUSD-Fixed-SL-Breakout-Bot/12.0"
-        ),
+        )
     }
 )
 
@@ -252,15 +265,14 @@ def weekend_block(dt=None):
     # Saturday from 05:00 onward.
     if (
         dt.weekday() == 5
-        and dt.time()
-        >= datetime.strptime(
+        and dt.time() >= datetime.strptime(
             "05:00",
             "%H:%M"
         ).time()
     ):
         return True
 
-    # Sunday.
+    # Entire Sunday.
     if dt.weekday() == 6:
         return True
 
@@ -415,9 +427,7 @@ def api(
             f"{response.text}"
         ) from exc
 
-    if data.get(
-        "success"
-    ) is False:
+    if data.get("success") is False:
 
         raise RuntimeError(
             f"{method} {path}: {data}"
@@ -633,9 +643,7 @@ def market_order(
             product_id
         ),
         "product_symbol": SYMBOL,
-        "size": int(
-            size
-        ),
+        "size": int(size),
         "side": side,
         "order_type": "market_order",
         "client_order_id": client_id[:32]
@@ -655,7 +663,7 @@ def market_order(
 
 
 # ============================================================
-# STOP ORDER
+# STOP MARKET ORDER
 # ============================================================
 
 def stop_order(
@@ -671,9 +679,7 @@ def stop_order(
             product_id
         ),
         "product_symbol": SYMBOL,
-        "size": int(
-            size
-        ),
+        "size": int(size),
         "side": side,
         "order_type": "market_order",
         "stop_order_type": "stop_loss_order",
@@ -684,7 +690,7 @@ def stop_order(
     }
 
     logging.warning(
-        "CREATING ONE STOP: %s",
+        "LIVE STOP ORDER: %s",
         body
     )
 
@@ -720,7 +726,7 @@ def cancel_order(
         if "HTTP 404" in str(exc):
 
             logging.info(
-                "Stop %s already gone.",
+                "Order %s already gone.",
                 order_id
             )
 
@@ -766,15 +772,66 @@ def open_stops(
 
 
 # ============================================================
-# CANCEL ALL STOPS
+# DELETE EVERY STOP
 # ============================================================
 
 def cancel_all_stops(
-    product_id,
-    verify=True
+    product_id
 ):
 
-    for attempt in range(5):
+    orders = open_stops(
+        product_id
+    )
+
+    if not orders:
+
+        return
+
+
+    logging.warning(
+        "REMOVING %s EXISTING STOP ORDER(S)",
+        len(orders)
+    )
+
+    for order in orders:
+
+        order_id = order.get(
+            "id"
+        )
+
+        if not order_id:
+            continue
+
+        try:
+
+            cancel_order(
+                order_id
+            )
+
+        except Exception as exc:
+
+            logging.error(
+                "FAILED TO CANCEL STOP %s: %s",
+                order_id,
+                exc
+            )
+
+
+# ============================================================
+# WAIT UNTIL ALL STOPS ARE GONE
+# ============================================================
+
+def wait_until_no_stops(
+    product_id,
+    timeout=8
+):
+
+    deadline = (
+        time.time()
+        + timeout
+    )
+
+    while time.time() < deadline:
 
         orders = open_stops(
             product_id
@@ -782,47 +839,34 @@ def cancel_all_stops(
 
         if not orders:
 
-            if verify:
-
-                logging.info(
-                    "STOP CLEANUP VERIFIED: "
-                    "0 open stops."
-                )
-
             return True
 
-        logging.warning(
-            "STOP CLEANUP: found %s stop(s), "
-            "attempt %s/5",
-            len(orders),
-            attempt + 1
-        )
-
+        # Try cancellation again.
         for order in orders:
 
             order_id = order.get(
                 "id"
             )
 
-            if not order_id:
-                continue
+            if order_id:
 
-            try:
+                try:
 
-                cancel_order(
-                    order_id
-                )
+                    cancel_order(
+                        order_id
+                    )
 
-            except Exception as exc:
+                except Exception as exc:
 
-                logging.error(
-                    "Failed cancelling stop %s: %s",
-                    order_id,
-                    exc
-                )
+                    logging.error(
+                        "Retry cancel failed "
+                        "for stop %s: %s",
+                        order_id,
+                        exc
+                    )
 
         time.sleep(
-            0.5
+            0.25
         )
 
     remaining = open_stops(
@@ -832,16 +876,19 @@ def cancel_all_stops(
     if remaining:
 
         logging.error(
-            "STOP CLEANUP FAILED: "
-            "%s stop(s) still remain.",
+            "STOP CLEANUP FAILED. "
+            "%s STOP(S) STILL OPEN.",
             len(remaining)
         )
 
-        return False
+        for order in remaining:
 
-    logging.info(
-        "STOP CLEANUP VERIFIED: 0 open stops."
-    )
+            logging.error(
+                "REMAINING STOP: %s",
+                order
+            )
+
+        return False
 
     return True
 
@@ -898,6 +945,7 @@ def dfield(
             )
 
         except Exception:
+
             pass
 
     return default
@@ -1032,13 +1080,13 @@ def save_state(
     state
 ):
 
-    temp = (
+    temp_file = (
         STATE_FILE
         + ".tmp"
     )
 
     with open(
-        temp,
+        temp_file,
         "w",
         encoding="utf-8"
     ) as file:
@@ -1050,7 +1098,7 @@ def save_state(
         )
 
     os.replace(
-        temp,
+        temp_file,
         STATE_FILE
     )
 
@@ -1105,6 +1153,11 @@ class Strategy:
         # FIXED SL
         # ----------------------------------------------------
 
+        # THIS IS THE SL FOR THE CURRENT POSITION.
+        #
+        # It is NEVER recalculated while the same position
+        # remains open.
+        #
         self.current_sl = None
         self.stop_id = None
 
@@ -1116,13 +1169,6 @@ class Strategy:
 
         self.manual_reference_high = None
         self.manual_reference_low = None
-
-        # ----------------------------------------------------
-        # BREAKOUT CONTROL
-        # ----------------------------------------------------
-
-        self.high_breakout_consumed = False
-        self.low_breakout_consumed = False
 
         # ----------------------------------------------------
         # OVERNIGHT
@@ -1150,9 +1196,7 @@ class Strategy:
     # RESTORE
     # ========================================================
 
-    def restore_state(
-        self
-    ):
+    def restore_state(self):
 
         saved_day = self.state.get(
             "day"
@@ -1220,20 +1264,6 @@ class Strategy:
             )
         )
 
-        self.high_breakout_consumed = bool(
-            self.state.get(
-                "high_breakout_consumed",
-                False
-            )
-        )
-
-        self.low_breakout_consumed = bool(
-            self.state.get(
-                "low_breakout_consumed",
-                False
-            )
-        )
-
         self.carried_position = bool(
             self.state.get(
                 "carried_position",
@@ -1253,9 +1283,7 @@ class Strategy:
     # SAVE
     # ========================================================
 
-    def persist(
-        self
-    ):
+    def persist(self):
 
         save_state(
             {
@@ -1311,12 +1339,6 @@ class Strategy:
                     else None
                 ),
 
-                "high_breakout_consumed":
-                    self.high_breakout_consumed,
-
-                "low_breakout_consumed":
-                    self.low_breakout_consumed,
-
                 "carried_position":
                     self.carried_position,
 
@@ -1341,7 +1363,7 @@ class Strategy:
         )
 
         if self.day == new_day:
-            return
+            return False
 
         logging.warning(
             "================================================"
@@ -1352,12 +1374,12 @@ class Strategy:
         )
 
         logging.warning(
-            "DAY START = %s IST",
+            "DAY START     = %s",
             new_day
         )
 
         logging.warning(
-            "TRADING START = %s IST",
+            "TRADING START = %s",
             trading_start(
                 new_day
             )
@@ -1367,107 +1389,140 @@ class Strategy:
             "================================================"
         )
 
+        self.day = new_day
+
+        self.day_high = None
+        self.day_low = None
+        self.range_ready = False
+
+        self.manual_flat = False
+        self.manual_reference_high = None
+        self.manual_reference_low = None
+
         # ----------------------------------------------------
-        # CRITICAL:
-        #
-        # OLD DAY STOP MUST BE REMOVED.
+        # POSITION CARRIED
         # ----------------------------------------------------
 
-        try:
+        if existing_position != 0:
 
-            if self.product_id:
+            self.carried_position = True
 
-                logging.warning(
-                    "REMOVING ALL OLD DAY STOPS..."
-                )
+            self.overnight_sl_set = False
+
+            # VERY IMPORTANT:
+            #
+            # The old day's SL must NOT remain.
+            #
+            # We clear it from state and physically remove
+            # every exchange stop.
+            #
+            self.current_sl = None
+            self.stop_id = None
+
+            logging.warning(
+                "POSITION CARRIED INTO NEW DAY | SIZE=%s",
+                existing_position
+            )
+
+            try:
 
                 cancel_all_stops(
                     self.product_id
                 )
 
-        except Exception as exc:
+                if not wait_until_no_stops(
+                    self.product_id
+                ):
 
-            logging.error(
-                "Old-day stop cleanup failed: %s",
-                exc
-            )
+                    logging.error(
+                        "Could not fully remove "
+                        "old day's SL."
+                    )
 
-        self.day = new_day
+            except Exception as exc:
 
-        self.day_high = None
-        self.day_low = None
-
-        self.range_ready = False
-
-        self.high_breakout_consumed = False
-        self.low_breakout_consumed = False
-
-        self.manual_flat = False
-
-        self.manual_reference_high = None
-        self.manual_reference_low = None
-
-        # NEVER carry old SL into new day.
-        self.current_sl = None
-        self.stop_id = None
-
-        if existing_position != 0:
-
-            self.carried_position = True
-            self.overnight_sl_set = False
-
-            logging.warning(
-                "POSITION CARRIED INTO NEW DAY | "
-                "SIZE=%s",
-                existing_position
-            )
-
-            logging.warning(
-                "NO NEW TRADE WILL BE TAKEN."
-            )
+                logging.error(
+                    "Old SL cleanup failed: %s",
+                    exc
+                )
 
         else:
 
             self.carried_position = False
             self.overnight_sl_set = False
 
+            self.current_sl = None
+            self.stop_id = None
+
+            try:
+
+                cancel_all_stops(
+                    self.product_id
+                )
+
+            except Exception as exc:
+
+                logging.error(
+                    "New-day flat stop cleanup failed: %s",
+                    exc
+                )
+
         self.persist()
+
+        return True
 
 
     # ========================================================
     # BUILD CURRENT DAY RANGE
-    #
-    # IMPORTANT:
-    #
-    # This does NOT only read the 05:30 candle.
-    #
-    # It rebuilds the actual day HIGH/LOW from 05:30
-    # up to the requested time.
-    #
-    # This fixes the "bot started late" problem.
     # ========================================================
 
-    def rebuild_current_day_range(
+    def build_day_range(
         self,
-        end_time=None
+        now=None
     ):
+
+        now = now or now_ist()
 
         if self.day is None:
             return False
 
-        end_time = (
-            end_time
-            or now_ist()
+        start = self.day
+
+        # We only build the trading range once trading has
+        # started.
+        end = min(
+            now,
+            trading_start(
+                self.day
+            )
+            + timedelta(
+                seconds=1
+            )
         )
 
-        if end_time <= self.day:
+        # Before 05:45 we cannot build a completed trading
+        # range.
+        if now < trading_start(
+            self.day
+        ):
 
             return False
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # At startup later in the day we MUST calculate the
+        # WHOLE CURRENT DAY range.
+        #
+        # This is what prevents the old 05:30-candle-only bug.
+        # ----------------------------------------------------
+
+        end = now
+
         rows = candles(
             "15m",
-            self.day,
-            end_time + timedelta(
+            start,
+            end + timedelta(
                 seconds=1
             )
         )
@@ -1489,10 +1544,7 @@ class Strategy:
                 )
             )
 
-            if candle_time < self.day:
-                continue
-
-            if candle_time > end_time:
+            if candle_time < start:
                 continue
 
             candle_high = Decimal(
@@ -1521,40 +1573,35 @@ class Strategy:
 
                 low = candle_low
 
-        # Include live price so the current partial candle
-        # is represented too.
-        try:
+        # Include live price as well.
+        price = get_price()
 
-            live_price = get_price()
+        if (
+            high is None
+            or price > high
+        ):
 
-            if (
-                high is None
-                or live_price > high
-            ):
+            high = price
 
-                high = live_price
+        if (
+            low is None
+            or price < low
+        ):
 
-            if (
-                low is None
-                or live_price < low
-            ):
+            low = price
 
-                low = live_price
+        if (
+            high is None
+            or low is None
+        ):
 
-        except Exception as exc:
-
-            logging.error(
-                "Could not add live price to range: %s",
-                exc
+            raise RuntimeError(
+                "Could not calculate "
+                "current trading-day range."
             )
-
-        if high is None or low is None:
-
-            return False
 
         self.day_high = high
         self.day_low = low
-
         self.range_ready = True
 
         self.persist()
@@ -1564,17 +1611,12 @@ class Strategy:
         )
 
         logging.warning(
-            "CURRENT DAY RANGE REBUILT"
+            "CURRENT DAY RANGE"
         )
 
         logging.warning(
-            "FROM = %s IST",
+            "DAY = %s",
             self.day
-        )
-
-        logging.warning(
-            "TO   = %s IST",
-            end_time
         )
 
         logging.warning(
@@ -1583,7 +1625,7 @@ class Strategy:
         )
 
         logging.warning(
-            "DAY LOW  = %s",
+            "DAY LOW = %s",
             self.day_low
         )
 
@@ -1596,38 +1638,30 @@ class Strategy:
 
     # ========================================================
     # UPDATE DAY EXTREMES
-    #
-    # ONLY changes the DAY RANGE.
-    #
-    # IT NEVER CHANGES current_sl.
     # ========================================================
 
-    def update_day_range(
+    def update_day_extremes(
         self,
         price
     ):
 
-        changed = False
-
-        if (
-            self.day_high is None
-            or price > self.day_high
-        ):
+        if self.day_high is None:
 
             self.day_high = price
-            changed = True
 
-        if (
-            self.day_low is None
-            or price < self.day_low
-        ):
+        elif price > self.day_high:
+
+            self.day_high = price
+
+        if self.day_low is None:
 
             self.day_low = price
-            changed = True
 
-        if changed:
+        elif price < self.day_low:
 
-            self.persist()
+            self.day_low = price
+
+        self.persist()
 
 
     # ========================================================
@@ -1680,6 +1714,7 @@ class Strategy:
                 )
 
             except Exception:
+
                 pass
 
         return None
@@ -1687,17 +1722,6 @@ class Strategy:
 
     # ========================================================
     # CREATE EXACTLY ONE STOP
-    #
-    # THIS IS THE MOST IMPORTANT FUNCTION.
-    #
-    # We NEVER try to "keep the correct old stop".
-    #
-    # We ALWAYS:
-    #
-    #   CANCEL ALL
-    #   VERIFY ZERO
-    #   CREATE ONE
-    #
     # ========================================================
 
     def replace_stop(
@@ -1708,66 +1732,53 @@ class Strategy:
     ):
 
         if position_size == 0:
-
             return False
 
         if sl_price is None:
 
-            logging.error(
-                "STOP REJECTED: SL is None."
+            raise RuntimeError(
+                "SL price is None."
             )
-
-            return False
 
         # ----------------------------------------------------
-        # Validate direction.
+        # VALIDATE SL
         # ----------------------------------------------------
 
-        if (
-            position_size > 0
-            and sl_price >= market_price
-        ):
+        if position_size > 0:
 
-            logging.error(
-                "LONG STOP INVALID | "
-                "SL=%s | MARKET=%s",
-                sl_price,
-                market_price
-            )
+            if sl_price >= market_price:
 
-            return False
+                raise RuntimeError(
+                    f"LONG SL INVALID: "
+                    f"SL={sl_price}, "
+                    f"PRICE={market_price}"
+                )
 
-        if (
-            position_size < 0
-            and sl_price <= market_price
-        ):
+        else:
 
-            logging.error(
-                "SHORT STOP INVALID | "
-                "SL=%s | MARKET=%s",
-                sl_price,
-                market_price
-            )
+            if sl_price <= market_price:
 
-            return False
-
-        direction = (
-            "LONG"
-            if position_size > 0
-            else "SHORT"
-        )
+                raise RuntimeError(
+                    f"SHORT SL INVALID: "
+                    f"SL={sl_price}, "
+                    f"PRICE={market_price}"
+                )
 
         logging.warning(
             "================================================"
         )
 
         logging.warning(
-            "REPLACING PROTECTIVE STOP"
+            "REPLACING PROTECTIVE SL"
         )
 
         logging.warning(
             "POSITION = %s",
-            direction
+            (
+                "LONG"
+                if position_size > 0
+                else "SHORT"
+            )
         )
 
         logging.warning(
@@ -1776,69 +1787,45 @@ class Strategy:
         )
 
         logging.warning(
-            "MARKET = %s",
-            market_price
-        )
-
-        logging.warning(
             "================================================"
         )
 
         # ----------------------------------------------------
-        # STEP 1:
-        # CANCEL EVERYTHING.
+        # STEP 1
+        # DELETE EVERY EXISTING STOP
         # ----------------------------------------------------
 
-        cleaned = cancel_all_stops(
-            self.product_id,
-            verify=True
-        )
-
-        if not cleaned:
-
-            logging.error(
-                "STOP REPLACEMENT ABORTED."
-            )
-
-            logging.error(
-                "OLD STOP(S) COULD NOT BE REMOVED."
-            )
-
-            logging.error(
-                "NO NEW STOP WILL BE CREATED."
-            )
-
-            return False
-
-        # ----------------------------------------------------
-        # STEP 2:
-        # EXTRA verification.
-        # ----------------------------------------------------
-
-        remaining = open_stops(
+        cancel_all_stops(
             self.product_id
         )
 
-        if remaining:
+        # ----------------------------------------------------
+        # STEP 2
+        # WAIT UNTIL EXCHANGE CONFIRMS NONE REMAIN
+        # ----------------------------------------------------
 
-            logging.error(
+        if not wait_until_no_stops(
+            self.product_id,
+            timeout=10
+        ):
+
+            raise RuntimeError(
                 "STOP REPLACEMENT ABORTED: "
-                "%s stop(s) still exist.",
-                len(remaining)
+                "old stop order(s) still exist."
             )
 
-            return False
+        # ----------------------------------------------------
+        # STEP 3
+        # CREATE ONE NEW STOP
+        # ----------------------------------------------------
 
-        # ----------------------------------------------------
-        # STEP 3:
-        # CREATE EXACTLY ONE.
-        # ----------------------------------------------------
+        side = self.stop_side(
+            position_size
+        )
 
         result = stop_order(
             self.product_id,
-            self.stop_side(
-                position_size
-            ),
+            side,
             abs(position_size),
             sl_price,
             "xsl"
@@ -1850,8 +1837,7 @@ class Strategy:
             )
         )
 
-        self.current_sl = sl_price
-        self.stop_id = None
+        order_id = None
 
         result_data = result.get(
             "result",
@@ -1865,7 +1851,7 @@ class Strategy:
 
             if result_data:
 
-                self.stop_id = (
+                order_id = (
                     result_data[0].get(
                         "id"
                     )
@@ -1876,90 +1862,105 @@ class Strategy:
             dict
         ):
 
-            self.stop_id = (
+            order_id = (
                 result_data.get(
                     "id"
                 )
             )
 
+        self.current_sl = sl_price
+        self.stop_id = order_id
+
         self.persist()
 
         # ----------------------------------------------------
-        # STEP 4:
-        # VERIFY STOP EXISTS.
+        # VERIFY EXACTLY ONE STOP
         # ----------------------------------------------------
 
         time.sleep(
-            0.4
+            0.25
         )
 
-        verify = open_stops(
+        stops = open_stops(
             self.product_id
         )
 
-        if len(verify) != 1:
+        matching = []
+
+        for order in stops:
+
+            if (
+                str(
+                    order.get(
+                        "side",
+                        ""
+                    )
+                ).lower()
+                == side
+                and self.stop_price(
+                    order
+                )
+                == sl_price
+            ):
+
+                matching.append(
+                    order
+                )
+
+        # Remove any duplicate that appeared.
+        if len(matching) > 1:
 
             logging.error(
-                "STOP VERIFICATION FAILED."
+                "DUPLICATE STOP DETECTED. "
+                "CLEANING EXTRA STOPS."
             )
 
-            logging.error(
-                "EXPECTED = 1 STOP"
+            for extra in matching[1:]:
+
+                try:
+
+                    cancel_order(
+                        extra.get(
+                            "id"
+                        )
+                    )
+
+                except Exception as exc:
+
+                    logging.error(
+                        "Duplicate stop cleanup failed: %s",
+                        exc
+                    )
+
+            matching = matching[:1]
+
+        if len(matching) == 0:
+
+            raise RuntimeError(
+                "New protective SL was not "
+                "confirmed on exchange."
             )
 
-            logging.error(
-                "FOUND = %s",
-                len(verify)
-            )
-
-            return False
-
-        verified_price = (
-            self.stop_price(
-                verify[0]
-            )
-        )
-
-        if verified_price != sl_price:
-
-            logging.error(
-                "STOP PRICE VERIFICATION FAILED."
-            )
-
-            logging.error(
-                "EXPECTED = %s",
-                sl_price
-            )
-
-            logging.error(
-                "EXCHANGE STOP = %s",
-                verified_price
-            )
-
-            return False
-
-        self.stop_id = verify[0].get(
+        self.stop_id = matching[0].get(
             "id"
         )
-
-        self.persist()
 
         logging.warning(
             "================================================"
         )
 
         logging.warning(
-            "STOP VERIFIED"
+            "ONE PROTECTIVE SL CONFIRMED"
         )
 
         logging.warning(
-            "POSITION = %s",
-            direction
-        )
-
-        logging.warning(
-            "EXACTLY ONE STOP = %s",
+            "SL = %s",
             sl_price
+        )
+
+        logging.warning(
+            "ORDER ID = %s",
+            self.stop_id
         )
 
         logging.warning(
@@ -1970,7 +1971,130 @@ class Strategy:
 
 
     # ========================================================
-    # ENTER
+    # ENSURE EXISTING FIXED STOP
+    # ========================================================
+
+    def ensure_fixed_stop(
+        self,
+        position_size,
+        market_price
+    ):
+
+        if self.current_sl is None:
+
+            raise RuntimeError(
+                "Open position has no fixed SL."
+            )
+
+        side = self.stop_side(
+            position_size
+        )
+
+        stops = open_stops(
+            self.product_id
+        )
+
+        matching = []
+
+        for order in stops:
+
+            order_side = str(
+                order.get(
+                    "side",
+                    ""
+                )
+            ).lower()
+
+            order_price = (
+                self.stop_price(
+                    order
+                )
+            )
+
+            if (
+                order_side == side
+                and order_price == self.current_sl
+            ):
+
+                matching.append(
+                    order
+                )
+
+            else:
+
+                # Any stop that is not the exact current
+                # protective stop is stale and MUST go.
+                try:
+
+                    cancel_order(
+                        order.get(
+                            "id"
+                        )
+                    )
+
+                except Exception as exc:
+
+                    logging.error(
+                        "Could not remove stale stop %s: %s",
+                        order.get("id"),
+                        exc
+                    )
+
+        # ----------------------------------------------------
+        # EXACTLY ONE CORRECT STOP
+        # ----------------------------------------------------
+
+        if len(matching) == 1:
+
+            self.stop_id = (
+                matching[0].get(
+                    "id"
+                )
+            )
+
+            return True
+
+        # ----------------------------------------------------
+        # ZERO OR DUPLICATES
+        # ----------------------------------------------------
+
+        if len(matching) > 1:
+
+            for extra in matching[1:]:
+
+                try:
+
+                    cancel_order(
+                        extra.get(
+                            "id"
+                        )
+                    )
+
+                except Exception:
+                    pass
+
+            matching = matching[:1]
+
+            self.stop_id = (
+                matching[0].get(
+                    "id"
+                )
+            )
+
+            return True
+
+        # No correct stop exists.
+        #
+        # Recreate EXACTLY the stored fixed SL.
+        return self.replace_stop(
+            position_size,
+            self.current_sl,
+            market_price
+        )
+
+
+    # ========================================================
+    # ENTRY
     # ========================================================
 
     def enter(
@@ -1985,31 +2109,25 @@ class Strategy:
             return False
 
         if weekend_block():
-
             return False
 
         if sl_price is None:
-
-            logging.error(
-                "ENTRY BLOCKED: SL is None."
-            )
-
             return False
 
-        current = get_position(
+        position = get_position(
             self.product_id
         )
 
-        if current["size"] != 0:
+        if position["size"] != 0:
 
             self.last_position = (
-                current["size"]
+                position["size"]
             )
 
             return False
 
         # ----------------------------------------------------
-        # Validate SL.
+        # VALIDATE SL
         # ----------------------------------------------------
 
         if direction == "LONG":
@@ -2018,7 +2136,7 @@ class Strategy:
 
                 logging.error(
                     "LONG ENTRY BLOCKED | "
-                    "SL=%s | PRICE=%s",
+                    "SL=%s >= PRICE=%s",
                     sl_price,
                     price
                 )
@@ -2031,12 +2149,31 @@ class Strategy:
 
                 logging.error(
                     "SHORT ENTRY BLOCKED | "
-                    "SL=%s | PRICE=%s",
+                    "SL=%s <= PRICE=%s",
                     sl_price,
                     price
                 )
 
                 return False
+
+        # ----------------------------------------------------
+        # ABSOLUTELY NO OLD STOPS BEFORE ENTRY
+        # ----------------------------------------------------
+
+        cancel_all_stops(
+            self.product_id
+        )
+
+        if not wait_until_no_stops(
+            self.product_id
+        ):
+
+            logging.error(
+                "ENTRY BLOCKED: "
+                "old stop order still exists."
+            )
+
+            return False
 
         size, balance, margin, notional = (
             contract_size(
@@ -2056,17 +2193,18 @@ class Strategy:
         )
 
         logging.warning(
-            "NEW ENTRY"
-        )
-
-        logging.warning(
-            "DIRECTION = %s",
+            "LIVE ENTRY = %s",
             direction
         )
 
         logging.warning(
             "PRICE = %s",
             price
+        )
+
+        logging.warning(
+            "FIXED SL = %s",
+            sl_price
         )
 
         logging.warning(
@@ -2080,18 +2218,28 @@ class Strategy:
         )
 
         logging.warning(
-            "FIXED SL = %s",
-            sl_price
+            "SIZE = %s",
+            size
+        )
+
+        logging.warning(
+            "BALANCE = %s",
+            balance
+        )
+
+        logging.warning(
+            "MARGIN = %s",
+            margin
+        )
+
+        logging.warning(
+            "NOTIONAL = %s",
+            notional
         )
 
         logging.warning(
             "REASON = %s",
             reason
-        )
-
-        logging.warning(
-            "SIZE = %s",
-            size
         )
 
         logging.warning(
@@ -2101,20 +2249,6 @@ class Strategy:
         self.entry_lock = True
 
         try:
-
-            # ------------------------------------------------
-            # Before entry, remove any stale stops.
-            # ------------------------------------------------
-
-            if not cancel_all_stops(
-                self.product_id,
-                verify=True
-            ):
-
-                raise RuntimeError(
-                    "Could not clean old stops "
-                    "before entry."
-                )
 
             market_order(
                 self.product_id,
@@ -2130,90 +2264,90 @@ class Strategy:
             )
 
             # ------------------------------------------------
-            # Wait for fill.
+            # WAIT FOR POSITION
             # ------------------------------------------------
 
-            filled = None
-
-            for _ in range(30):
+            for _ in range(40):
 
                 time.sleep(
-                    0.2
+                    0.20
                 )
 
                 position = get_position(
                     self.product_id
                 )
 
+                actual_size = (
+                    position["size"]
+                )
+
                 correct = (
                     (
                         direction == "LONG"
-                        and position["size"] > 0
+                        and actual_size > 0
                     )
                     or
                     (
                         direction == "SHORT"
-                        and position["size"] < 0
+                        and actual_size < 0
                     )
                 )
 
                 if correct:
 
-                    filled = position
+                    self.last_position = (
+                        actual_size
+                    )
 
-                    break
+                    self.manual_flat = False
 
-            if filled is None:
+                    self.carried_position = False
 
-                raise RuntimeError(
-                    "Entry sent but fill "
-                    "was not confirmed."
-                )
+                    self.overnight_sl_set = False
 
-            actual_size = (
-                filled["size"]
+                    # ------------------------------------------------
+                    # FIXED SL STORED ONCE.
+                    # ------------------------------------------------
+
+                    self.current_sl = (
+                        sl_price
+                    )
+
+                    self.stop_id = None
+
+                    self.persist()
+
+                    actual_market_price = (
+                        get_price()
+                    )
+
+                    # ------------------------------------------------
+                    # CREATE EXACTLY ONE SL.
+                    # ------------------------------------------------
+
+                    self.replace_stop(
+                        actual_size,
+                        sl_price,
+                        actual_market_price
+                    )
+
+                    # ------------------------------------------------
+                    # NOW INCLUDE ENTRY PRICE IN DAY RANGE.
+                    #
+                    # This prevents a manual close at the same
+                    # breakout level from immediately re-entering.
+                    # ------------------------------------------------
+
+                    self.update_day_extremes(
+                        price
+                    )
+
+                    return True
+
+            raise RuntimeError(
+                "Entry sent but fill "
+                "was not confirmed."
             )
-
-            self.last_position = (
-                actual_size
-            )
-
-            self.manual_flat = False
-
-            self.carried_position = False
-
-            self.overnight_sl_set = False
-
-            # ------------------------------------------------
-            # IMPORTANT:
-            #
-            # This SL belongs ONLY to this position.
-            #
-            # It is stored ONCE.
-            # ------------------------------------------------
-
-            self.current_sl = sl_price
-
-            self.persist()
-
-            actual_market = get_price()
-
-            # ------------------------------------------------
-            # Create exactly one stop.
-            # ------------------------------------------------
-
-            if not self.replace_stop(
-                actual_size,
-                sl_price,
-                actual_market
-            ):
-
-                raise RuntimeError(
-                    "Position is open but "
-                    "protective SL could not be verified."
-                )
-
-            return True
 
         finally:
 
@@ -2221,10 +2355,10 @@ class Strategy:
 
 
     # ========================================================
-    # BREAKOUT
+    # FLAT BREAKOUT
     # ========================================================
 
-    def breakout(
+    def flat_breakout(
         self,
         price
     ):
@@ -2232,27 +2366,94 @@ class Strategy:
         if not self.range_ready:
             return False
 
-        if self.day_high is None:
-            return False
-
-        if self.day_low is None:
-            return False
-
-        # ----------------------------------------------------
-        # NEW HIGH -> LONG
-        # ----------------------------------------------------
-
         if (
-            not self.high_breakout_consumed
-            and price > self.day_high
+            self.day_high is None
+            or self.day_low is None
         ):
 
-            old_high = self.day_high
+            return False
 
-            # LONG SL = CURRENT DAY LOW.
-            #
-            # THIS IS THE EXACT RULE.
-            #
+        # ----------------------------------------------------
+        # MANUAL CLOSE
+        # ----------------------------------------------------
+
+        if self.manual_flat:
+
+            reference_high = (
+                self.manual_reference_high
+                if self.manual_reference_high is not None
+                else self.day_high
+            )
+
+            reference_low = (
+                self.manual_reference_low
+                if self.manual_reference_low is not None
+                else self.day_low
+            )
+
+            # NEW HIGH
+            if (
+                reference_high is not None
+                and price > reference_high
+            ):
+
+                sl = self.day_low
+
+                success = self.enter(
+                    "LONG",
+                    price,
+                    sl,
+                    "MANUAL CLOSE -> NEW DAY HIGH"
+                )
+
+                if success:
+
+                    self.manual_flat = False
+
+                    self.manual_reference_high = None
+                    self.manual_reference_low = None
+
+                    self.persist()
+
+                return success
+
+            # NEW LOW
+            if (
+                reference_low is not None
+                and price < reference_low
+            ):
+
+                sl = self.day_high
+
+                success = self.enter(
+                    "SHORT",
+                    price,
+                    sl,
+                    "MANUAL CLOSE -> NEW DAY LOW"
+                )
+
+                if success:
+
+                    self.manual_flat = False
+
+                    self.manual_reference_high = None
+                    self.manual_reference_low = None
+
+                    self.persist()
+
+                return success
+
+            return False
+
+        # ----------------------------------------------------
+        # NORMAL FLAT
+        # ----------------------------------------------------
+
+        # HIGH BREAK -> LONG
+        if price > self.day_high:
+
+            breakout_high = self.day_high
+
             sl = self.day_low
 
             success = self.enter(
@@ -2264,32 +2465,21 @@ class Strategy:
 
             if success:
 
-                self.high_breakout_consumed = True
-
-                self.persist()
-
                 logging.warning(
-                    "LONG ENTRY CONSUMED | "
-                    "BREAK HIGH=%s | "
-                    "SL=%s",
-                    old_high,
+                    "DAY HIGH BROKEN | "
+                    "OLD HIGH=%s | ENTRY=%s | SL=%s",
+                    breakout_high,
+                    price,
                     sl
                 )
 
             return success
 
-        # ----------------------------------------------------
-        # NEW LOW -> SHORT
-        # ----------------------------------------------------
+        # LOW BREAK -> SHORT
+        if price < self.day_low:
 
-        if (
-            not self.low_breakout_consumed
-            and price < self.day_low
-        ):
+            breakout_low = self.day_low
 
-            old_low = self.day_low
-
-            # SHORT SL = CURRENT DAY HIGH.
             sl = self.day_high
 
             success = self.enter(
@@ -2301,106 +2491,13 @@ class Strategy:
 
             if success:
 
-                self.low_breakout_consumed = True
-
-                self.persist()
-
                 logging.warning(
-                    "SHORT ENTRY CONSUMED | "
-                    "BREAK LOW=%s | "
-                    "SL=%s",
-                    old_low,
+                    "DAY LOW BROKEN | "
+                    "OLD LOW=%s | ENTRY=%s | SL=%s",
+                    breakout_low,
+                    price,
                     sl
                 )
-
-            return success
-
-        return False
-
-
-    # ========================================================
-    # MANUAL CLOSE BREAKOUT
-    # ========================================================
-
-    def manual_breakout(
-        self,
-        price
-    ):
-
-        if not self.manual_flat:
-            return False
-
-        reference_high = (
-            self.manual_reference_high
-            if self.manual_reference_high is not None
-            else self.day_high
-        )
-
-        reference_low = (
-            self.manual_reference_low
-            if self.manual_reference_low is not None
-            else self.day_low
-        )
-
-        # ----------------------------------------------------
-        # NEW HIGH -> LONG
-        # ----------------------------------------------------
-
-        if (
-            reference_high is not None
-            and price > reference_high
-        ):
-
-            sl = self.day_low
-
-            success = self.enter(
-                "LONG",
-                price,
-                sl,
-                "MANUAL CLOSE -> NEW DAY HIGH"
-            )
-
-            if success:
-
-                self.manual_flat = False
-
-                self.manual_reference_high = None
-                self.manual_reference_low = None
-
-                self.high_breakout_consumed = True
-
-                self.persist()
-
-            return success
-
-        # ----------------------------------------------------
-        # NEW LOW -> SHORT
-        # ----------------------------------------------------
-
-        if (
-            reference_low is not None
-            and price < reference_low
-        ):
-
-            sl = self.day_high
-
-            success = self.enter(
-                "SHORT",
-                price,
-                sl,
-                "MANUAL CLOSE -> NEW DAY LOW"
-            )
-
-            if success:
-
-                self.manual_flat = False
-
-                self.manual_reference_high = None
-                self.manual_reference_low = None
-
-                self.low_breakout_consumed = True
-
-                self.persist()
 
             return success
 
@@ -2420,28 +2517,31 @@ class Strategy:
         if old_size == 0:
             return "none"
 
-        # Use the fixed SL belonging to the position.
-        if self.current_sl is not None:
+        if self.current_sl is None:
 
-            if (
-                old_size > 0
-                and price <= self.current_sl
-            ):
+            return "manual"
 
-                return "sl"
+        # LONG SL
+        if (
+            old_size > 0
+            and price <= self.current_sl
+        ):
 
-            if (
-                old_size < 0
-                and price >= self.current_sl
-            ):
+            return "sl"
 
-                return "sl"
+        # SHORT SL
+        if (
+            old_size < 0
+            and price >= self.current_sl
+        ):
+
+            return "sl"
 
         return "manual"
 
 
     # ========================================================
-    # POSITION CLOSED
+    # HANDLE CLOSED POSITION
     # ========================================================
 
     def handle_closed_position(
@@ -2452,52 +2552,52 @@ class Strategy:
 
         old_sl = self.current_sl
 
-        reason = (
-            self.detect_close_reason(
-                old_size,
-                price
-            )
-        )
-
-        # ----------------------------------------------------
-        # Capture CURRENT DAY extremes before cleanup.
-        # ----------------------------------------------------
-
-        current_day_high = self.day_high
-        current_day_low = self.day_low
-
-        # Include the closing price in the range.
-        self.update_day_range(
+        reason = self.detect_close_reason(
+            old_size,
             price
         )
 
+        # Save range BEFORE clearing anything.
         current_day_high = self.day_high
         current_day_low = self.day_low
 
-        # ----------------------------------------------------
-        # REMOVE ALL OLD STOPS.
-        # ----------------------------------------------------
-
-        cleaned = cancel_all_stops(
-            self.product_id,
-            verify=True
+        logging.warning(
+            "POSITION CLOSED | "
+            "OLD SIZE=%s | "
+            "OLD SL=%s | "
+            "PRICE=%s | "
+            "REASON=%s",
+            old_size,
+            old_sl,
+            price,
+            reason
         )
 
-        if not cleaned:
+        # ----------------------------------------------------
+        # REMOVE OLD SL COMPLETELY
+        # ----------------------------------------------------
+
+        cancel_all_stops(
+            self.product_id
+        )
+
+        if not wait_until_no_stops(
+            self.product_id
+        ):
 
             logging.error(
-                "Could not clean old stops after close."
+                "Could not completely remove old SL."
             )
 
             return
 
-        self.current_sl = None
         self.stop_id = None
+        self.current_sl = None
         self.last_position = 0
 
-        # ====================================================
+        # ----------------------------------------------------
         # MANUAL CLOSE
-        # ====================================================
+        # ----------------------------------------------------
 
         if reason == "manual":
 
@@ -2514,13 +2614,7 @@ class Strategy:
             )
 
             logging.warning(
-                "REFERENCE HIGH = %s",
-                current_day_high
-            )
-
-            logging.warning(
-                "REFERENCE LOW = %s",
-                current_day_low
+                "WAIT FOR NEW HIGH / NEW LOW"
             )
 
             logging.warning(
@@ -2540,13 +2634,19 @@ class Strategy:
             self.carried_position = False
             self.overnight_sl_set = False
 
+            # Include closing price in range.
+            self.update_day_extremes(
+                price
+            )
+
             self.persist()
 
             return
 
-        # ====================================================
-        # FIXED SL HIT
-        # ====================================================
+
+        # ----------------------------------------------------
+        # SL HIT -> REVERSE
+        # ----------------------------------------------------
 
         logging.warning(
             "================================================"
@@ -2557,31 +2657,7 @@ class Strategy:
         )
 
         logging.warning(
-            "OLD POSITION = %s",
-            (
-                "LONG"
-                if old_size > 0
-                else "SHORT"
-            )
-        )
-
-        logging.warning(
-            "OLD FIXED SL = %s",
-            old_sl
-        )
-
-        logging.warning(
-            "CURRENT DAY HIGH = %s",
-            current_day_high
-        )
-
-        logging.warning(
-            "CURRENT DAY LOW = %s",
-            current_day_low
-        )
-
-        logging.warning(
-            "REVERSING"
+            "REVERSING POSITION"
         )
 
         logging.warning(
@@ -2589,7 +2665,6 @@ class Strategy:
         )
 
         self.manual_flat = False
-
         self.carried_position = False
         self.overnight_sl_set = False
 
@@ -2603,14 +2678,45 @@ class Strategy:
 
             new_sl = current_day_high
 
-            self.enter(
+            if new_sl is None:
+
+                raise RuntimeError(
+                    "Cannot reverse LONG -> SHORT: "
+                    "DAY HIGH unavailable."
+                )
+
+            # If the day high is currently below/equal to
+            # price, this would be an invalid short stop.
+            #
+            # In that rare case update the range with price
+            # first. The stop remains the current day high.
+            if new_sl <= price:
+
+                if price > new_sl:
+
+                    new_sl = price
+
+                else:
+
+                    raise RuntimeError(
+                        "Invalid SHORT reversal SL."
+                    )
+
+            success = self.enter(
                 "SHORT",
                 price,
                 new_sl,
-                "LONG SL HIT -> SHORT"
+                "LONG FIXED SL HIT -> SHORT"
             )
 
+            if not success:
+
+                logging.error(
+                    "LONG -> SHORT reversal failed."
+                )
+
             return
+
 
         # ----------------------------------------------------
         # SHORT -> LONG
@@ -2620,12 +2726,37 @@ class Strategy:
 
         new_sl = current_day_low
 
-        self.enter(
+        if new_sl is None:
+
+            raise RuntimeError(
+                "Cannot reverse SHORT -> LONG: "
+                "DAY LOW unavailable."
+            )
+
+        if new_sl >= price:
+
+            if price < new_sl:
+
+                new_sl = price
+
+            else:
+
+                raise RuntimeError(
+                    "Invalid LONG reversal SL."
+                )
+
+        success = self.enter(
             "LONG",
             price,
             new_sl,
-            "SHORT SL HIT -> LONG"
+            "SHORT FIXED SL HIT -> LONG"
         )
+
+        if not success:
+
+            logging.error(
+                "SHORT -> LONG reversal failed."
+            )
 
 
     # ========================================================
@@ -2648,27 +2779,24 @@ class Strategy:
             return False
 
         # ----------------------------------------------------
-        # LONG -> NEW DAY LOW
-        # SHORT -> NEW DAY HIGH
+        # NEW DAY RANGE
         # ----------------------------------------------------
 
         if position_size > 0:
 
             new_sl = self.day_low
-
             direction = "LONG"
 
         else:
 
             new_sl = self.day_high
-
             direction = "SHORT"
 
         if new_sl is None:
             return False
 
         # ----------------------------------------------------
-        # Do NOT invent another SL if exact level is invalid.
+        # VALIDATE
         # ----------------------------------------------------
 
         if (
@@ -2677,7 +2805,7 @@ class Strategy:
         ):
 
             logging.error(
-                "CARRIED LONG NEW SL INVALID | "
+                "OVERNIGHT LONG SL INVALID | "
                 "DAY LOW=%s | PRICE=%s",
                 new_sl,
                 price
@@ -2691,7 +2819,7 @@ class Strategy:
         ):
 
             logging.error(
-                "CARRIED SHORT NEW SL INVALID | "
+                "OVERNIGHT SHORT SL INVALID | "
                 "DAY HIGH=%s | PRICE=%s",
                 new_sl,
                 price
@@ -2713,12 +2841,12 @@ class Strategy:
         )
 
         logging.warning(
-            "DAY HIGH = %s",
+            "NEW DAY HIGH = %s",
             self.day_high
         )
 
         logging.warning(
-            "DAY LOW = %s",
+            "NEW DAY LOW = %s",
             self.day_low
         )
 
@@ -2731,17 +2859,17 @@ class Strategy:
             "================================================"
         )
 
-        if not self.replace_stop(
+        # ----------------------------------------------------
+        # DELETE OLD DAY'S SL + CREATE NEW DAY'S SL
+        # ----------------------------------------------------
+
+        self.replace_stop(
             position_size,
             new_sl,
             price
-        ):
-
-            return False
+        )
 
         self.overnight_sl_set = True
-
-        self.current_sl = new_sl
 
         self.persist()
 
@@ -2749,12 +2877,296 @@ class Strategy:
 
 
     # ========================================================
+    # RECONCILE POSITION
+    # ========================================================
+
+    def reconcile_position(
+        self,
+        new_size,
+        old_size,
+        price,
+        now
+    ):
+
+        # ----------------------------------------------------
+        # POSITION IS OPEN
+        # ----------------------------------------------------
+
+        if new_size != 0:
+
+            # ------------------------------------------------
+            # POSITION CHANGED DIRECTION DIRECTLY
+            #
+            # This can happen if exchange state changes
+            # between two polling cycles.
+            # ------------------------------------------------
+
+            if (
+                old_size != 0
+                and (
+                    old_size > 0
+                    and new_size < 0
+                    or
+                    old_size < 0
+                    and new_size > 0
+                )
+            ):
+
+                logging.warning(
+                    "POSITION DIRECTION CHANGED "
+                    "DIRECTLY: %s -> %s",
+                    old_size,
+                    new_size
+                )
+
+                # The previous SL has either executed or the
+                # position was reversed externally.
+                #
+                # For safety, remove every stop and create the
+                # correct fixed SL for the NEW position.
+                #
+                if new_size > 0:
+
+                    new_sl = self.day_low
+
+                else:
+
+                    new_sl = self.day_high
+
+                if new_sl is None:
+
+                    self.build_day_range(
+                        now
+                    )
+
+                    new_sl = (
+                        self.day_low
+                        if new_size > 0
+                        else self.day_high
+                    )
+
+                self.current_sl = None
+                self.stop_id = None
+
+                self.replace_stop(
+                    new_size,
+                    new_sl,
+                    price
+                )
+
+                self.last_position = new_size
+
+                self.persist()
+
+                return
+
+
+            # ------------------------------------------------
+            # POSITION JUST APPEARED
+            # ------------------------------------------------
+
+            if old_size == 0:
+
+                logging.warning(
+                    "OPEN POSITION DETECTED | SIZE=%s",
+                    new_size
+                )
+
+                self.last_position = new_size
+
+                # If the bot already knows the fixed SL,
+                # preserve it.
+                if self.current_sl is not None:
+
+                    self.ensure_fixed_stop(
+                        new_size,
+                        price
+                    )
+
+                    self.persist()
+
+                    return
+
+                # No known SL means we must establish one.
+                if not self.range_ready:
+
+                    self.build_day_range(
+                        now
+                    )
+
+                if new_size > 0:
+
+                    sl = self.day_low
+
+                else:
+
+                    sl = self.day_high
+
+                self.current_sl = sl
+
+                self.replace_stop(
+                    new_size,
+                    sl,
+                    price
+                )
+
+                self.persist()
+
+                return
+
+
+            # ------------------------------------------------
+            # NEW DAY CARRIED POSITION
+            # ------------------------------------------------
+
+            if (
+                self.carried_position
+                and not self.overnight_sl_set
+                and now >= trading_start(
+                    self.day
+                )
+            ):
+
+                if not self.range_ready:
+
+                    self.build_day_range(
+                        now
+                    )
+
+                self.apply_overnight_sl(
+                    new_size,
+                    price
+                )
+
+                self.last_position = new_size
+
+                return
+
+
+            # ------------------------------------------------
+            # NORMAL RUNNING POSITION
+            # ------------------------------------------------
+
+            self.last_position = new_size
+
+            # Update day high/low ONLY.
+            #
+            # NEVER change current_sl.
+            self.update_day_extremes(
+                price
+            )
+
+            # Make sure exactly one stop exists at the
+            # STORED fixed SL.
+            self.ensure_fixed_stop(
+                new_size,
+                price
+            )
+
+            return
+
+
+        # ====================================================
+        # POSITION FLAT
+        # ====================================================
+
+        self.last_position = 0
+
+        # ----------------------------------------------------
+        # POSITION JUST CLOSED
+        # ----------------------------------------------------
+
+        if old_size != 0:
+
+            self.handle_closed_position(
+                old_size,
+                price
+            )
+
+            return
+
+        # ----------------------------------------------------
+        # FLAT = NO STOPS
+        # ----------------------------------------------------
+
+        self.current_sl = None
+        self.stop_id = None
+
+        try:
+
+            stops = open_stops(
+                self.product_id
+            )
+
+            if stops:
+
+                cancel_all_stops(
+                    self.product_id
+                )
+
+        except Exception as exc:
+
+            logging.error(
+                "Flat stop cleanup failed: %s",
+                exc
+            )
+
+        # ----------------------------------------------------
+        # WEEKEND
+        # ----------------------------------------------------
+
+        if weekend_block(
+            now
+        ):
+
+            return
+
+        # ----------------------------------------------------
+        # BEFORE 05:45
+        # ----------------------------------------------------
+
+        if now < trading_start(
+            self.day
+        ):
+
+            return
+
+        # ----------------------------------------------------
+        # BUILD WHOLE DAY RANGE
+        # ----------------------------------------------------
+
+        if not self.range_ready:
+
+            self.build_day_range(
+                now
+            )
+
+        # ----------------------------------------------------
+        # FLAT BREAKOUT
+        # ----------------------------------------------------
+
+        triggered = self.flat_breakout(
+            price
+        )
+
+        if triggered:
+
+            return
+
+        # ----------------------------------------------------
+        # UPDATE RANGE AFTER BREAKOUT CHECK
+        # ----------------------------------------------------
+
+        self.update_day_extremes(
+            price
+        )
+
+
+    # ========================================================
     # RUN ONCE
     # ========================================================
 
-    def run_once(
-        self
-    ):
+    def run_once(self):
 
         now = now_ist()
 
@@ -2780,7 +3192,7 @@ class Strategy:
         )
 
         # ----------------------------------------------------
-        # SQUARE OFF FIRST
+        # WEEKEND SQUARE OFF
         # ----------------------------------------------------
 
         if force_squareoff(
@@ -2813,8 +3225,11 @@ class Strategy:
                 )
 
                 cancel_all_stops(
-                    self.product_id,
-                    verify=True
+                    self.product_id
+                )
+
+                wait_until_no_stops(
+                    self.product_id
                 )
 
                 market_order(
@@ -2834,9 +3249,9 @@ class Strategy:
                     )
                 )
 
+                self.last_position = 0
                 self.current_sl = None
                 self.stop_id = None
-                self.last_position = 0
 
                 self.persist()
 
@@ -2870,327 +3285,228 @@ class Strategy:
 
         old_size = self.last_position
 
-        # ====================================================
-        # POSITION OPEN
-        # ====================================================
+        # ----------------------------------------------------
+        # POSITION MANAGEMENT
+        # ----------------------------------------------------
 
-        if new_size != 0:
+        self.reconcile_position(
+            new_size,
+            old_size,
+            price,
+            now
+        )
 
-            # ------------------------------------------------
-            # NEW POSITION DETECTED
-            # ------------------------------------------------
 
-            if (
-                old_size == 0
-                and new_size != 0
-            ):
+    # ========================================================
+    # STARTUP
+    # ========================================================
 
-                logging.warning(
-                    "POSITION DETECTED | SIZE=%s",
-                    new_size
-                )
+    def startup(self):
 
-                self.last_position = (
-                    new_size
-                )
+        now = now_ist()
 
-                # If we don't have a trusted fixed SL,
-                # reconstruct today's actual range.
-                #
-                # This is especially important when the bot
-                # was restarted with an already-open position.
-                if (
-                    self.day is not None
-                    and now >= trading_start(
-                        self.day
-                    )
-                ):
+        position = get_position(
+            self.product_id
+        )
 
-                    self.rebuild_current_day_range(
-                        now
-                    )
+        startup_size = position["size"]
 
-                # If current_sl exists from old state,
-                # DO NOT trust it blindly.
-                #
-                # We will use the actual current day's range
-                # for a newly detected existing position.
-                if self.day_high is not None and self.day_low is not None:
+        self.new_day(
+            now,
+            startup_size
+        )
 
-                    if new_size > 0:
+        # ----------------------------------------------------
+        # WEEKEND
+        # ----------------------------------------------------
 
-                        correct_sl = self.day_low
+        if weekend_block(
+            now
+        ):
 
-                    else:
+            logging.warning(
+                "BOT STARTED DURING WEEKEND."
+            )
 
-                        correct_sl = self.day_high
+            logging.warning(
+                "NO TRADING."
+            )
 
-                    # ------------------------------------------------
-                    # IMPORTANT:
-                    #
-                    # Replace ALL old stops with the actual
-                    # day-based SL.
-                    # ------------------------------------------------
+            return
 
-                    if (
-                        correct_sl is not None
-                    ):
+        # ----------------------------------------------------
+        # OPEN POSITION AT STARTUP
+        # ----------------------------------------------------
 
-                        if (
-                            (
-                                new_size > 0
-                                and correct_sl < price
-                            )
-                            or
-                            (
-                                new_size < 0
-                                and correct_sl > price
-                            )
-                        ):
+        if startup_size != 0:
 
-                            self.current_sl = (
-                                correct_sl
-                            )
+            logging.warning(
+                "================================================"
+            )
 
-                            self.replace_stop(
-                                new_size,
-                                correct_sl,
-                                price
-                            )
+            logging.warning(
+                "STARTED WITH OPEN POSITION"
+            )
 
-                self.persist()
+            logging.warning(
+                "SIZE = %s",
+                startup_size
+            )
 
-                return
+            logging.warning(
+                "================================================"
+            )
+
+            self.last_position = startup_size
 
             # ------------------------------------------------
-            # BEFORE 05:45
-            # ------------------------------------------------
-
-            if now < trading_start(
-                self.day
-            ):
-
-                self.last_position = new_size
-
-                return
-
-            # ------------------------------------------------
-            # OVERNIGHT / NEW DAY POSITION
+            # If state has a fixed SL for this same trading
+            # day, preserve it.
             # ------------------------------------------------
 
             if (
-                self.carried_position
-                and not self.overnight_sl_set
+                self.current_sl is not None
+                and self.day == (
+                    self.state.get(
+                        "day"
+                    )
+                    and datetime.fromisoformat(
+                        self.state["day"]
+                    )
+                )
             ):
 
-                # Build NEW day's range.
-                if not self.range_ready:
+                try:
 
-                    self.rebuild_current_day_range(
-                        trading_start(
-                            self.day
-                        )
+                    self.ensure_fixed_stop(
+                        startup_size,
+                        get_price()
                     )
 
-                if self.range_ready:
+                except Exception as exc:
 
-                    # Include current price only for range,
-                    # not to move an already-existing SL.
-                    #
-                    # For carried position before the new
-                    # day's SL is established, this is the
-                    # new day's range.
-                    self.update_day_range(
-                        price
+                    logging.error(
+                        "Startup existing-SL "
+                        "reconciliation failed: %s",
+                        exc
                     )
 
-                    self.apply_overnight_sl(
-                        new_size,
-                        price
-                    )
+            else:
 
-                self.last_position = new_size
+                # ------------------------------------------------
+                # Position is being recognized as carried into
+                # this trading day.
+                # ------------------------------------------------
 
-                return
+                self.carried_position = True
+                self.overnight_sl_set = False
 
-            # ------------------------------------------------
-            # NORMAL OPEN POSITION
-            # ------------------------------------------------
+                self.current_sl = None
+                self.stop_id = None
 
-            self.last_position = new_size
-
-            # ------------------------------------------------
-            # NEVER CHANGE current_sl HERE.
-            # ------------------------------------------------
-
-            if self.current_sl is not None:
-
-                # Verify that EXACTLY ONE stop exists and
-                # that it is the fixed SL.
-                #
-                # If something is wrong, replace it.
-                stops = open_stops(
+                cancel_all_stops(
                     self.product_id
                 )
 
-                valid = False
+                wait_until_no_stops(
+                    self.product_id
+                )
 
-                if len(stops) == 1:
+                if now >= trading_start(
+                    self.day
+                ):
 
-                    existing_price = (
-                        self.stop_price(
-                            stops[0]
+                    try:
+
+                        self.build_day_range(
+                            now
                         )
-                    )
 
-                    if (
-                        existing_price
-                        == self.current_sl
-                    ):
+                        self.apply_overnight_sl(
+                            startup_size,
+                            get_price()
+                        )
 
-                        valid = True
+                    except Exception as exc:
 
-                if not valid:
+                        logging.error(
+                            "Startup carried-position "
+                            "SL setup failed: %s",
+                            exc
+                        )
 
-                    logging.warning(
-                        "PROTECTIVE STOP IS WRONG "
-                        "OR DUPLICATED."
-                    )
-
-                    logging.warning(
-                        "FIXED SL SHOULD BE = %s",
-                        self.current_sl
-                    )
-
-                    self.replace_stop(
-                        new_size,
-                        self.current_sl,
-                        price
-                    )
+            self.persist()
 
             return
 
-        # ====================================================
-        # FLAT
-        # ====================================================
+        # ----------------------------------------------------
+        # START FLAT
+        # ----------------------------------------------------
+
+        logging.warning(
+            "STARTED FLAT"
+        )
 
         self.last_position = 0
-
-        # ----------------------------------------------------
-        # POSITION JUST CLOSED
-        # ----------------------------------------------------
-
-        if old_size != 0:
-
-            self.handle_closed_position(
-                old_size,
-                price
-            )
-
-            return
-
-        # ----------------------------------------------------
-        # FLAT = NO FIXED SL
-        # ----------------------------------------------------
-
         self.current_sl = None
         self.stop_id = None
 
-        # Remove any orphan stops.
-        cancel_all_stops(
-            self.product_id,
-            verify=True
-        )
+        # Remove ALL orphan stops.
+        try:
+
+            cancel_all_stops(
+                self.product_id
+            )
+
+            wait_until_no_stops(
+                self.product_id
+            )
+
+        except Exception as exc:
+
+            logging.error(
+                "Startup stop cleanup failed: %s",
+                exc
+            )
 
         # ----------------------------------------------------
-        # BEFORE 05:45
+        # If already after 05:45, calculate WHOLE DAY range.
         # ----------------------------------------------------
 
-        if now < trading_start(
+        if now >= trading_start(
             self.day
         ):
 
-            return
+            try:
 
-        # ----------------------------------------------------
-        # BUILD DAY RANGE
-        # ----------------------------------------------------
-
-        if not self.range_ready:
-
-            # If the bot started late, reconstruct the actual
-            # range from 05:30 until NOW.
-            self.rebuild_current_day_range(
-                now
-            )
-
-        # ----------------------------------------------------
-        # BREAKOUT
-        # ----------------------------------------------------
-
-        if self.manual_flat:
-
-            triggered = (
-                self.manual_breakout(
-                    price
+                self.build_day_range(
+                    now
                 )
-            )
 
-        else:
+            except Exception as exc:
 
-            triggered = (
-                self.breakout(
-                    price
+                logging.error(
+                    "Startup range setup failed: %s",
+                    exc
                 )
-            )
-
-        if triggered:
-
-            return
-
-        # ----------------------------------------------------
-        # ONLY AFTER BREAKOUT CHECK:
-        #
-        # update current day high/low.
-        #
-        # This does NOT change current_sl.
-        # ----------------------------------------------------
-
-        self.update_day_range(
-            price
-        )
 
 
     # ========================================================
-    # START
+    # RUN
     # ========================================================
 
-    def run(
-        self
-    ):
+    def run(self):
 
         logging.warning(
             "================================================"
         )
 
         logging.warning(
-            "XAUTUSD FIXED-SL BOT STARTING"
+            "XAUTUSD FIXED-SL BREAKOUT BOT"
         )
 
         logging.warning(
-            "VERSION = 12.0"
-        )
-
-        logging.warning(
-            "================================================"
-        )
-
-        logging.warning(
-            "DAY START     = 05:30 IST"
-        )
-
-        logging.warning(
-            "TRADING START = 05:45 IST"
+            "VERSION 12.0"
         )
 
         logging.warning(
@@ -3198,11 +3514,23 @@ class Strategy:
         )
 
         logging.warning(
-            "NEW DAY HIGH -> LONG"
+            "DAY START      = 05:30 IST"
         )
 
         logging.warning(
-            "NEW DAY LOW  -> SHORT"
+            "TRADING START  = 05:45 IST"
+        )
+
+        logging.warning(
+            "================================================"
+        )
+
+        logging.warning(
+            "DAY HIGH BREAK -> LONG"
+        )
+
+        logging.warning(
+            "DAY LOW BREAK  -> SHORT"
         )
 
         logging.warning(
@@ -3238,11 +3566,19 @@ class Strategy:
         )
 
         logging.warning(
-            "EVERY NEW SL:"
+            "NEW DAY WITH POSITION:"
         )
 
         logging.warning(
-            "CANCEL ALL -> VERIFY ZERO -> CREATE ONE"
+            "NO NEW ENTRY"
+        )
+
+        logging.warning(
+            "OLD SL DELETED"
+        )
+
+        logging.warning(
+            "NEW DAY SL CREATED AFTER 05:45"
         )
 
         logging.warning(
@@ -3265,246 +3601,11 @@ class Strategy:
             self.product_id
         )
 
-        now = now_ist()
-
-        position = get_position(
-            self.product_id
-        )
-
-        startup_size = (
-            position["size"]
-        )
+        self.startup()
 
         # ----------------------------------------------------
-        # NEW DAY
-        # ----------------------------------------------------
-
-        self.new_day(
-            now,
-            startup_size
-        )
-
-        # ----------------------------------------------------
-        # WEEKEND
-        # ----------------------------------------------------
-
-        if weekend_block(
-            now
-        ):
-
-            logging.warning(
-                "BOT STARTED DURING WEEKEND."
-            )
-
-            logging.warning(
-                "NO TRADING."
-            )
-
-        # ====================================================
-        # START WITH OPEN POSITION
-        # ====================================================
-
-        if startup_size != 0:
-
-            logging.warning(
-                "================================================"
-            )
-
-            logging.warning(
-                "STARTED WITH EXISTING POSITION"
-            )
-
-            logging.warning(
-                "SIZE = %s",
-                startup_size
-            )
-
-            logging.warning(
-                "================================================"
-            )
-
-            self.last_position = (
-                startup_size
-            )
-
-            # ------------------------------------------------
-            # CRITICAL:
-            #
-            # DO NOT TRUST THE OLD SAVED SL.
-            #
-            # Rebuild today's actual range.
-            # ------------------------------------------------
-
-            if (
-                now >= trading_start(
-                    self.day
-                )
-                and not weekend_block(
-                    now
-                )
-            ):
-
-                try:
-
-                    self.rebuild_current_day_range(
-                        now
-                    )
-
-                    price = get_price()
-
-                    if (
-                        self.day_high is not None
-                        and self.day_low is not None
-                    ):
-
-                        if startup_size > 0:
-
-                            startup_sl = (
-                                self.day_low
-                            )
-
-                        else:
-
-                            startup_sl = (
-                                self.day_high
-                            )
-
-                        logging.warning(
-                            "STARTUP POSITION SL"
-                        )
-
-                        logging.warning(
-                            "DAY HIGH = %s",
-                            self.day_high
-                        )
-
-                        logging.warning(
-                            "DAY LOW = %s",
-                            self.day_low
-                        )
-
-                        logging.warning(
-                            "POSITION = %s",
-                            (
-                                "LONG"
-                                if startup_size > 0
-                                else "SHORT"
-                            )
-                        )
-
-                        logging.warning(
-                            "CORRECT SL = %s",
-                            startup_sl
-                        )
-
-                        # ------------------------------------------------
-                        # THIS REMOVES THE WRONG 4486 / 4457
-                        # AND CREATES THE CORRECT DAY SL.
-                        # ------------------------------------------------
-
-                        if (
-                            (
-                                startup_size > 0
-                                and startup_sl < price
-                            )
-                            or
-                            (
-                                startup_size < 0
-                                and startup_sl > price
-                            )
-                        ):
-
-                            self.current_sl = (
-                                startup_sl
-                            )
-
-                            self.replace_stop(
-                                startup_size,
-                                startup_sl,
-                                price
-                            )
-
-                            self.carried_position = False
-                            self.overnight_sl_set = True
-
-                        else:
-
-                            logging.error(
-                                "STARTUP SL IS ALREADY "
-                                "ON THE WRONG SIDE OF PRICE."
-                            )
-
-                except Exception as exc:
-
-                    logging.exception(
-                        "Startup position setup failed: %s",
-                        exc
-                    )
-
-            self.persist()
-
-        # ====================================================
-        # START FLAT
-        # ====================================================
-
-        else:
-
-            logging.warning(
-                "STARTED FLAT"
-            )
-
-            self.last_position = 0
-
-            self.current_sl = None
-            self.stop_id = None
-
-            # ------------------------------------------------
-            # ALWAYS clean old stops at startup.
-            # ------------------------------------------------
-
-            try:
-
-                cancel_all_stops(
-                    self.product_id,
-                    verify=True
-                )
-
-            except Exception as exc:
-
-                logging.error(
-                    "Startup stop cleanup failed: %s",
-                    exc
-                )
-
-            # ------------------------------------------------
-            # If trading already started, rebuild actual range.
-            # ------------------------------------------------
-
-            if (
-                now >= trading_start(
-                    self.day
-                )
-                and not weekend_block(
-                    now
-                )
-            ):
-
-                try:
-
-                    self.rebuild_current_day_range(
-                        now
-                    )
-
-                except Exception as exc:
-
-                    logging.error(
-                        "Startup range setup failed: %s",
-                        exc
-                    )
-
-        # ====================================================
         # MAIN LOOP
-        # ====================================================
+        # ----------------------------------------------------
 
         while True:
 
@@ -3515,7 +3616,7 @@ class Strategy:
             except KeyboardInterrupt:
 
                 logging.warning(
-                    "BOT STOPPED BY USER."
+                    "Bot stopped by user."
                 )
 
                 break
@@ -3543,7 +3644,7 @@ class Strategy:
 def main():
 
     logging.info(
-        "Connecting to Delta India..."
+        "Connecting to Delta India"
     )
 
     logging.info(
@@ -3553,9 +3654,11 @@ def main():
 
     product = get_product()
 
-    Strategy(
+    strategy = Strategy(
         product
-    ).run()
+    )
+
+    strategy.run()
 
 
 if __name__ == "__main__":
