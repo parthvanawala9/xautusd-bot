@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - PRODUCTION ENGINE
+# XAUTUSD BREAKOUT BOT - VERSION 21.0 (DYNAMIC DAY EXTREMES)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/20.0"
+    "User-Agent": "XAUTUSD-Breakout-Engine/21.0"
 })
 
 # ============================================================
@@ -385,12 +385,16 @@ class TradingStrategy:
         self.locked_day_low = None
         self.range_ready = False
 
-        # B. CURRENT POSITION SL (Does NOT trail)
+        # B. DYNAMIC RUNNING DAY EXTREMES (Updated up to entry time)
+        self.running_day_high = None
+        self.running_day_low = None
+
+        # C. CURRENT POSITION SL (Does NOT trail once entered)
         self.current_sl = None
         self.last_stop_id = None
         self.last_position = 0
 
-        # C. NEW DAY SL CONTROL STATE
+        # D. STATE FLAGS
         self.carried_position = False
         self.needs_0545_sl_reset = False
 
@@ -409,6 +413,8 @@ class TradingStrategy:
             self.day_start = datetime.fromisoformat(s["day_start"]) if s.get("day_start") else None
             self.locked_day_high = Decimal(s["locked_day_high"]) if s.get("locked_day_high") else None
             self.locked_day_low = Decimal(s["locked_day_low"]) if s.get("locked_day_low") else None
+            self.running_day_high = Decimal(s["running_day_high"]) if s.get("running_day_high") else None
+            self.running_day_low = Decimal(s["running_day_low"]) if s.get("running_day_low") else None
             self.range_ready = bool(s.get("range_ready", False))
             self.current_sl = Decimal(s["current_sl"]) if s.get("current_sl") else None
             self.last_stop_id = s.get("last_stop_id")
@@ -425,6 +431,8 @@ class TradingStrategy:
             "day_start": self.day_start.isoformat() if self.day_start else None,
             "locked_day_high": str(self.locked_day_high) if self.locked_day_high is not None else None,
             "locked_day_low": str(self.locked_day_low) if self.locked_day_low is not None else None,
+            "running_day_high": str(self.running_day_high) if self.running_day_high is not None else None,
+            "running_day_low": str(self.running_day_low) if self.running_day_low is not None else None,
             "range_ready": self.range_ready,
             "current_sl": str(self.current_sl) if self.current_sl is not None else None,
             "last_stop_id": self.last_stop_id,
@@ -448,6 +456,8 @@ class TradingStrategy:
         self.day_start = new_day
         self.locked_day_high = None
         self.locked_day_low = None
+        self.running_day_high = None
+        self.running_day_low = None
         self.range_ready = False
         self.manual_flat = False
         self.manual_exit_high = None
@@ -480,31 +490,42 @@ class TradingStrategy:
 
         self.locked_day_high = high
         self.locked_day_low = low
+        self.running_day_high = high
+        self.running_day_low = low
         self.range_ready = True
         self.save_state()
         logging.warning(f"LOCKED BREAKOUT RANGE (05:30-05:45) | HIGH={self.locked_day_high} | LOW={self.locked_day_low}")
         return True
 
-    def get_actual_current_day_extremes(self, now, current_price):
-        """
-        C. Calculates actual current-day extremes for SL Reversals.
-        Combines: Completed 15m candles + Currently forming 15m candle + Live Price Tick.
-        Does NOT alter locked_day_high or locked_day_low breakout levels.
-        """
-        if self.day_start is None:
-            return current_price, current_price
+    def update_running_day_extremes(self, now, current_price):
+        """Updates the running extremes across all candles + live tick from 05:30 IST up to now."""
+        if self.day_start is None or now <= self.day_start:
+            return
 
-        # Fetch all candles up to now (including open unfinalized candle)
         high, low = calculate_candle_extremes(self.day_start, now, include_only_completed=False)
-
         if high is None or current_price > high:
             high = current_price
         if low is None or current_price < low:
             low = current_price
 
-        return high, low
+        updated = False
+        if self.running_day_high is None or high > self.running_day_high:
+            self.running_day_high = high
+            updated = True
+        if self.running_day_low is None or low < self.running_day_low:
+            self.running_day_low = low
+            updated = True
 
-    def execute_entry(self, direction, price, sl_price, reason, is_new_day_reset=False):
+        if updated:
+            self.save_state()
+
+    def get_actual_current_day_extremes(self, now, current_price):
+        self.update_running_day_extremes(now, current_price)
+        high = self.running_day_high or current_price
+        low = self.running_day_low or current_price
+        return max(high, current_price), min(low, current_price)
+
+    def execute_entry(self, direction, price, sl_price, reason):
         if is_weekend_blocked():
             return False
         if sl_price is None:
@@ -547,7 +568,6 @@ class TradingStrategy:
         self.manual_exit_low = None
         self.carried_position = False
         
-        # If entered during 05:30-05:45 IST, flag for 05:45 SL replacement
         now = now_ist()
         if now < trading_execution_start(trading_day_start(now)):
             self.needs_0545_sl_reset = True
@@ -585,7 +605,6 @@ class TradingStrategy:
         logging.warning("EXACT STOP ORDER FILLED -> EXECUTING IMMEDIATE REVERSAL")
         self.manual_flat = False
 
-        # C. Calculate exact current-day extreme for reversal (Includes open candle + tick)
         now = now_ist()
         day_high_now, day_low_now = self.get_actual_current_day_extremes(now, current_price)
 
@@ -635,6 +654,29 @@ class TradingStrategy:
         self.save_state()
         return True
 
+    def fix_active_sl_if_incorrect(self, current_size, current_price):
+        """Corrects active stop-loss order if sitting at outdated opening bar low instead of true daily low."""
+        now = now_ist()
+        self.update_running_day_extremes(now, current_price)
+
+        if current_size > 0 and self.running_day_low is not None:
+            correct_sl = self.running_day_low
+            if self.current_sl is not None and self.current_sl > correct_sl:
+                logging.warning(f"CORRECTING SL FROM {self.current_sl} TO TRUE DAY LOW {correct_sl}")
+                stop_id = create_verified_stop(self.product_id, "sell", abs(current_size), correct_sl)
+                self.current_sl = correct_sl
+                self.last_stop_id = stop_id
+                self.save_state()
+
+        elif current_size < 0 and self.running_day_high is not None:
+            correct_sl = self.running_day_high
+            if self.current_sl is not None and self.current_sl < correct_sl:
+                logging.warning(f"CORRECTING SL FROM {self.current_sl} TO TRUE DAY HIGH {correct_sl}")
+                stop_id = create_verified_stop(self.product_id, "buy", abs(current_size), correct_sl)
+                self.current_sl = correct_sl
+                self.last_stop_id = stop_id
+                self.save_state()
+
     def run_cycle(self):
         now = now_ist()
 
@@ -664,10 +706,14 @@ class TradingStrategy:
         # 2. Check Day Transition
         self.handle_new_day(now, current_size)
 
-        # 3. Position Closure Transition Check (CONTINUOUS AT ALL TIMES, INCLUDING 05:30–05:45 IST)
+        # 3. Position Closure Transition Check
         if current_size == 0 and self.last_position != 0:
             self.handle_closed_position(self.last_position, current_price)
             return
+
+        # Keep updating running extremes dynamically
+        if self.day_start and now >= self.day_start:
+            self.update_running_day_extremes(now, current_price)
 
         # Before 05:45 IST -> Hold existing position and stops
         execution_start = trading_execution_start(self.day_start)
@@ -676,7 +722,7 @@ class TradingStrategy:
                 self.last_position = current_size
             return
 
-        # 4. Build 05:30-05:45 Range (Once 05:45 IST is reached)
+        # 4. Build 05:30-05:45 Locked Range
         if not self.range_ready:
             if not self.build_initial_range(now):
                 return
@@ -685,10 +731,13 @@ class TradingStrategy:
         if current_size != 0:
             self.last_position = current_size
 
-            # Update Carried/Reversal Position SL strictly at 05:45 IST with 05:30–05:45 Range
+            # Update Carried/Reversal Position SL strictly at 05:45 IST
             if self.needs_0545_sl_reset:
                 self.update_carried_position_stop(current_size, current_price)
                 return
+
+            # Auto-correct active SL if sitting at wrong opening low
+            self.fix_active_sl_if_incorrect(current_size, current_price)
 
             # Verify running protective SL remains active on exchange
             if self.current_sl is not None:
@@ -720,33 +769,33 @@ class TradingStrategy:
         # Handle Manual Exit Re-entry
         if self.manual_flat:
             if self.manual_exit_high is not None and current_price > self.manual_exit_high:
-                sl = self.locked_day_low
+                sl = self.running_day_low or self.locked_day_low
                 if self.execute_entry("LONG", current_price, sl, "MANUAL FLAT -> NEW HIGH"):
                     self.manual_flat = False
                     self.save_state()
                     return
             elif self.manual_exit_low is not None and current_price < self.manual_exit_low:
-                sl = self.locked_day_high
+                sl = self.running_day_high or self.locked_day_high
                 if self.execute_entry("SHORT", current_price, sl, "MANUAL FLAT -> NEW LOW"):
                     self.manual_flat = False
                     self.save_state()
                     return
             return
 
-        # Standard Breakout Monitoring against UNCHANGED Locked Levels
+        # Breakout Entry using TRUE RUNNING DAY EXTREMES as SL
         if self.locked_day_high is not None and current_price > self.locked_day_high:
-            sl = self.locked_day_low
+            sl = min(self.locked_day_low, self.running_day_low) if self.running_day_low else self.locked_day_low
             if self.execute_entry("LONG", current_price, sl, "DAY HIGH BREAKOUT"):
                 return
 
         if self.locked_day_low is not None and current_price < self.locked_day_low:
-            sl = self.locked_day_high
+            sl = max(self.locked_day_high, self.running_day_high) if self.running_day_high else self.locked_day_high
             if self.execute_entry("SHORT", current_price, sl, "DAY LOW BREAKOUT"):
                 return
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v21.0 ONLINE.")
 
         while True:
             try:
