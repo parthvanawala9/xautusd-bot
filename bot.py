@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 21.0 (DYNAMIC DAY EXTREMES)
+# XAUTUSD BREAKOUT BOT - VERSION 22.0 (NATIVE BRACKET SL)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/21.0"
+    "User-Agent": "XAUTUSD-Breakout-Engine/22.0"
 })
 
 # ============================================================
@@ -192,154 +192,43 @@ def calculate_candle_extremes(start_dt, end_dt, include_only_completed=True):
     return highest, lowest
 
 # ============================================================
-# STOP MANAGEMENT & ORDER HISTORY
-# ============================================================
-
-def get_open_stops(product_id):
-    data = api_call("GET", "/v2/orders", params={
-        "product_ids": str(int(product_id)),
-        "states": "open,pending",
-        "order_types": "all_stop",
-        "page_size": 100
-    }, auth=True)
-    result = data.get("result", [])
-    if isinstance(result, list):
-        return result
-    if isinstance(result, dict):
-        return [result]
-    return []
-
-def cancel_stop(product_id, order):
-    order_id = order.get("id")
-    if not order_id:
-        return False
-    try:
-        api_call("DELETE", "/v2/orders", body={"product_id": int(product_id), "id": int(order_id)}, auth=True)
-        return True
-    except Exception as exc:
-        logging.error(f"Cancel stop failed ID={order_id}: {exc}")
-        return False
-
-def cancel_all_stops_strict(product_id):
-    logging.warning("DELETING ALL EXISTING STOP ORDERS")
-    try:
-        api_call("DELETE", "/v2/orders/all", body={
-            "product_id": int(product_id),
-            "cancel_limit_orders": False,
-            "cancel_stop_orders": True,
-            "cancel_reduce_only_orders": False
-        }, auth=True)
-    except Exception as exc:
-        logging.error(f"Bulk stop deletion failed: {exc}")
-
-    time.sleep(0.30)
-    for _ in range(10):
-        stops = get_open_stops(product_id)
-        if not stops:
-            logging.warning("ZERO OLD STOPS CONFIRMED.")
-            return True
-        for stop in stops:
-            cancel_stop(product_id, stop)
-        time.sleep(0.30)
-
-    remaining = get_open_stops(product_id)
-    if remaining:
-        logging.error(f"STOP CLEANUP FAILED. REMAINING: {[x.get('id') for x in remaining]}")
-        return False
-    return True
-
-def read_stop_price(order):
-    for key in ("stop_price", "trigger_price", "stop_trigger_price"):
-        value = order.get(key)
-        if value not in (None, ""):
-            try:
-                return Decimal(str(value))
-            except Exception:
-                continue
-    return None
-
-def create_verified_stop(product_id, side, size, stop_price):
-    if not cancel_all_stops_strict(product_id):
-        raise RuntimeError("Could not remove old stop orders.")
-
-    body = {
-        "product_id": int(product_id),
-        "product_symbol": SYMBOL,
-        "size": int(abs(size)),
-        "side": side,
-        "order_type": "market_order",
-        "stop_order_type": "stop_loss_order",
-        "stop_price": str(stop_price),
-        "stop_trigger_method": "last_traded_price",
-        "reduce_only": True,
-        "client_order_id": f"xsl_{int(time.time()*1000)}"[:32]
-    }
-
-    logging.warning(f"CREATING PROTECTIVE SL | SIDE={side} | SIZE={abs(size)} | SL={stop_price}")
-    response = api_call("POST", "/v2/orders", body=body, auth=True)
-    result = response.get("result", {})
-    created_id = result.get("id") if isinstance(result, dict) else (result[0].get("id") if isinstance(result, list) and result else None)
-
-    time.sleep(0.40)
-    stops = get_open_stops(product_id)
-    if len(stops) != 1:
-        cancel_all_stops_strict(product_id)
-        raise RuntimeError(f"Expected exactly 1 stop, found {len(stops)}")
-
-    active = stops[0]
-    active_price = read_stop_price(active)
-    active_side = str(active.get("side", "")).lower()
-
-    if active_price != Decimal(str(stop_price)) or active_side != side.lower():
-        cancel_all_stops_strict(product_id)
-        raise RuntimeError("Exchange stop parameters do not match.")
-
-    active_id = created_id or active.get("id")
-    logging.warning(f"EXACTLY ONE STOP VERIFIED | ID={active_id} | SIDE={active_side} | PRICE={active_price}")
-    return active_id
-
-def stop_order_was_filled(product_id, stop_id):
-    if not stop_id:
-        return False
-
-    for _ in range(6):
-        try:
-            data = api_call("GET", "/v2/orders", params={
-                "product_ids": str(int(product_id)),
-                "states": "closed",
-                "page_size": 50
-            }, auth=True)
-
-            result = data.get("result", [])
-            result = [result] if isinstance(result, dict) else result
-
-            for order in result:
-                if str(order.get("id")) == str(stop_id):
-                    state = str(order.get("state", "")).lower()
-                    stop_type = str(order.get("stop_order_type", "")).lower()
-                    if state == "filled" and stop_type == "stop_loss_order":
-                        logging.warning(f"EXACT STOP ORDER FILLED CONFIRMED | ID={stop_id}")
-                        return True
-        except Exception as exc:
-            logging.error(f"Error checking stop history: {exc}")
-
-        time.sleep(0.50)
-    return False
-
-# ============================================================
 # EXECUTION & SIZING
 # ============================================================
 
-def execute_market_order(product_id, side, size):
+def execute_bracket_market_order(product_id, side, size, sl_price):
     body = {
         "product_id": int(product_id),
         "product_symbol": SYMBOL,
         "size": int(abs(size)),
         "side": side,
         "order_type": "market_order",
+        "bracket_stop_loss_price": str(sl_price),
+        "stop_trigger_method": "last_traded_price",
         "client_order_id": f"xent_{int(time.time()*1000)}"[:32]
     }
-    logging.warning(f"LIVE MARKET ORDER | SIDE={side} | SIZE={abs(size)}")
+    logging.warning(f"LIVE BRACKET MARKET ORDER | SIDE={side} | SIZE={abs(size)} | SL={sl_price}")
+    return api_call("POST", "/v2/orders", body=body, auth=True)
+
+def update_position_bracket_sl(product_id, sl_price):
+    body = {
+        "product_id": int(product_id),
+        "bracket_stop_loss_price": str(sl_price),
+        "stop_trigger_method": "last_traded_price"
+    }
+    logging.warning(f"UPDATING BRACKET SL ON POSITION | PRODUCT={product_id} | NEW SL={sl_price}")
+    return api_call("POST", "/v2/positions/change_pos_bracket", body=body, auth=True)
+
+def close_position_market(product_id, size):
+    side = "sell" if size > 0 else "buy"
+    body = {
+        "product_id": int(product_id),
+        "product_symbol": SYMBOL,
+        "size": int(abs(size)),
+        "side": side,
+        "order_type": "market_order",
+        "client_order_id": f"xexit_{int(time.time()*1000)}"[:32]
+    }
+    logging.warning(f"CLOSING POSITION MARKET | SIDE={side} | SIZE={abs(size)}")
     return api_call("POST", "/v2/orders", body=body, auth=True)
 
 def set_leverage(product_id):
@@ -389,9 +278,8 @@ class TradingStrategy:
         self.running_day_high = None
         self.running_day_low = None
 
-        # C. CURRENT POSITION SL (Does NOT trail once entered)
+        # C. CURRENT POSITION SL
         self.current_sl = None
-        self.last_stop_id = None
         self.last_position = 0
 
         # D. STATE FLAGS
@@ -417,7 +305,6 @@ class TradingStrategy:
             self.running_day_low = Decimal(s["running_day_low"]) if s.get("running_day_low") else None
             self.range_ready = bool(s.get("range_ready", False))
             self.current_sl = Decimal(s["current_sl"]) if s.get("current_sl") else None
-            self.last_stop_id = s.get("last_stop_id")
             self.carried_position = bool(s.get("carried_position", False))
             self.needs_0545_sl_reset = bool(s.get("needs_0545_sl_reset", False))
             self.manual_flat = bool(s.get("manual_flat", False))
@@ -435,7 +322,6 @@ class TradingStrategy:
             "running_day_low": str(self.running_day_low) if self.running_day_low is not None else None,
             "range_ready": self.range_ready,
             "current_sl": str(self.current_sl) if self.current_sl is not None else None,
-            "last_stop_id": self.last_stop_id,
             "carried_position": self.carried_position,
             "needs_0545_sl_reset": self.needs_0545_sl_reset,
             "manual_flat": self.manual_flat,
@@ -466,13 +352,11 @@ class TradingStrategy:
         if current_position != 0:
             self.carried_position = True
             self.needs_0545_sl_reset = True
-            logging.warning("POSITION CARRIED INTO NEW DAY. OLD EXCHANGE SL REMAINS ACTIVE UNTIL 05:45 IST.")
+            logging.warning("POSITION CARRIED INTO NEW DAY. OLD BRACKET SL REMAINS ACTIVE UNTIL 05:45 IST.")
         else:
             self.carried_position = False
             self.needs_0545_sl_reset = False
             self.current_sl = None
-            self.last_stop_id = None
-            cancel_all_stops_strict(self.product_id)
 
         self.save_state()
 
@@ -546,9 +430,8 @@ class TradingStrategy:
 
         size = calculate_order_size(self.product, price)
         side = "buy" if direction == "LONG" else "sell"
-        stop_side = "sell" if direction == "LONG" else "buy"
 
-        execute_market_order(self.product_id, side, size)
+        execute_bracket_market_order(self.product_id, side, size, sl_price)
 
         filled_size = 0
         for _ in range(30):
@@ -559,7 +442,7 @@ class TradingStrategy:
                 break
 
         if filled_size == 0:
-            raise RuntimeError("Market entry sent but fill was not confirmed.")
+            raise RuntimeError("Bracket market entry sent but fill was not confirmed.")
 
         self.last_position = filled_size
         self.current_sl = Decimal(str(sl_price))
@@ -575,24 +458,22 @@ class TradingStrategy:
             self.needs_0545_sl_reset = False
 
         self.save_state()
-
-        stop_id = create_verified_stop(self.product_id, stop_side, abs(filled_size), sl_price)
-        self.last_stop_id = stop_id
-        self.save_state()
-
-        logging.warning(f"ENTRY CONFIRMED [{reason}] | {direction} | SIZE={filled_size} | ENTRY={price} | SL={sl_price}")
+        logging.warning(f"BRACKET ENTRY CONFIRMED [{reason}] | {direction} | SIZE={filled_size} | ENTRY={price} | SL={sl_price}")
         return True
 
     def handle_closed_position(self, old_size, current_price):
-        old_stop_id = self.last_stop_id
-        is_sl = stop_order_was_filled(self.product_id, old_stop_id)
-
-        cancel_all_stops_strict(self.product_id)
         self.current_sl = None
-        self.last_stop_id = None
         self.last_position = 0
 
-        if not is_sl:
+        # Check if the closure occurred near the stop level or was a manual/external market exit
+        was_sl_triggered = False
+        if self.current_sl is not None:
+            if old_size > 0 and current_price <= self.current_sl:
+                was_sl_triggered = True
+            elif old_size < 0 and current_price >= self.current_sl:
+                was_sl_triggered = True
+
+        if not was_sl_triggered:
             logging.warning("POSITION CLOSED MANUALLY/EXTERNALLY. BASELINE LOCKED.")
             self.manual_flat = True
             self.manual_exit_high = current_price
@@ -602,7 +483,7 @@ class TradingStrategy:
             self.save_state()
             return
 
-        logging.warning("EXACT STOP ORDER FILLED -> EXECUTING IMMEDIATE REVERSAL")
+        logging.warning("STOP LOSS FILLED -> EXECUTING IMMEDIATE REVERSAL")
         self.manual_flat = False
 
         now = now_ist()
@@ -627,11 +508,9 @@ class TradingStrategy:
 
         if position_size > 0:
             new_sl = self.locked_day_low
-            stop_side = "sell"
             direction = "LONG"
         else:
             new_sl = self.locked_day_high
-            stop_side = "buy"
             direction = "SHORT"
 
         if new_sl is None:
@@ -645,36 +524,33 @@ class TradingStrategy:
             return False
 
         logging.warning(f"05:45 NEW DAY RANGE SL REPLACEMENT | {direction} | NEW SL={new_sl}")
-        stop_id = create_verified_stop(self.product_id, stop_side, abs(position_size), new_sl)
+        update_position_bracket_sl(self.product_id, new_sl)
 
         self.current_sl = new_sl
-        self.last_stop_id = stop_id
         self.needs_0545_sl_reset = False
         self.carried_position = False
         self.save_state()
         return True
 
     def fix_active_sl_if_incorrect(self, current_size, current_price):
-        """Corrects active stop-loss order if sitting at outdated opening bar low instead of true daily low."""
+        """Corrects active bracket stop-loss if sitting at outdated opening bar extreme instead of true daily extreme."""
         now = now_ist()
         self.update_running_day_extremes(now, current_price)
 
         if current_size > 0 and self.running_day_low is not None:
             correct_sl = self.running_day_low
             if self.current_sl is not None and self.current_sl > correct_sl:
-                logging.warning(f"CORRECTING SL FROM {self.current_sl} TO TRUE DAY LOW {correct_sl}")
-                stop_id = create_verified_stop(self.product_id, "sell", abs(current_size), correct_sl)
+                logging.warning(f"CORRECTING BRACKET SL FROM {self.current_sl} TO TRUE DAY LOW {correct_sl}")
+                update_position_bracket_sl(self.product_id, correct_sl)
                 self.current_sl = correct_sl
-                self.last_stop_id = stop_id
                 self.save_state()
 
         elif current_size < 0 and self.running_day_high is not None:
             correct_sl = self.running_day_high
             if self.current_sl is not None and self.current_sl < correct_sl:
-                logging.warning(f"CORRECTING SL FROM {self.current_sl} TO TRUE DAY HIGH {correct_sl}")
-                stop_id = create_verified_stop(self.product_id, "buy", abs(current_size), correct_sl)
+                logging.warning(f"CORRECTING BRACKET SL FROM {self.current_sl} TO TRUE DAY HIGH {correct_sl}")
+                update_position_bracket_sl(self.product_id, correct_sl)
                 self.current_sl = correct_sl
-                self.last_stop_id = stop_id
                 self.save_state()
 
     def run_cycle(self):
@@ -686,11 +562,9 @@ class TradingStrategy:
             size = position["size"]
             if size != 0:
                 logging.warning(f"SATURDAY 05:00 SQUARE OFF | SIZE={size}")
-                cancel_all_stops_strict(self.product_id)
-                execute_market_order(self.product_id, "sell" if size > 0 else "buy", abs(size))
+                close_position_market(self.product_id, size)
                 self.last_position = 0
                 self.current_sl = None
-                self.last_stop_id = None
                 self.carried_position = False
                 self.needs_0545_sl_reset = False
                 self.save_state()
@@ -738,30 +612,11 @@ class TradingStrategy:
 
             # Auto-correct active SL if sitting at wrong opening low
             self.fix_active_sl_if_incorrect(current_size, current_price)
-
-            # Verify running protective SL remains active on exchange
-            if self.current_sl is not None:
-                stops = get_open_stops(self.product_id)
-                expected_side = "sell" if current_size > 0 else "buy"
-                valid_stop_exists = any(
-                    read_stop_price(stop) == self.current_sl and str(stop.get("side", "")).lower() == expected_side
-                    for stop in stops
-                )
-
-                if not valid_stop_exists:
-                    logging.warning(f"PROTECTIVE SL MISSING. RECREATING SL={self.current_sl}")
-                    stop_id = create_verified_stop(self.product_id, expected_side, abs(current_size), self.current_sl)
-                    self.last_stop_id = stop_id
-                    self.save_state()
             return
 
         # 6. Flat State Breakout Monitoring
         self.last_position = 0
         self.current_sl = None
-        self.last_stop_id = None
-
-        if not cancel_all_stops_strict(self.product_id):
-            return
 
         if not self.range_ready:
             return
@@ -795,7 +650,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v21.0 ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v22.0 (NATIVE BRACKET SL) ONLINE.")
 
         while True:
             try:
