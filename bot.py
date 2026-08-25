@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 22.0 (NATIVE BRACKET SL)
+# XAUTUSD BREAKOUT BOT - VERSION 22.1 (FIXED BRACKET CARRYFORWARD)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/22.0"
+    "User-Agent": "XAUTUSD-Breakout-Engine/22.1"
 })
 
 # ============================================================
@@ -382,7 +382,6 @@ class TradingStrategy:
         return True
 
     def update_running_day_extremes(self, now, current_price):
-        """Updates the running extremes across all candles + live tick from 05:30 IST up to now."""
         if self.day_start is None or now <= self.day_start:
             return
 
@@ -462,16 +461,18 @@ class TradingStrategy:
         return True
 
     def handle_closed_position(self, old_size, current_price):
+        # Cache old SL before wiping state
+        previous_sl = self.current_sl
+
+        was_sl_triggered = False
+        if previous_sl is not None:
+            if old_size > 0 and current_price <= previous_sl:
+                was_sl_triggered = True
+            elif old_size < 0 and current_price >= previous_sl:
+                was_sl_triggered = True
+
         self.current_sl = None
         self.last_position = 0
-
-        # Check if the closure occurred near the stop level or was a manual/external market exit
-        was_sl_triggered = False
-        if self.current_sl is not None:
-            if old_size > 0 and current_price <= self.current_sl:
-                was_sl_triggered = True
-            elif old_size < 0 and current_price >= self.current_sl:
-                was_sl_triggered = True
 
         if not was_sl_triggered:
             logging.warning("POSITION CLOSED MANUALLY/EXTERNALLY. BASELINE LOCKED.")
@@ -517,13 +518,13 @@ class TradingStrategy:
             return False
 
         if position_size > 0 and new_sl >= current_price:
-            logging.warning("NEW DAY LONG SL IS ALREADY AT/ABOVE CURRENT PRICE.")
+            logging.warning(f"NEW DAY LONG SL ({new_sl}) IS ABOVE CURRENT PRICE ({current_price}). SKIPPING RESET.")
             return False
         if position_size < 0 and new_sl <= current_price:
-            logging.warning("NEW DAY SHORT SL IS ALREADY AT/BELOW CURRENT PRICE.")
+            logging.warning(f"NEW DAY SHORT SL ({new_sl}) IS BELOW CURRENT PRICE ({current_price}). SKIPPING RESET.")
             return False
 
-        logging.warning(f"05:45 NEW DAY RANGE SL REPLACEMENT | {direction} | NEW SL={new_sl}")
+        logging.warning(f"05:45 NEW DAY RANGE BRACKET SL REPLACEMENT | {direction} | NEW SL={new_sl}")
         update_position_bracket_sl(self.product_id, new_sl)
 
         self.current_sl = new_sl
@@ -533,7 +534,6 @@ class TradingStrategy:
         return True
 
     def fix_active_sl_if_incorrect(self, current_size, current_price):
-        """Corrects active bracket stop-loss if sitting at outdated opening bar extreme instead of true daily extreme."""
         now = now_ist()
         self.update_running_day_extremes(now, current_price)
 
@@ -589,32 +589,34 @@ class TradingStrategy:
         if self.day_start and now >= self.day_start:
             self.update_running_day_extremes(now, current_price)
 
-        # Before 05:45 IST -> Hold existing position and stops
         execution_start = trading_execution_start(self.day_start)
-        if now < execution_start:
-            if current_size != 0:
-                self.last_position = current_size
+
+        # 4. Handle Position Management (If Position Exists)
+        if current_size != 0:
+            self.last_position = current_size
+
+            # If it's past 05:45 IST and needs SL reset, build initial range and update bracket SL
+            if now >= execution_start:
+                if not self.range_ready:
+                    self.build_initial_range(now)
+
+                if self.needs_0545_sl_reset and self.range_ready:
+                    self.update_carried_position_stop(current_size, current_price)
+
+                # Auto-correct active SL if sitting at wrong opening extreme
+                self.fix_active_sl_if_incorrect(current_size, current_price)
             return
 
-        # 4. Build 05:30-05:45 Locked Range
+        # 5. Hold Flat States Before 05:45 IST
+        if now < execution_start:
+            return
+
+        # 6. Build 05:30-05:45 Locked Range (Flat State)
         if not self.range_ready:
             if not self.build_initial_range(now):
                 return
 
-        # 5. Running Position State
-        if current_size != 0:
-            self.last_position = current_size
-
-            # Update Carried/Reversal Position SL strictly at 05:45 IST
-            if self.needs_0545_sl_reset:
-                self.update_carried_position_stop(current_size, current_price)
-                return
-
-            # Auto-correct active SL if sitting at wrong opening low
-            self.fix_active_sl_if_incorrect(current_size, current_price)
-            return
-
-        # 6. Flat State Breakout Monitoring
+        # 7. Flat State Breakout Monitoring
         self.last_position = 0
         self.current_sl = None
 
@@ -650,7 +652,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v22.0 (NATIVE BRACKET SL) ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v22.1 (FIXED BRACKET CARRYFORWARD) ONLINE.")
 
         while True:
             try:
