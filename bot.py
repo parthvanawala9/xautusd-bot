@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 22.1 (FIXED BRACKET CARRYFORWARD)
+# XAUTUSD BREAKOUT BOT - VERSION 22.2 (FIXED DELTA API BRACKET)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/22.1"
+    "User-Agent": "XAUTUSD-Breakout-Engine/22.2"
 })
 
 # ============================================================
@@ -203,6 +203,7 @@ def execute_bracket_market_order(product_id, side, size, sl_price):
         "side": side,
         "order_type": "market_order",
         "bracket_stop_loss_price": str(sl_price),
+        "bracket_stop_loss_type": "market_order",
         "stop_trigger_method": "last_traded_price",
         "client_order_id": f"xent_{int(time.time()*1000)}"[:32]
     }
@@ -212,7 +213,8 @@ def execute_bracket_market_order(product_id, side, size, sl_price):
 def update_position_bracket_sl(product_id, sl_price):
     body = {
         "product_id": int(product_id),
-        "bracket_stop_loss_price": str(sl_price),
+        "stop_loss_price": str(sl_price),
+        "stop_type": "stop_loss",
         "stop_trigger_method": "last_traded_price"
     }
     logging.warning(f"UPDATING BRACKET SL ON POSITION | PRODUCT={product_id} | NEW SL={sl_price}")
@@ -461,7 +463,6 @@ class TradingStrategy:
         return True
 
     def handle_closed_position(self, old_size, current_price):
-        # Cache old SL before wiping state
         previous_sl = self.current_sl
 
         was_sl_triggered = False
@@ -507,31 +508,24 @@ class TradingStrategy:
         if not self.range_ready:
             return False
 
-        if position_size > 0:
-            new_sl = self.locked_day_low
-            direction = "LONG"
-        else:
-            new_sl = self.locked_day_high
-            direction = "SHORT"
+        new_sl = self.locked_day_low if position_size > 0 else self.locked_day_high
+        direction = "LONG" if position_size > 0 else "SHORT"
 
         if new_sl is None:
             return False
 
-        if position_size > 0 and new_sl >= current_price:
-            logging.warning(f"NEW DAY LONG SL ({new_sl}) IS ABOVE CURRENT PRICE ({current_price}). SKIPPING RESET.")
-            return False
-        if position_size < 0 and new_sl <= current_price:
-            logging.warning(f"NEW DAY SHORT SL ({new_sl}) IS BELOW CURRENT PRICE ({current_price}). SKIPPING RESET.")
-            return False
-
         logging.warning(f"05:45 NEW DAY RANGE BRACKET SL REPLACEMENT | {direction} | NEW SL={new_sl}")
-        update_position_bracket_sl(self.product_id, new_sl)
-
-        self.current_sl = new_sl
-        self.needs_0545_sl_reset = False
-        self.carried_position = False
-        self.save_state()
-        return True
+        
+        try:
+            update_position_bracket_sl(self.product_id, new_sl)
+            self.current_sl = new_sl
+            self.needs_0545_sl_reset = False
+            self.carried_position = False
+            self.save_state()
+            return True
+        except Exception as exc:
+            logging.error(f"FAILED TO UPDATE BRACKET SL: {exc}")
+            return False
 
     def fix_active_sl_if_incorrect(self, current_size, current_price):
         now = now_ist()
@@ -541,17 +535,23 @@ class TradingStrategy:
             correct_sl = self.running_day_low
             if self.current_sl is not None and self.current_sl > correct_sl:
                 logging.warning(f"CORRECTING BRACKET SL FROM {self.current_sl} TO TRUE DAY LOW {correct_sl}")
-                update_position_bracket_sl(self.product_id, correct_sl)
-                self.current_sl = correct_sl
-                self.save_state()
+                try:
+                    update_position_bracket_sl(self.product_id, correct_sl)
+                    self.current_sl = correct_sl
+                    self.save_state()
+                except Exception as exc:
+                    logging.error(f"SL CORRECTION FAILED: {exc}")
 
         elif current_size < 0 and self.running_day_high is not None:
             correct_sl = self.running_day_high
             if self.current_sl is not None and self.current_sl < correct_sl:
                 logging.warning(f"CORRECTING BRACKET SL FROM {self.current_sl} TO TRUE DAY HIGH {correct_sl}")
-                update_position_bracket_sl(self.product_id, correct_sl)
-                self.current_sl = correct_sl
-                self.save_state()
+                try:
+                    update_position_bracket_sl(self.product_id, correct_sl)
+                    self.current_sl = correct_sl
+                    self.save_state()
+                except Exception as exc:
+                    logging.error(f"SL CORRECTION FAILED: {exc}")
 
     def run_cycle(self):
         now = now_ist()
@@ -595,7 +595,6 @@ class TradingStrategy:
         if current_size != 0:
             self.last_position = current_size
 
-            # If it's past 05:45 IST and needs SL reset, build initial range and update bracket SL
             if now >= execution_start:
                 if not self.range_ready:
                     self.build_initial_range(now)
@@ -603,7 +602,6 @@ class TradingStrategy:
                 if self.needs_0545_sl_reset and self.range_ready:
                     self.update_carried_position_stop(current_size, current_price)
 
-                # Auto-correct active SL if sitting at wrong opening extreme
                 self.fix_active_sl_if_incorrect(current_size, current_price)
             return
 
@@ -652,7 +650,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v22.1 (FIXED BRACKET CARRYFORWARD) ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v22.2 (FIXED DELTA API BRACKET) ONLINE.")
 
         while True:
             try:
