@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 22.2 (FIXED DELTA API BRACKET)
+# XAUTUSD BREAKOUT BOT - VERSION 22.3 (STRICT 05:45 CARRYOVER LOCK)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/22.2"
+    "User-Agent": "XAUTUSD-Breakout-Engine/22.3"
 })
 
 # ============================================================
@@ -218,7 +218,10 @@ def update_position_bracket_sl(product_id, sl_price):
         "stop_trigger_method": "last_traded_price"
     }
     logging.warning(f"UPDATING BRACKET SL ON POSITION | PRODUCT={product_id} | NEW SL={sl_price}")
-    return api_call("POST", "/v2/positions/change_pos_bracket", body=body, auth=True)
+    res = api_call("POST", "/v2/positions/change_pos_bracket", body=body, auth=True)
+    if not res.get("success", False) and "result" not in res:
+        raise RuntimeError(f"Delta API rejected bracket SL update: {res}")
+    return res
 
 def close_position_market(product_id, size):
     side = "sell" if size > 0 else "buy"
@@ -599,8 +602,11 @@ class TradingStrategy:
                 if not self.range_ready:
                     self.build_initial_range(now)
 
+                # Execute 05:45 IST SL reset for carried position
                 if self.needs_0545_sl_reset and self.range_ready:
-                    self.update_carried_position_stop(current_size, current_price)
+                    if self.update_carried_position_stop(current_size, current_price):
+                        logging.warning(f"05:45 BRACKET SL SUCCESSFULLY RESET TO {self.current_sl}")
+                    return  # Prevent running auto-correct on the exact same cycle
 
                 self.fix_active_sl_if_incorrect(current_size, current_price)
             return
@@ -650,7 +656,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v22.2 (FIXED DELTA API BRACKET) ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v22.3 (STRICT 05:45 CARRYOVER LOCK) ONLINE.")
 
         while True:
             try:
