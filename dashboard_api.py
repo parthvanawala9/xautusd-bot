@@ -49,7 +49,7 @@ BOT_FILE = os.path.join(
     "bot.py"
 )
 
-STATE_FILE = os.path.join(
+DEFAULT_STATE_FILE = os.path.join(
     BOT_DIR,
     "xautusd_state.json"
 )
@@ -57,28 +57,31 @@ STATE_FILE = os.path.join(
 
 # ============================================================
 # LOAD ENVIRONMENT
-#
-# IMPORTANT:
-# The dashboard process may not inherit the exact same
-# environment as bot.py.
-#
-# Therefore explicitly try the bot .env and dashboard .env.
 # ============================================================
 
 ENV_FILES = [
-    os.path.join(BOT_DIR, ".env"),
-    os.path.join(DASHBOARD_DIR, ".env"),
+    os.path.join(
+        BOT_DIR,
+        ".env"
+    ),
+    os.path.join(
+        DASHBOARD_DIR,
+        ".env"
+    )
 ]
 
 for env_file in ENV_FILES:
-    if os.path.exists(env_file):
+
+    if os.path.exists(
+        env_file
+    ):
+
         load_dotenv(
             env_file,
             override=False
         )
 
 
-# Also load normal dotenv location.
 load_dotenv(
     override=False
 )
@@ -114,10 +117,7 @@ API_SECRET = os.getenv(
 
 STATE_FILE = os.getenv(
     "STATE_FILE",
-    os.path.join(
-        BOT_DIR,
-        "xautusd_state.json"
-    )
+    DEFAULT_STATE_FILE
 )
 
 
@@ -148,7 +148,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Dashboard/2.0"
+    "User-Agent": "XAUTUSD-Dashboard/3.0"
 })
 
 
@@ -160,6 +160,7 @@ def decimal_value(
     value,
     default=None
 ):
+
     if value is None:
         return default
 
@@ -170,16 +171,20 @@ def decimal_value(
         return value
 
     try:
+
         return Decimal(
             str(value)
         )
+
     except Exception:
+
         return default
 
 
 def json_number(
     value
 ):
+
     if value is None:
         return None
 
@@ -198,11 +203,15 @@ def safe_int(
     value,
     default=0
 ):
+
     try:
+
         return int(
             value
         )
+
     except Exception:
+
         return default
 
 
@@ -211,6 +220,7 @@ def safe_int(
 # ============================================================
 
 def now_ist():
+
     return datetime.now(
         IST
     )
@@ -219,50 +229,105 @@ def now_ist():
 def parse_delta_time(
     value
 ):
-    """
-    Delta timestamps are commonly returned as
-    microseconds since epoch.
-    """
 
     if value is None:
         return None
 
+    # Already datetime.
+    if isinstance(
+        value,
+        datetime
+    ):
+
+        if value.tzinfo is None:
+
+            return value.replace(
+                tzinfo=timezone.utc
+            )
+
+        return value
+
+    text = str(
+        value
+    ).strip()
+
+    if not text:
+        return None
+
+    # Try numeric epoch first.
     try:
+
         number = int(
-            str(value)
+            text
         )
 
-        # Microseconds
+        # Microseconds.
         if number > 10**14:
+
             return datetime.fromtimestamp(
                 number / 1_000_000,
                 tz=timezone.utc
             )
 
-        # Milliseconds
+        # Milliseconds.
         if number > 10**11:
+
             return datetime.fromtimestamp(
                 number / 1_000,
                 tz=timezone.utc
             )
 
-        # Seconds
-        return datetime.fromtimestamp(
-            number,
-            tz=timezone.utc
-        )
+        # Seconds.
+        if number > 10**8:
+
+            return datetime.fromtimestamp(
+                number,
+                tz=timezone.utc
+            )
 
     except Exception:
+        pass
+
+    # Try ISO timestamp.
+    try:
+
+        iso_text = text
+
+        if iso_text.endswith(
+            "Z"
+        ):
+
+            iso_text = (
+                iso_text[:-1]
+                + "+00:00"
+            )
+
+        dt = datetime.fromisoformat(
+            iso_text
+        )
+
+        if dt.tzinfo is None:
+
+            dt = dt.replace(
+                tzinfo=timezone.utc
+            )
+
+        return dt
+
+    except Exception:
+
         return None
 
 
 def iso_ist(
     dt
 ):
+
     if dt is None:
         return None
 
     if dt.tzinfo is None:
+
         dt = dt.replace(
             tzinfo=timezone.utc
         )
@@ -282,6 +347,7 @@ def sign_request(
     query_string="",
     body=""
 ):
+
     timestamp = str(
         int(
             time.time()
@@ -322,7 +388,6 @@ def delta_request(
 
     params = params or {}
 
-    # Remove None values.
     clean_params = {}
 
     for key, value in params.items():
@@ -349,15 +414,15 @@ def delta_request(
     if authenticated:
 
         if not API_KEY:
+
             raise RuntimeError(
-                "DELTA_API_KEY is missing "
-                "from dashboard environment."
+                "DELTA_API_KEY is missing."
             )
 
         if not API_SECRET:
+
             raise RuntimeError(
-                "DELTA_API_SECRET is missing "
-                "from dashboard environment."
+                "DELTA_API_SECRET is missing."
             )
 
         headers = sign_request(
@@ -433,6 +498,7 @@ def get_product():
         result,
         dict
     ):
+
         return {}
 
     return result
@@ -444,43 +510,65 @@ def get_product():
 
 def get_ticker():
 
-    return delta_request(
+    data = delta_request(
         "GET",
         f"/v2/tickers/{SYMBOL}"
-    ).get(
+    )
+
+    result = data.get(
         "result",
         {}
     )
+
+    if not isinstance(
+        result,
+        dict
+    ):
+
+        raise RuntimeError(
+            f"Unexpected ticker result: {data}"
+        )
+
+    return result
 
 
 def get_current_price():
 
     ticker = get_ticker()
 
-    for key in (
+    # Current Delta ticker fields.
+    price_fields = (
         "close",
         "last_price",
         "mark_price",
-        "spot_price"
-    ):
+        "spot_price",
+        "price"
+    )
+
+    for key in price_fields:
 
         value = ticker.get(
             key
         )
 
-        if value not in (
+        if value in (
             None,
             ""
         ):
+            continue
 
-            price = decimal_value(
-                value
-            )
+        price = decimal_value(
+            value
+        )
 
-            if price is not None:
-                return price
+        if price is not None:
 
-    return None
+            return price
+
+    raise RuntimeError(
+        "Ticker returned no usable price. "
+        f"Ticker={ticker}"
+    )
 
 
 # ============================================================
@@ -504,17 +592,40 @@ def get_balance_data():
         wallets,
         dict
     ):
+
         wallets = [
             wallets
         ]
 
-    # First prefer USD / USDT.
+    if not isinstance(
+        wallets,
+        list
+    ):
+
+        wallets = []
+
+    # --------------------------------------------------------
+    # Prefer USD / USDT.
+    # --------------------------------------------------------
+
     for wallet in wallets:
+
+        if not isinstance(
+            wallet,
+            dict
+        ):
+            continue
 
         asset = str(
             wallet.get(
                 "asset_symbol",
-                ""
+                wallet.get(
+                    "symbol",
+                    wallet.get(
+                        "asset",
+                        ""
+                    )
+                )
             )
         ).upper()
 
@@ -536,6 +647,10 @@ def get_balance_data():
             )
         )
 
+        if balance is None:
+
+            balance = available
+
         if balance is not None:
 
             return {
@@ -545,11 +660,71 @@ def get_balance_data():
                 "raw": wallet
             }
 
-    # If USD/USDT wasn't found, use net equity.
+    # --------------------------------------------------------
+    # Fallback: search every wallet for a usable balance.
+    # --------------------------------------------------------
+
+    for wallet in wallets:
+
+        if not isinstance(
+            wallet,
+            dict
+        ):
+            continue
+
+        balance = decimal_value(
+            wallet.get(
+                "balance"
+            )
+        )
+
+        available = decimal_value(
+            wallet.get(
+                "available_balance"
+            )
+        )
+
+        if balance is None:
+
+            balance = available
+
+        if balance is not None:
+
+            asset = str(
+                wallet.get(
+                    "asset_symbol",
+                    wallet.get(
+                        "symbol",
+                        wallet.get(
+                            "asset",
+                            "UNKNOWN"
+                        )
+                    )
+                )
+            ).upper()
+
+            return {
+                "balance": balance,
+                "available_balance": available,
+                "asset": asset,
+                "raw": wallet
+            }
+
+    # --------------------------------------------------------
+    # Net equity fallback.
+    # --------------------------------------------------------
+
     meta = data.get(
         "meta",
         {}
     )
+
+    if not isinstance(
+        meta,
+        dict
+    ):
+
+        meta = {}
 
     net_equity = decimal_value(
         meta.get(
@@ -567,8 +742,8 @@ def get_balance_data():
         }
 
     raise RuntimeError(
-        "No USD/USDT wallet or net_equity "
-        "was returned by Delta."
+        "Delta returned no usable wallet balance. "
+        f"Response={data}"
     )
 
 
@@ -596,6 +771,7 @@ def get_position_data(
     )
 
     if not result:
+
         return {
             "size": 0,
             "entry_price": None,
@@ -603,6 +779,15 @@ def get_position_data(
             "realized_funding": Decimal("0"),
             "raw": {}
         }
+
+    if not isinstance(
+        result,
+        dict
+    ):
+
+        raise RuntimeError(
+            f"Unexpected position response: {data}"
+        )
 
     return {
         "size": safe_int(
@@ -641,16 +826,20 @@ def load_bot_state():
     candidates = [
         STATE_FILE,
 
-        os.path.join(
-            BOT_DIR,
-            "xautusd_state.json"
-        ),
+        DEFAULT_STATE_FILE,
 
         os.path.join(
             DASHBOARD_DIR,
             "xautusd_state.json"
         )
     ]
+
+    # Remove duplicates while preserving order.
+    candidates = list(
+        dict.fromkeys(
+            candidates
+        )
+    )
 
     for filename in candidates:
 
@@ -679,6 +868,7 @@ def load_bot_state():
                 return state
 
         except Exception:
+
             continue
 
     return {}
@@ -715,6 +905,7 @@ def is_bot_running():
                 "pgrep" in line
                 or "dashboard_api.py" in line
             ):
+
                 continue
 
             if BOT_FILE in line:
@@ -736,27 +927,37 @@ def get_stop_loss(
     state
 ):
 
+    if not isinstance(
+        state,
+        dict
+    ):
+
+        return None
+
     for key in (
         "current_sl",
         "stop_loss",
-        "active_stop_loss"
+        "active_stop_loss",
+        "current_stop_loss"
     ):
 
         value = state.get(
             key
         )
 
-        if value not in (
+        if value in (
             None,
             ""
         ):
+            continue
 
-            result = decimal_value(
-                value
-            )
+        result = decimal_value(
+            value
+        )
 
-            if result is not None:
-                return result
+        if result is not None:
+
+            return result
 
     return None
 
@@ -792,15 +993,29 @@ def get_open_stop_order(
             result,
             dict
         ):
+
             result = [
                 result
             ]
 
+        if not isinstance(
+            result,
+            list
+        ):
+
+            return None
+
         if not result:
             return None
 
-        # Prefer actual stop-loss orders.
+        # Prefer orders explicitly marked as stop.
         for order in result:
+
+            if not isinstance(
+                order,
+                dict
+            ):
+                continue
 
             stop_type = str(
                 order.get(
@@ -810,6 +1025,15 @@ def get_open_stop_order(
             ).lower()
 
             if "stop" in stop_type:
+
+                return order
+
+            if order.get(
+                "stop_price"
+            ) not in (
+                None,
+                ""
+            ):
 
                 return order
 
@@ -827,6 +1051,13 @@ def get_open_stop_order(
 def get_contract_value(
     product
 ):
+
+    if not isinstance(
+        product,
+        dict
+    ):
+
+        return Decimal("1")
 
     for key in (
         "contract_value",
@@ -878,6 +1109,7 @@ def calculate_unrealized_pnl(
         or entry is None
         or current_price is None
     ):
+
         return Decimal("0")
 
     contract_value = get_contract_value(
@@ -923,9 +1155,17 @@ def get_xautusd_fills(
         result,
         dict
     ):
+
         result = [
             result
         ]
+
+    if not isinstance(
+        result,
+        list
+    ):
+
+        return []
 
     return result
 
@@ -938,6 +1178,13 @@ def fill_datetime(
     fill
 ):
 
+    if not isinstance(
+        fill,
+        dict
+    ):
+
+        return None
+
     for key in (
         "created_at",
         "timestamp",
@@ -948,11 +1195,15 @@ def fill_datetime(
             key
         )
 
+        if value is None:
+            continue
+
         dt = parse_delta_time(
             value
         )
 
         if dt is not None:
+
             return dt
 
     return None
@@ -963,8 +1214,7 @@ def fill_datetime(
 #
 # FIFO position matching.
 #
-# This is dashboard-side calculation only.
-# It does not modify anything on Delta.
+# DASHBOARD SIDE ONLY.
 # ============================================================
 
 def calculate_fill_statistics(
@@ -992,6 +1242,12 @@ def calculate_fill_statistics(
 
     for fill in fills:
 
+        if not isinstance(
+            fill,
+            dict
+        ):
+            continue
+
         side = str(
             fill.get(
                 "side",
@@ -1003,6 +1259,7 @@ def calculate_fill_statistics(
             "buy",
             "sell"
         ):
+
             continue
 
         size = safe_int(
@@ -1022,6 +1279,7 @@ def calculate_fill_statistics(
             size <= 0
             or price is None
         ):
+
             continue
 
         dt = fill_datetime(
@@ -1036,36 +1294,52 @@ def calculate_fill_statistics(
         )
 
         normalized.append({
+
             "side": side,
+
             "size": size,
+
             "price": price,
+
             "dt": dt,
+
             "commission": commission,
-            "id": fill.get("id"),
-            "order_id": fill.get("order_id"),
+
+            "id": fill.get(
+                "id"
+            ),
+
+            "order_id": fill.get(
+                "order_id"
+            ),
+
             "fill_type": fill.get(
                 "fill_type"
             )
         })
 
-    # Oldest first.
     normalized.sort(
         key=lambda x: (
-            x["dt"] or datetime.min.replace(
+            x["dt"]
+            or datetime.min.replace(
                 tzinfo=timezone.utc
             ),
-            str(x["id"] or "")
+            str(
+                x["id"]
+                or ""
+            )
         )
     )
 
-    # FIFO lots:
-    #
-    # positive quantity = long
-    # negative quantity = short
     lots = []
 
-    realized_gross = Decimal("0")
-    realized_commission = Decimal("0")
+    realized_gross = Decimal(
+        "0"
+    )
+
+    realized_commission = Decimal(
+        "0"
+    )
 
     completed_trades = []
 
@@ -1079,8 +1353,6 @@ def calculate_fill_statistics(
 
         price = fill["price"]
 
-        # Commission is always part of realized account P&L
-        # when a fill occurs.
         realized_commission += (
             fill["commission"]
         )
@@ -1106,13 +1378,16 @@ def calculate_fill_statistics(
             lot = lots[0]
 
             match_qty = min(
-                abs(remaining),
-                abs(lot["qty"])
+                abs(
+                    remaining
+                ),
+                abs(
+                    lot["qty"]
+                )
             )
 
             if lot["qty"] > 0:
 
-                # Existing long closed by sell.
                 gross = (
                     price
                     - lot["price"]
@@ -1120,11 +1395,10 @@ def calculate_fill_statistics(
                     match_qty
                 ) * contract_value
 
-                trade_direction = "LONG"
+                direction = "LONG"
 
             else:
 
-                # Existing short closed by buy.
                 gross = (
                     lot["price"]
                     - price
@@ -1132,63 +1406,92 @@ def calculate_fill_statistics(
                     match_qty
                 ) * contract_value
 
-                trade_direction = "SHORT"
+                direction = "SHORT"
 
             realized_gross += gross
 
-            close_dt = fill["dt"]
-
             completed_trades.append({
-                "direction": trade_direction,
+
+                "direction": direction,
+
                 "size": match_qty,
+
                 "entry_price": json_number(
                     lot["price"]
                 ),
+
                 "exit_price": json_number(
                     price
                 ),
+
                 "pnl": json_number(
                     gross
                 ),
+
                 "entry_time": iso_ist(
                     lot["dt"]
                 ),
+
                 "exit_time": iso_ist(
-                    close_dt
+                    fill["dt"]
                 )
             })
 
             if lot["qty"] > 0:
-                lot["qty"] -= match_qty
+
+                lot["qty"] -= (
+                    match_qty
+                )
+
             else:
-                lot["qty"] += match_qty
+
+                lot["qty"] += (
+                    match_qty
+                )
 
             if remaining > 0:
-                remaining -= match_qty
+
+                remaining -= (
+                    match_qty
+                )
+
             else:
-                remaining += match_qty
+
+                remaining += (
+                    match_qty
+                )
 
             if lot["qty"] == 0:
-                lots.pop(0)
+
+                lots.pop(
+                    0
+                )
 
         if remaining != 0:
 
             lots.append({
+
                 "qty": remaining,
+
                 "price": price,
+
                 "dt": fill["dt"]
             })
 
-    # Total realized after commissions.
     realized_total = (
         realized_gross
         - realized_commission
     )
 
-    # Today's completed trade P&L.
+    # --------------------------------------------------------
+    # Today's P&L
+    # --------------------------------------------------------
+
     today = now_ist().date()
 
-    today_pnl = Decimal("0")
+    today_pnl = Decimal(
+        "0"
+    )
 
     for trade in completed_trades:
 
@@ -1215,10 +1518,12 @@ def calculate_fill_statistics(
                 )
 
         except Exception:
+
             continue
 
-    # Today's commission.
-    today_commission = Decimal("0")
+    today_commission = Decimal(
+        "0"
+    )
 
     for fill in normalized:
 
@@ -1239,7 +1544,12 @@ def calculate_fill_statistics(
 
     today_pnl -= today_commission
 
+    # --------------------------------------------------------
+    # Win / Loss
+    # --------------------------------------------------------
+
     winning_trades = 0
+
     losing_trades = 0
 
     for trade in completed_trades:
@@ -1252,9 +1562,11 @@ def calculate_fill_statistics(
         )
 
         if pnl > 0:
+
             winning_trades += 1
 
         elif pnl < 0:
+
             losing_trades += 1
 
     total_trades = (
@@ -1263,32 +1575,40 @@ def calculate_fill_statistics(
     )
 
     win_rate = (
+
         (
             winning_trades
             / total_trades
         ) * 100
+
         if total_trades > 0
+
         else 0
     )
 
-    # Most recent trades first.
     completed_trades.reverse()
 
-    # Keep dashboard response reasonably small.
-    completed_trades = completed_trades[
-        :50
-    ]
+    completed_trades = (
+        completed_trades[:50]
+    )
 
     return {
+
         "realized_pnl": realized_total,
+
         "today_pnl": today_pnl,
+
         "total_trades": total_trades,
+
         "winning_trades": winning_trades,
+
         "losing_trades": losing_trades,
+
         "win_rate": round(
             win_rate,
             2
         ),
+
         "trades": completed_trades
     }
 
@@ -1333,7 +1653,8 @@ def build_dashboard():
     except Exception as exc:
 
         errors.append(
-            "Product: " + str(exc)
+            "Product: "
+            + str(exc)
         )
 
     product_id = product.get(
@@ -1341,7 +1662,7 @@ def build_dashboard():
     )
 
     # --------------------------------------------------------
-    # MARKET PRICE
+    # PRICE
     # --------------------------------------------------------
 
     current_price = None
@@ -1353,11 +1674,12 @@ def build_dashboard():
     except Exception as exc:
 
         errors.append(
-            "Price: " + str(exc)
+            "Price: "
+            + str(exc)
         )
 
     # --------------------------------------------------------
-    # BOT STATE
+    # BOT
     # --------------------------------------------------------
 
     state = load_bot_state()
@@ -1369,8 +1691,11 @@ def build_dashboard():
     # --------------------------------------------------------
 
     balance_data = {
+
         "balance": None,
+
         "available_balance": None,
+
         "asset": None
     }
 
@@ -1381,7 +1706,8 @@ def build_dashboard():
     except Exception as exc:
 
         errors.append(
-            "Balance: " + str(exc)
+            "Balance: "
+            + str(exc)
         )
 
     # --------------------------------------------------------
@@ -1389,10 +1715,15 @@ def build_dashboard():
     # --------------------------------------------------------
 
     position = {
+
         "size": 0,
+
         "entry_price": None,
+
         "realized_pnl": Decimal("0"),
+
         "realized_funding": Decimal("0"),
+
         "raw": {}
     }
 
@@ -1407,8 +1738,15 @@ def build_dashboard():
         except Exception as exc:
 
             errors.append(
-                "Position: " + str(exc)
+                "Position: "
+                + str(exc)
             )
+
+    else:
+
+        errors.append(
+            "Position: Product ID not found."
+        )
 
     # --------------------------------------------------------
     # STOP LOSS
@@ -1418,7 +1756,6 @@ def build_dashboard():
         state
     )
 
-    # If state does not have SL, try active order.
     if (
         stop_loss is None
         and product_id is not None
@@ -1437,26 +1774,35 @@ def build_dashboard():
             )
 
     # --------------------------------------------------------
-    # UNREALIZED PNL
+    # UNREALIZED P&L
     # --------------------------------------------------------
 
-    unrealized_pnl = calculate_unrealized_pnl(
-        position,
-        current_price,
-        product
+    unrealized_pnl = (
+        calculate_unrealized_pnl(
+            position,
+            current_price,
+            product
+        )
     )
 
     # --------------------------------------------------------
-    # FILLS / STATISTICS
+    # FILLS
     # --------------------------------------------------------
 
     fill_statistics = {
+
         "realized_pnl": Decimal("0"),
+
         "today_pnl": Decimal("0"),
+
         "total_trades": 0,
+
         "winning_trades": 0,
+
         "losing_trades": 0,
+
         "win_rate": 0,
+
         "trades": []
     }
 
@@ -1470,38 +1816,48 @@ def build_dashboard():
                 product_id
             )
 
-            fill_statistics = calculate_fill_statistics(
-                fills,
-                product
+            fill_statistics = (
+                calculate_fill_statistics(
+                    fills,
+                    product
+                )
             )
 
         except Exception as exc:
 
             errors.append(
-                "Fills: " + str(exc)
+                "Fills: "
+                + str(exc)
             )
 
     # --------------------------------------------------------
-    # P&L
+    # REALIZED P&L
     # --------------------------------------------------------
 
-    # If fills produced a realized P&L, use it.
-    total_realized_pnl = fill_statistics[
-        "realized_pnl"
-    ]
+    total_realized_pnl = (
+        fill_statistics[
+            "realized_pnl"
+        ]
+    )
 
-    today_pnl = fill_statistics[
-        "today_pnl"
-    ]
+    today_pnl = (
+        fill_statistics[
+            "today_pnl"
+        ]
+    )
 
-    # If there are no fills available, use Delta's
-    # current position realized_pnl as a fallback.
     if not fills:
 
-        total_realized_pnl = position.get(
-            "realized_pnl",
-            Decimal("0")
+        total_realized_pnl = (
+            position.get(
+                "realized_pnl",
+                Decimal("0")
+            )
         )
+
+    # --------------------------------------------------------
+    # TOTAL P&L
+    # --------------------------------------------------------
 
     total_pnl = (
         total_realized_pnl
@@ -1564,22 +1920,26 @@ def build_dashboard():
         ),
 
         "position": {
+
             "direction": direction,
+
             "size": size,
+
             "entry_price": json_number(
                 position.get(
                     "entry_price"
                 )
             ),
+
             "stop_loss": json_number(
                 stop_loss
             ),
+
             "unrealized_pnl": json_number(
                 unrealized_pnl
             )
         },
 
-        # Compatibility fields for existing frontend.
         "entry_price": json_number(
             position.get(
                 "entry_price"
@@ -1604,21 +1964,29 @@ def build_dashboard():
 
         "statistics": {
 
-            "total_trades": fill_statistics[
-                "total_trades"
-            ],
+            "total_trades": (
+                fill_statistics[
+                    "total_trades"
+                ]
+            ),
 
-            "winning_trades": fill_statistics[
-                "winning_trades"
-            ],
+            "winning_trades": (
+                fill_statistics[
+                    "winning_trades"
+                ]
+            ),
 
-            "losing_trades": fill_statistics[
-                "losing_trades"
-            ],
+            "losing_trades": (
+                fill_statistics[
+                    "losing_trades"
+                ]
+            ),
 
-            "win_rate": fill_statistics[
-                "win_rate"
-            ],
+            "win_rate": (
+                fill_statistics[
+                    "win_rate"
+                ]
+            ),
 
             "today_pnl": json_number(
                 today_pnl
@@ -1630,16 +1998,17 @@ def build_dashboard():
         },
 
         "trades": [
+
             serialize_trade(
                 trade
             )
+
             for trade
             in fill_statistics[
                 "trades"
             ]
         ],
 
-        # Useful diagnostics.
         "diagnostics": {
 
             "api_credentials_loaded": bool(
@@ -1649,7 +2018,13 @@ def build_dashboard():
 
             "base_url": BASE_URL,
 
+            "symbol": SYMBOL,
+
             "product_id": product_id,
+
+            "product_found": bool(
+                product
+            ),
 
             "state_file": STATE_FILE,
 
@@ -1719,12 +2094,7 @@ def dashboard():
 
 
 # ============================================================
-# DEBUG ENDPOINT
-#
-# READ ONLY.
-#
-# This helps us see exactly which part fails if the dashboard
-# ever shows null again.
+# DEBUG
 # ============================================================
 
 @app.route(
@@ -1769,67 +2139,134 @@ def debug():
         "tests": {}
     }
 
-    # NEVER return the actual API key or secret.
+    # --------------------------------------------------------
+    # PRODUCT TEST
+    # --------------------------------------------------------
 
     try:
 
         product = get_product()
 
-        result["tests"]["product"] = {
+        result[
+            "tests"
+        ][
+            "product"
+        ] = {
+
             "ok": True,
+
             "id": product.get(
                 "id"
             ),
+
             "symbol": product.get(
                 "symbol"
+            ),
+
+            "contract_value": json_number(
+                decimal_value(
+                    product.get(
+                        "contract_value"
+                    )
+                )
             )
         }
 
     except Exception as exc:
 
-        result["tests"]["product"] = {
+        result[
+            "tests"
+        ][
+            "product"
+        ] = {
+
             "ok": False,
+
             "error": str(
                 exc
             )
         }
+
+    # --------------------------------------------------------
+    # TICKER TEST
+    # --------------------------------------------------------
 
     try:
 
+        ticker = get_ticker()
+
         price = get_current_price()
 
-        result["tests"]["ticker"] = {
+        result[
+            "tests"
+        ][
+            "ticker"
+        ] = {
+
             "ok": True,
+
             "price": json_number(
                 price
-            )
+            ),
+
+            "fields": {
+                key: ticker.get(
+                    key
+                )
+                for key in (
+                    "close",
+                    "last_price",
+                    "mark_price",
+                    "spot_price",
+                    "price"
+                )
+                if key in ticker
+            }
         }
 
     except Exception as exc:
 
-        result["tests"]["ticker"] = {
+        result[
+            "tests"
+        ][
+            "ticker"
+        ] = {
+
             "ok": False,
+
             "error": str(
                 exc
             )
         }
+
+    # --------------------------------------------------------
+    # BALANCE TEST
+    # --------------------------------------------------------
 
     try:
 
         balance = get_balance_data()
 
-        result["tests"]["balance"] = {
+        result[
+            "tests"
+        ][
+            "balance"
+        ] = {
+
             "ok": True,
+
             "balance": json_number(
                 balance.get(
                     "balance"
                 )
             ),
+
             "available_balance": json_number(
                 balance.get(
                     "available_balance"
                 )
             ),
+
             "asset": balance.get(
                 "asset"
             )
@@ -1837,12 +2274,22 @@ def debug():
 
     except Exception as exc:
 
-        result["tests"]["balance"] = {
+        result[
+            "tests"
+        ][
+            "balance"
+        ] = {
+
             "ok": False,
+
             "error": str(
                 exc
             )
         }
+
+    # --------------------------------------------------------
+    # POSITION TEST
+    # --------------------------------------------------------
 
     try:
 
@@ -1862,22 +2309,93 @@ def debug():
             product_id
         )
 
-        result["tests"]["position"] = {
+        result[
+            "tests"
+        ][
+            "position"
+        ] = {
+
             "ok": True,
+
+            "product_id": product_id,
+
             "size": position.get(
                 "size"
             ),
+
             "entry_price": json_number(
                 position.get(
                     "entry_price"
+                )
+            ),
+
+            "realized_pnl": json_number(
+                position.get(
+                    "realized_pnl"
                 )
             )
         }
 
     except Exception as exc:
 
-        result["tests"]["position"] = {
+        result[
+            "tests"
+        ][
+            "position"
+        ] = {
+
             "ok": False,
+
+            "error": str(
+                exc
+            )
+        }
+
+    # --------------------------------------------------------
+    # FILLS TEST
+    # --------------------------------------------------------
+
+    try:
+
+        product = get_product()
+
+        product_id = product.get(
+            "id"
+        )
+
+        if product_id is None:
+
+            raise RuntimeError(
+                "Product ID not found."
+            )
+
+        fills = get_xautusd_fills(
+            product_id
+        )
+
+        result[
+            "tests"
+        ][
+            "fills"
+        ] = {
+
+            "ok": True,
+
+            "count": len(
+                fills
+            )
+        }
+
+    except Exception as exc:
+
+        result[
+            "tests"
+        ][
+            "fills"
+        ] = {
+
+            "ok": False,
+
             "error": str(
                 exc
             )
@@ -1899,11 +2417,24 @@ def debug():
 def root():
 
     return jsonify({
-        "service": "XAUTUSD Dashboard API",
+
+        "service": (
+            "XAUTUSD Dashboard API"
+        ),
+
         "status": "ok",
-        "dashboard_endpoint": "/api/dashboard",
-        "health_endpoint": "/api/health",
-        "debug_endpoint": "/api/debug"
+
+        "dashboard_endpoint": (
+            "/api/dashboard"
+        ),
+
+        "health_endpoint": (
+            "/api/health"
+        ),
+
+        "debug_endpoint": (
+            "/api/debug"
+        )
     })
 
 
@@ -1942,8 +2473,13 @@ if __name__ == "__main__":
     )
 
     print(
-        f"API CREDENTIALS LOADED: "
-        f"{bool(API_KEY and API_SECRET)}"
+        "API CREDENTIALS LOADED: "
+        + str(
+            bool(
+                API_KEY
+                and API_SECRET
+            )
+        )
     )
 
     print(
@@ -1954,4 +2490,4 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         debug=False
-            )
+        )
