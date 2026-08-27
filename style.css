@@ -1,0 +1,410 @@
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: #0b0f14;
+    color: #f5f7fa;
+    font-family:
+        Inter,
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+}
+
+button {
+    font-family: inherit;
+}
+
+.app {
+    min-height: 100vh;
+}
+
+.topbar {
+    height: 78px;
+    padding: 0 34px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #11161d;
+    border-bottom: 1px solid #202832;
+}
+
+.brand {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: 1px;
+}
+
+.subtitle {
+    margin-top: 4px;
+    color: #7e8997;
+    font-size: 13px;
+}
+
+.top-right {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    color: #7e8997;
+    font-size: 13px;
+}
+
+.status {
+    padding: 8px 13px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.status.running {
+    color: #39d98a;
+    background: rgba(57, 217, 138, 0.10);
+    border: 1px solid rgba(57, 217, 138, 0.25);
+}
+
+.status.stopped {
+    color: #ff6577;
+    background: rgba(255, 101, 119, 0.10);
+    border: 1px solid rgba(255, 101, 119, 0.25);
+}
+
+.status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: currentColor;
+}
+
+.content {
+    max-width: 1400px;
+    margin: auto;
+    padding: 30px 34px 60px;
+}
+
+.hero {
+    min-height: 180px;
+    padding: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 30px;
+    background: linear-gradient(
+        135deg,
+        #151b23,
+        #10151c
+    );
+    border: 1px solid #252d38;
+    border-radius: 18px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+}
+
+.label {
+    color: #7e8997;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+}
+
+.market-price {
+    margin-top: 8px;
+    font-size: 44px;
+    font-weight: 800;
+    letter-spacing: -1px;
+}
+
+.symbol-name {
+    margin-top: 7px;
+    color: #7e8997;
+    font-size: 13px;
+}
+
+.controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.btn {
+    border: 0;
+    border-radius: 9px;
+    padding: 12px 17px;
+    color: white;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    cursor: pointer;
+    transition: 0.2s;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.1);
+}
+
+.btn-green {
+    background: #159f68;
+}
+
+.btn-yellow {
+    background: #b87916;
+}
+
+.btn-red {
+    background: #c63f52;
+}
+
+.cards {
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns:
+        repeat(4, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.card {
+    padding: 22px;
+    min-height: 115px;
+    background: #11161d;
+    border: 1px solid #222a34;
+    border-radius: 14px;
+}
+
+.card-title {
+    color: #7e8997;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+
+.card-value {
+    margin-top: 12px;
+    font-size: 25px;
+    font-weight: 800;
+}
+
+.profit {
+    color: #39d98a;
+}
+
+.loss {
+    color: #ff6577;
+}
+
+.section {
+    margin-top: 20px;
+    padding: 24px;
+    background: #11161d;
+    border: 1px solid #222a34;
+    border-radius: 14px;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 22px;
+}
+
+h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.section-subtitle {
+    display: block;
+    margin-top: 5px;
+    color: #697583;
+    font-size: 12px;
+}
+
+.position-grid {
+    display: grid;
+    grid-template-columns:
+        repeat(5, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.position-item {
+    padding: 17px;
+    background: #0c1117;
+    border: 1px solid #202832;
+    border-radius: 10px;
+}
+
+.position-item span {
+    display: block;
+    color: #6f7a88;
+    font-size: 11px;
+    margin-bottom: 9px;
+}
+
+.position-item strong {
+    font-size: 17px;
+}
+
+.position-flat,
+.position-long,
+.position-short {
+    padding: 7px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 800;
+}
+
+.position-flat {
+    color: #8b96a5;
+    background: #1a2028;
+}
+
+.position-long {
+    color: #39d98a;
+    background: rgba(57, 217, 138, 0.10);
+}
+
+.position-short {
+    color: #ff6577;
+    background: rgba(255, 101, 119, 0.10);
+}
+
+.statistics {
+    margin-top: 20px;
+}
+
+.table-container {
+    overflow-x: auto;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 750px;
+}
+
+th {
+    text-align: left;
+    padding: 13px 14px;
+    color: #697583;
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    border-bottom: 1px solid #252d38;
+}
+
+td {
+    padding: 15px 14px;
+    border-bottom: 1px solid #1d252e;
+    font-size: 13px;
+}
+
+tbody tr:hover {
+    background: #151b23;
+}
+
+.side-buy {
+    color: #39d98a;
+    font-weight: 800;
+}
+
+.side-sell {
+    color: #ff6577;
+    font-weight: 800;
+}
+
+.empty {
+    text-align: center;
+    color: #697583;
+    padding: 40px;
+}
+
+.message {
+    position: fixed;
+    right: 25px;
+    bottom: 25px;
+    padding: 13px 18px;
+    border-radius: 9px;
+    background: #202832;
+    color: white;
+    font-size: 13px;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: 0.25s;
+    pointer-events: none;
+}
+
+.message.show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+@media (max-width: 900px) {
+
+    .hero {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .controls {
+        justify-content: flex-start;
+    }
+
+    .cards {
+        grid-template-columns:
+            repeat(2, minmax(0, 1fr));
+    }
+
+    .position-grid {
+        grid-template-columns:
+            repeat(2, minmax(0, 1fr));
+    }
+
+}
+
+@media (max-width: 600px) {
+
+    .topbar {
+        padding: 0 18px;
+    }
+
+    .top-right {
+        gap: 8px;
+    }
+
+    #lastUpdated {
+        display: none;
+    }
+
+    .content {
+        padding: 18px;
+    }
+
+    .hero {
+        padding: 22px;
+    }
+
+    .market-price {
+        font-size: 35px;
+    }
+
+    .cards {
+        grid-template-columns: 1fr;
+    }
+
+    .position-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .controls {
+        width: 100%;
+    }
+
+    .btn {
+        flex: 1;
+    }
+
+}
