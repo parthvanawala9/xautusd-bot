@@ -466,7 +466,7 @@ async function loadDashboard() {
 
         const response =
             await fetch(
-                "./dashboard.json",
+                "dashboard.json",
                 {
                     cache: "no-store"
                 }
