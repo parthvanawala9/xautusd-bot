@@ -1,0 +1,65 @@
+name: Deploy Dashboard API
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy-dashboard:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare SSH
+        env:
+          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+          chmod 600 ~/.ssh/oracle.key
+
+      - name: Copy dashboard API
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot/dashboard"
+
+          scp \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            dashboard/dashboard_api.py \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+
+      - name: Install dashboard dependencies and start API
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          cd /home/opc/xautusd-bot
+
+          python3 -m pip install --user flask flask-cors
+
+          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+
+          nohup python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py \
+            > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
+
+          sleep 5
+
+          pgrep -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+
+          EOF
