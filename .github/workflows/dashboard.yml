@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "dashboard_api.py"
+      - ".github/workflows/dashboard.yml"
 
 jobs:
   deploy-dashboard:
@@ -16,50 +19,44 @@ jobs:
 
       - name: Prepare SSH
         env:
-          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
+          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+          printf '%s\n' "$ORACLE_SSH_KEY" | tr -d '\r' > ~/.ssh/oracle.key
           chmod 600 ~/.ssh/oracle.key
 
-      - name: Copy dashboard API
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "mkdir -p /home/opc/xautusd-bot/dashboard"
+          ssh-keygen -y -f ~/.ssh/oracle.key > /dev/null
 
+      - name: Copy dashboard API
+        run: |
           scp \
             -i ~/.ssh/oracle.key \
+            -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
             dashboard_api.py \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+            opc@80.225.246.202:/home/opc/dashboard_api.py
 
-      - name: Install dashboard dependencies and start API
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+      - name: Start dashboard API
         run: |
           ssh \
             -i ~/.ssh/oracle.key \
+            -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=no \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            -o ConnectTimeout=30 \
+            opc@80.225.246.202 << 'EOF'
 
-          cd /home/opc/xautusd-bot
+          cd /home/opc
 
           python3 -m pip install --user flask flask-cors
 
-          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+          pkill -f "dashboard_api.py" || true
 
-          nohup python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py \
-            > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
+          nohup python3 dashboard_api.py \
+            > dashboard_api.log 2>&1 &
 
           sleep 5
 
-          pgrep -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+          curl -f http://127.0.0.1:8000/api/health
 
           EOF
