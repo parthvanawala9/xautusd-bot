@@ -2,13 +2,13 @@
 // XAUTUSD DASHBOARD
 // ============================================================
 //
-// Dashboard API is running on Oracle VM through Cloudflare.
+// Dashboard API is running directly on Oracle VM.
 // Do NOT change bot.py or the XAUTUSD bot workflow.
 //
 // ============================================================
 
 const API_BASE_URL =
-    "https://es-bus-jacob.trycloudflare.com";
+    "http://80.225.246.202:8000";
 
 let refreshTimer = null;
 
