@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XAUTUSD Bot Dashboard</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+
+  <div class="app">
+
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">D</div>
+        <div>
+          <h1>Delta Bot</h1>
+          <span>XAUTUSD</span>
+        </div>
+      </div>
+
+      <nav>
+        <button class="nav-item active">Dashboard</button>
+        <button class="nav-item">Trades</button>
+        <button class="nav-item">Performance</button>
+      </nav>
+
+      <div class="sidebar-bottom">
+        <span>Trading Engine</span>
+        <strong id="connectionStatus">Connecting...</strong>
+      </div>
+    </aside>
+
+    <main class="main">
+
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">LIVE TRADING</p>
+          <h2>XAUTUSD Trading Dashboard</h2>
+        </div>
+
+        <div class="bot-control">
+          <span id="botStatusDot" class="status-dot offline"></span>
+          <span id="botStatus">Checking...</span>
+          <button id="startBtn" class="btn start">START BOT</button>
+          <button id="stopBtn" class="btn stop">STOP BOT</button>
+        </div>
+      </header>
+
+      <section class="cards">
+
+        <div class="card">
+          <span>Current Price</span>
+          <strong id="currentPrice">--</strong>
+        </div>
+
+        <div class="card">
+          <span>Position</span>
+          <strong id="position">FLAT</strong>
+        </div>
+
+        <div class="card">
+          <span>Entry Price</span>
+          <strong id="entryPrice">--</strong>
+        </div>
+
+        <div class="card">
+          <span>Stop Loss</span>
+          <strong id="stopLoss">--</strong>
+        </div>
+
+        <div class="card">
+          <span>Unrealized P&L</span>
+          <strong id="unrealizedPnl">--</strong>
+        </div>
+
+        <div class="card">
+          <span>Today's P&L</span>
+          <strong id="todayPnl">--</strong>
+        </div>
+
+      </section>
+
+      <section class="performance-grid">
+
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">PERFORMANCE</p>
+              <h3>Trading Summary</h3>
+            </div>
+          </div>
+
+          <div class="stats">
+
+            <div class="stat">
+              <span>Total P&L</span>
+              <strong id="totalPnl">--</strong>
+            </div>
+
+            <div class="stat">
+              <span>Total Trades</span>
+              <strong id="totalTrades">--</strong>
+            </div>
+
+            <div class="stat">
+              <span>Winning Trades</span>
+              <strong id="winningTrades">--</strong>
+            </div>
+
+            <div class="stat">
+              <span>Losing Trades</span>
+              <strong id="losingTrades">--</strong>
+            </div>
+
+            <div class="stat">
+              <span>Win Rate</span>
+              <strong id="winRate">--</strong>
+            </div>
+
+            <div class="stat">
+              <span>Balance</span>
+              <strong id="balance">--</strong>
+            </div>
+
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">BOT</p>
+              <h3>Engine Status</h3>
+            </div>
+          </div>
+
+          <div class="engine-status">
+            <div class="big-status">
+              <span id="bigStatusDot" class="status-dot offline"></span>
+              <strong id="bigBotStatus">OFFLINE</strong>
+            </div>
+
+            <div class="status-row">
+              <span>Symbol</span>
+              <strong id="symbol">XAUTUSD</strong>
+            </div>
+
+            <div class="status-row">
+              <span>Leverage</span>
+              <strong>50x</strong>
+            </div>
+
+            <div class="status-row">
+              <span>Last Update</span>
+              <strong id="lastUpdate">--</strong>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <section class="panel trades-panel">
+
+        <div class="panel-header">
+          <div>
+            <p class="eyebrow">TRADE HISTORY</p>
+            <h3>Recent Trades</h3>
+          </div>
+
+          <span id="tradeCount" class="trade-count">0 trades</span>
+        </div>
+
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Direction</th>
+                <th>Entry</th>
+                <th>Exit</th>
+                <th>Size</th>
+                <th>Reason</th>
+                <th>P&L</th>
+              </tr>
+            </thead>
+
+            <tbody id="tradeTable">
+              <tr>
+                <td colspan="7" class="empty">
+                  No trades available
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+      </section>
+
+      <footer>
+        XAUTUSD Bot Dashboard
+      </footer>
+
+    </main>
+
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
