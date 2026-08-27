@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "dashboard_api.py"
+      - ".github/workflows/dashboard.yml"
 
 jobs:
   deploy-dashboard:
@@ -22,7 +25,23 @@ jobs:
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
           chmod 600 ~/.ssh/oracle.key
 
-      - name: Copy dashboard API
+          echo "Checking SSH key..."
+          ssh-keygen -y -f ~/.ssh/oracle.key > /dev/null
+          echo "SSH key is valid."
+
+      - name: Check Oracle connection
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "echo 'Oracle SSH connection OK'"
+
+      - name: Deploy Dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -41,7 +60,7 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-      - name: Install and start Dashboard API
+      - name: Check Dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -52,30 +71,39 @@ jobs:
             -o ConnectTimeout=30 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          cd /home/opc/xautusd-bot
+          echo "======================================"
+          echo "DASHBOARD / BOT SAFETY CHECK"
+          echo "======================================"
 
-          python3 -m pip install --user flask flask-cors
+          echo ""
+          echo "===== BOT PROCESS ====="
+          pgrep -af "/home/opc/xautusd-bot/bot.py" || echo "Bot process not found"
 
-          pkill -f "dashboard/dashboard_api.py" || true
-
-          nohup python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py \
-            > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
-
-          sleep 5
-
-          echo "===== DASHBOARD PROCESS ====="
-          pgrep -af "dashboard/dashboard_api.py" || true
-
+          echo ""
           echo "===== PORT 8000 ====="
-          ss -lntp | grep ':8000' || true
+          ss -lntp | grep ':8000' || echo "Nothing listening on port 8000"
 
-          echo "===== LOCAL HEALTH CHECK ====="
-          curl -v --max-time 10 http://127.0.0.1:8000/api/health
+          echo ""
+          echo "===== DASHBOARD API PROCESS ====="
+          pgrep -af "dashboard/dashboard_api.py" || echo "Dashboard API process not found"
 
-          echo "===== DASHBOARD CHECK ====="
-          curl -v --max-time 10 http://127.0.0.1:8000/api/dashboard
+          echo ""
+          echo "===== DASHBOARD HEALTH ====="
+          curl -sS --max-time 10 http://127.0.0.1:8000/api/health || true
 
+          echo ""
+          echo ""
+          echo "===== DASHBOARD DATA ====="
+          curl -sS --max-time 10 http://127.0.0.1:8000/api/dashboard || true
+
+          echo ""
+          echo ""
           echo "===== DASHBOARD LOG ====="
-          tail -50 /home/opc/xautusd-bot/dashboard/dashboard.log || true
+          tail -30 /home/opc/xautusd-bot/dashboard/dashboard.log 2>/dev/null || echo "No dashboard log found"
+
+          echo ""
+          echo "======================================"
+          echo "CHECK COMPLETE"
+          echo "======================================"
 
           EOF
