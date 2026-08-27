@@ -1,1 +1,7 @@
-{"success": true, "bot_running": true, "current_price": 4601.53, "balance": 0.0, "total_pnl": 0, "today_pnl": 0, "position": {"direction": "FLAT", "size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0}, "statistics": {"total_trades": 0, "winning_trades": 0, "losing_trades": 0, "win_rate": 0.0}, "trades": []}
+[Balance API Error] Status: 401, Body: {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"20.57.215.241"}},"success":false}
+[Position Check /v2/positions/margined] Status: 401
+[Position API Error] /v2/positions/margined -> {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"20.57.215.241"}},"success":false}
+[Position Check /v2/positions] Status: 401
+[Position API Error] /v2/positions -> {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"20.57.215.241"}},"success":false}
+[Fills API Error] Status: 401, Body: {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"20.57.215.241"}},"success":false}
+{"success": true, "bot_running": true, "current_price": 4599.44, "balance": 0.0, "total_pnl": 0, "today_pnl": 0, "position": {"direction": "FLAT", "size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0}, "statistics": {"total_trades": 0, "winning_trades": 0, "losing_trades": 0, "win_rate": 0.0}, "trades": []}
