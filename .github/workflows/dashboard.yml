@@ -1,14 +1,10 @@
 name: Deploy Dashboard API
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-    paths:
-      - "dashboard_api.py"
-      - "requirements.txt"
-      - ".github/workflows/dashboard.yml"
-  workflow_dispatch:
 
 jobs:
   deploy-dashboard:
@@ -20,93 +16,50 @@ jobs:
 
       - name: Prepare SSH
         env:
-          ORACLE_SSH_KEY: ${{ secrets.ORACLE_SSH_KEY }}
+          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
-          set -e
-
-          mkdir -p "$HOME/.ssh"
-
-          printf '%s\n' "$ORACLE_SSH_KEY" | tr -d '\r' > "$HOME/.ssh/oci_key"
-
-          chmod 600 "$HOME/.ssh/oci_key"
-
-          echo "Checking SSH private key format..."
-
-          ssh-keygen -y -f "$HOME/.ssh/oci_key" > /dev/null
-
-          echo "SSH key is valid."
+          mkdir -p ~/.ssh
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+          chmod 600 ~/.ssh/oracle.key
 
       - name: Copy dashboard API
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-          set -e
-
-          scp \
-            -i "$HOME/.ssh/oci_key" \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=30 \
-            -o ConnectionAttempts=3 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=3 \
-            dashboard_api.py \
-            opc@80.225.246.202:/home/opc/dashboard_api.py
-
-      - name: Copy requirements
-        run: |
-          set -e
-
-          scp \
-            -i "$HOME/.ssh/oci_key" \
-            -o IdentitiesOnly=yes \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=30 \
-            -o ConnectionAttempts=3 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=3 \
-            requirements.txt \
-            opc@80.225.246.202:/home/opc/requirements.txt
-
-      - name: Start dashboard API
-        run: |
-          set -e
-
           ssh \
-            -i "$HOME/.ssh/oci_key" \
-            -o IdentitiesOnly=yes \
+            -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=30 \
-            -o ConnectionAttempts=3 \
-            -o ServerAliveInterval=15 \
-            -o ServerAliveCountMax=3 \
-            opc@80.225.246.202 << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot/dashboard"
 
-          set -e
+          scp \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            dashboard_api.py \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-          cd /home/opc
+      - name: Install dashboard dependencies and start API
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo "Installing dashboard dependencies..."
+          cd /home/opc/xautusd-bot
 
-          python3 -m pip install -r requirements.txt
+          python3 -m pip install --user flask flask-cors
 
-          echo "Stopping old dashboard API..."
+          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
-          pkill -f "dashboard_api.py" || true
-
-          sleep 2
-
-          echo "Starting dashboard API..."
-
-          nohup python3 dashboard_api.py > dashboard_api.log 2>&1 &
+          nohup python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py \
+            > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
 
           sleep 5
 
-          echo "Checking dashboard API..."
-
-          curl -f http://127.0.0.1:8000/api/dashboard
-
-          echo "Dashboard API deployed successfully."
+          pgrep -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
           EOF
