@@ -11,22 +11,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # PREPARE SSH
+      # ============================================================
 
       - name: Prepare SSH
         env:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" \
+            > ~/.ssh/oracle.key
+
           chmod 600 ~/.ssh/oracle.key
+
+
+      # ============================================================
+      # COPY DASHBOARD API
+      # ============================================================
 
       - name: Copy dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
@@ -39,132 +58,321 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
+
+      # ============================================================
+      # INSTALL DASHBOARD DEPENDENCIES
+      # AND RESTART ONLY DASHBOARD API
+      # ============================================================
+
       - name: Install dashboard dependencies and start API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
+          set -e
+
           cd /home/opc/xautusd-bot
 
-          python3 -m pip install --user flask flask-cors
+          echo "=========================================="
+          echo "INSTALLING DASHBOARD DEPENDENCIES"
+          echo "=========================================="
 
-          # Restart ONLY the dashboard API.
-          # DO NOT touch bot.py.
+          python3 -m pip install --user flask flask-cors requests python-dotenv
+
+
+          echo "=========================================="
+          echo "RESTARTING ONLY DASHBOARD API"
+          echo "=========================================="
+
           pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
-          nohup python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py \
+          sleep 2
+
+          nohup python3 \
+            /home/opc/xautusd-bot/dashboard/dashboard_api.py \
             > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
 
           sleep 5
 
-          echo "===== DASHBOARD PROCESS ====="
-          pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
-          echo "===== PORT 8000 ====="
+          echo "=========================================="
+          echo "DASHBOARD PROCESS"
+          echo "=========================================="
+
+          pgrep -af \
+            "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
+            || true
+
+
+          echo "=========================================="
+          echo "PORT 8000"
+          echo "=========================================="
+
           ss -lntp | grep ':8000' || true
 
-          echo "===== LOCAL HEALTH CHECK ====="
-          curl -s http://127.0.0.1:8000/api/health
+
+          echo "=========================================="
+          echo "LOCAL HEALTH CHECK"
+          echo "=========================================="
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/health
+
+          echo
+          echo "Dashboard API is working."
+
+          EOF
+
+
+      # ============================================================
+      # INSTALL CLOUDFLARE QUICK TUNNEL AS SYSTEMD SERVICE
+      # ============================================================
+
+      - name: Install persistent Cloudflare Quick Tunnel
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          set -e
+
+          echo "=========================================="
+          echo "CLOUDFLARE CHECK"
+          echo "=========================================="
+
+          if ! command -v cloudflared >/dev/null 2>&1; then
+            echo "ERROR: cloudflared is not installed."
+            exit 1
+          fi
+
+          cloudflared version
+
+
+          echo "=========================================="
+          echo "CREATING DASHBOARD TUNNEL SERVICE"
+          echo "=========================================="
+
+          sudo tee /etc/systemd/system/xautusd-dashboard.service > /dev/null << 'SERVICE'
+
+          [Unit]
+          Description=XAUTUSD Dashboard Cloudflare Quick Tunnel
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=opc
+          WorkingDirectory=/home/opc/xautusd-bot
+
+          ExecStart=/usr/bin/cloudflared tunnel --url http://127.0.0.1:8000
+
+          Restart=always
+          RestartSec=5
+
+          StandardOutput=append:/home/opc/xautusd-bot/dashboard/cloudflare.log
+          StandardError=append:/home/opc/xautusd-bot/dashboard/cloudflare.log
+
+          [Install]
+          WantedBy=multi-user.target
+
+          SERVICE
+
+
+          echo "=========================================="
+          echo "RELOADING SYSTEMD"
+          echo "=========================================="
+
+          sudo systemctl daemon-reload
+
+          sudo systemctl enable xautusd-dashboard.service
+
+
+          echo "=========================================="
+          echo "STOPPING OLD QUICK TUNNEL"
+          echo "=========================================="
+
+          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
+
+            OLD_PID=$(cat \
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid \
+              2>/dev/null || true)
+
+            if [ -n "$OLD_PID" ]; then
+              kill "$OLD_PID" 2>/dev/null || true
+            fi
+
+            rm -f \
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
+
+          fi
+
+
+          echo "=========================================="
+          echo "STARTING PERSISTENT TUNNEL"
+          echo "=========================================="
+
+          sudo systemctl restart xautusd-dashboard.service
+
+          sleep 8
+
+
+          echo "=========================================="
+          echo "CLOUDFLARE SERVICE STATUS"
+          echo "=========================================="
+
+          sudo systemctl --no-pager status \
+            xautusd-dashboard.service \
+            || true
+
+
+          echo "=========================================="
+          echo "CLOUDFLARE TUNNEL URL"
+          echo "=========================================="
+
+          URL=""
+
+          for i in $(seq 1 30); do
+
+            sleep 2
+
+            URL=$(grep -oE \
+              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+              /home/opc/xautusd-bot/dashboard/cloudflare.log \
+              | tail -n 1 \
+              || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+          done
+
+
+          if [ -z "$URL" ]; then
+
+            echo "ERROR: Cloudflare URL was not found."
+
+            echo "===== CLOUDFLARE LOG ====="
+
+            tail -n 100 \
+              /home/opc/xautusd-bot/dashboard/cloudflare.log \
+              || true
+
+            exit 1
+
+          fi
+
+
+          echo
+          echo "=========================================="
+          echo "CLOUDFLARE DASHBOARD URL"
+          echo "$URL"
+          echo "=========================================="
+
+          echo
+          echo "HEALTH URL"
+          echo "$URL/api/health"
+
+          echo
+          echo "DASHBOARD API URL"
+          echo "$URL/api/dashboard"
+
+
+          echo
+          echo "=========================================="
+          echo "TESTING CLOUDFLARE TUNNEL"
+          echo "=========================================="
+
+          sleep 3
+
+          curl -fsS \
+            "$URL/api/health"
 
           echo
 
           EOF
 
-      - name: Start Cloudflare Quick Tunnel
+
+      # ============================================================
+      # FINAL VERIFICATION
+      # ============================================================
+
+      - name: Verify dashboard and bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          cd /home/opc/xautusd-bot
+          echo
+          echo "=========================================="
+          echo "FINAL VERIFICATION"
+          echo "=========================================="
 
-          echo "===== CLOUDFLARE ====="
+          echo
+          echo "===== XAUTUSD BOT ====="
 
-          if ! command -v cloudflared >/dev/null 2>&1; then
-            echo "cloudflared is not installed."
-            exit 1
-          fi
+          pgrep -af \
+            "/home/opc/xautusd-bot/bot.py" \
+            || true
 
-          # Stop ONLY a previous Quick Tunnel for port 8000.
-          # This does NOT stop the named xautusd-dashboard tunnel
-          # and does NOT stop bot.py.
-          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
-            PID=$(cat /home/opc/xautusd-bot/dashboard/quick-tunnel.pid 2>/dev/null || true)
 
-            if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
-              kill "$PID" 2>/dev/null || true
-              sleep 2
-            fi
+          echo
+          echo "===== DASHBOARD API ====="
 
-            rm -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
-          fi
+          pgrep -af \
+            "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
+            || true
 
-          rm -f /home/opc/xautusd-bot/dashboard/quick-tunnel.log
 
-          nohup cloudflared tunnel \
-            --url http://127.0.0.1:8000 \
-            > /home/opc/xautusd-bot/dashboard/quick-tunnel.log 2>&1 &
+          echo
+          echo "===== PORT 8000 ====="
 
-          TUNNEL_PID=$!
+          ss -lntp | grep ':8000' || true
 
-          echo "$TUNNEL_PID" \
-            > /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
 
-          echo "Quick Tunnel PID: $TUNNEL_PID"
+          echo
+          echo "===== CLOUDFLARE SERVICE ====="
 
-          echo "Waiting for Cloudflare URL..."
+          sudo systemctl is-active \
+            xautusd-dashboard.service \
+            || true
 
-          for i in $(seq 1 30); do
-            sleep 2
 
-            URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.log \
-              | head -n 1 || true)
+          echo
+          echo "===== CLOUDFLARE PROCESS ====="
 
-            if [ -n "$URL" ]; then
-              echo
-              echo "=========================================="
-              echo "CLOUDFLARE DASHBOARD URL:"
-              echo "$URL"
-              echo "=========================================="
-              echo
-              echo "HEALTH URL:"
-              echo "$URL/api/health"
-              echo
+          pgrep -af \
+            "cloudflared tunnel --url http://127.0.0.1:8000" \
+            || true
 
-              exit 0
-            fi
-          done
 
-          echo "Cloudflare Quick Tunnel did not produce a URL."
-          echo "===== CLOUDFLARE LOG ====="
-          cat /home/opc/xautusd-bot/dashboard/quick-tunnel.log
+          echo
+          echo "===== LOCAL DASHBOARD HEALTH ====="
 
-          exit 1
+          curl -fsS \
+            http://127.0.0.1:8000/api/health
+
+          echo
+
+          echo
+          echo "=========================================="
+          echo "DEPLOYMENT COMPLETE"
+          echo "=========================================="
 
           EOF
-
-      - name: Verify dashboard
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "echo '===== BOT CHECK ====='; \
-             pgrep -af '/home/opc/xautusd-bot/bot.py' || true; \
-             echo '===== DASHBOARD CHECK ====='; \
-             pgrep -af '/home/opc/xautusd-bot/dashboard/dashboard_api.py' || true; \
-             echo '===== CLOUDFLARE CHECK ====='; \
-             pgrep -af 'cloudflared tunnel --url http://127.0.0.1:8000' || true"
