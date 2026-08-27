@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 23.1 (BULLETPROOF BRACKET & FALLBACK)
+# XAUTUSD BREAKOUT BOT - VERSION 23.2 (STRICT MANUAL EXIT PROTECTION)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/23.1"
+    "User-Agent": "XAUTUSD-Breakout-Engine/23.2"
 })
 
 # ============================================================
@@ -210,7 +210,6 @@ def execute_bracket_market_order(product_id, side, size, sl_price):
     logging.warning(f"LIVE BRACKET MARKET ORDER | SIDE={side} | SIZE={abs(size)} | SL={sl_price}")
     res = api_call("POST", "/v2/orders", body=body, auth=True)
     
-    # Fallback check if bracket attachment fails
     time.sleep(0.5)
     stops = api_call("GET", "/v2/orders", params={"product_ids": str(product_id), "states": "open,pending"}, auth=True).get("result", [])
     if not stops:
@@ -479,23 +478,23 @@ class TradingStrategy:
         return True
 
     def handle_closed_position(self, old_size, current_price):
-        previous_sl = self.current_sl
-
-        was_sl_triggered = False
-        if previous_sl is not None:
-            if old_size > 0 and current_price <= previous_sl:
-                was_sl_triggered = True
-            elif old_size < 0 and current_price >= previous_sl:
-                was_sl_triggered = True
-
+        old_sl_price = self.current_sl
         self.current_sl = None
         self.last_position = 0
 
+        # Strict SL Trigger Verification
+        was_sl_triggered = False
+        if old_sl_price is not None:
+            if old_size > 0 and current_price <= old_sl_price:
+                was_sl_triggered = True
+            elif old_size < 0 and current_price >= old_sl_price:
+                was_sl_triggered = True
+
         if not was_sl_triggered:
-            logging.warning("POSITION CLOSED MANUALLY/EXTERNALLY. BASELINE LOCKED.")
+            logging.warning("POSITION CLOSED MANUALLY/EXTERNALLY. LOCKING RE-ENTRY BASELINE (NO REVERSAL).")
             self.manual_flat = True
-            self.manual_exit_high = current_price
-            self.manual_exit_low = current_price
+            self.manual_exit_high = current_price + Decimal("0.20")
+            self.manual_exit_low = current_price - Decimal("0.20")
             self.carried_position = False
             self.needs_0545_sl_reset = False
             self.save_state()
@@ -532,17 +531,14 @@ class TradingStrategy:
 
         logging.warning(f"05:45 CARRYFORWARD RESET: CLOSING & RE-OPENING {direction} WITH NEW SL={new_sl}")
 
-        # 1. Close current carried position
         close_position_market(self.product_id, position_size)
 
-        # 2. Pause 1.5 seconds for Delta Exchange margin settlement
         time.sleep(1.5)
         for _ in range(15):
             if get_position(self.product_id)["size"] == 0:
                 break
             time.sleep(0.20)
 
-        # 3. Re-open exact direction with fresh Bracket SL
         side = "buy" if position_size > 0 else "sell"
         execute_bracket_market_order(self.product_id, side, abs(position_size), new_sl)
 
@@ -648,7 +644,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v23.1 (BULLETPROOF BRACKET & FALLBACK) ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v23.2 (STRICT MANUAL EXIT PROTECTION) ONLINE.")
 
         while True:
             try:
