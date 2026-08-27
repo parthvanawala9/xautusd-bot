@@ -1,4 +1,4 @@
-name: Deploy Dashboard API
+Name: Deploy Dashboard API
 
 on:
   workflow_dispatch:
@@ -11,7 +11,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -23,345 +22,51 @@ jobs:
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
           chmod 600 ~/.ssh/oracle.key
 
-      - name: Copy dashboard API
+      - name: Deploy Dashboard API and Restart Service
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "mkdir -p /home/opc/xautusd-bot/dashboard"
+          # 1. Ensure Directory Exists & Copy dashboard_api.py
+          ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" "mkdir -p /home/opc/xautusd-bot/dashboard"
+          scp -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no dashboard_api.py "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-          scp \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            dashboard_api.py \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
-
-      - name: Install dependencies and restart Dashboard API
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
+          # 2. Setup Systemd Service and Restart
+          ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
           set -e
 
-          DASHBOARD_DIR="/home/opc/xautusd-bot/dashboard"
-          DASHBOARD_FILE="$DASHBOARD_DIR/dashboard_api.py"
-          DASHBOARD_LOG="$DASHBOARD_DIR/dashboard.log"
-          DASHBOARD_PID="$DASHBOARD_DIR/dashboard.pid"
-
-          mkdir -p "$DASHBOARD_DIR"
-
-          echo "===== INSTALL DASHBOARD DEPENDENCIES ====="
-
-          python3 -m pip install --user \
-            flask \
-            flask-cors \
-            requests \
-            python-dotenv
-
-          echo
-          echo "===== STOP OLD DASHBOARD API ====="
-
-          if [ -f "$DASHBOARD_PID" ]; then
-            OLD_PID=$(cat "$DASHBOARD_PID" 2>/dev/null || true)
-
-            if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-              kill "$OLD_PID" 2>/dev/null || true
-              sleep 2
-            fi
-
-            rm -f "$DASHBOARD_PID"
-          fi
-
-          pkill -f "$DASHBOARD_FILE" 2>/dev/null || true
-
-          sleep 2
-
-          echo
-          echo "===== START DASHBOARD API ====="
-
-          nohup python3 "$DASHBOARD_FILE" \
-            > "$DASHBOARD_LOG" 2>&1 < /dev/null &
-
-          DASHBOARD_PID_VALUE=$!
-
-          echo "$DASHBOARD_PID_VALUE" > "$DASHBOARD_PID"
-
-          echo "Dashboard PID: $DASHBOARD_PID_VALUE"
-
-          sleep 5
-
-          echo
-          echo "===== DASHBOARD PROCESS ====="
-
-          pgrep -af "$DASHBOARD_FILE" || true
-
-          echo
-          echo "===== PORT 8000 ====="
-
-          ss -lntp | grep ':8000' || true
-
-          echo
-          echo "===== LOCAL HEALTH ====="
-
-          curl -fsS \
-            --connect-timeout 10 \
-            --max-time 20 \
-            http://127.0.0.1:8000/api/health
-
-          echo
-
-          echo
-          echo "===== LOCAL DEBUG ====="
-
-          curl -sS \
-            --connect-timeout 10 \
-            --max-time 30 \
-            http://127.0.0.1:8000/api/debug \
-            || true
-
-          echo
-
-          EOF
-
-      - name: Start Cloudflare Quick Tunnel
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
-          set -e
-
-          DASHBOARD_DIR="/home/opc/xautusd-bot/dashboard"
-          TUNNEL_LOG="$DASHBOARD_DIR/quick-tunnel.log"
-          TUNNEL_PID="$DASHBOARD_DIR/quick-tunnel.pid"
-
-          mkdir -p "$DASHBOARD_DIR"
-
-          echo "===== CLOUDFLARE QUICK TUNNEL ====="
-
-          CLOUDFLARED=$(command -v cloudflared || true)
-
-          if [ -z "$CLOUDFLARED" ]; then
-            echo "ERROR: cloudflared is not installed."
-            exit 1
-          fi
-
-          echo "cloudflared: $CLOUDFLARED"
-          "$CLOUDFLARED" version
-
-          echo
-          echo "===== STOP OLD QUICK TUNNEL ====="
-
-          if [ -f "$TUNNEL_PID" ]; then
-
-            OLD_PID=$(cat "$TUNNEL_PID" 2>/dev/null || true)
-
-            if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-              kill "$OLD_PID" 2>/dev/null || true
-              sleep 3
-            fi
-
-            rm -f "$TUNNEL_PID"
-
-          fi
-
-          pkill -f "cloudflared tunnel --url http://127.0.0.1:8000" 2>/dev/null || true
-
-          sleep 2
-
-          : > "$TUNNEL_LOG"
-
-          echo
-          echo "===== START NEW QUICK TUNNEL ====="
-
-          setsid nohup "$CLOUDFLARED" tunnel \
-            --no-autoupdate \
-            --url http://127.0.0.1:8000 \
-            > "$TUNNEL_LOG" 2>&1 < /dev/null &
-
-          TUNNEL_PID_VALUE=$!
-
-          echo "$TUNNEL_PID_VALUE" > "$TUNNEL_PID"
-
-          echo "Quick Tunnel PID: $TUNNEL_PID_VALUE"
-
-          echo
-          echo "Waiting for Cloudflare URL..."
-
-          URL=""
-
-          for i in $(seq 1 45); do
-
-            sleep 2
-
-            URL=$(grep -oE \
-              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-              "$TUNNEL_LOG" \
-              | tail -n 1 || true)
-
-            if [ -n "$URL" ]; then
-              break
-            fi
-
-          done
-
-          if [ -z "$URL" ]; then
-
-            echo
-            echo "ERROR: Cloudflare URL was not found."
-
-            echo
-            echo "===== CLOUDFLARE LOG ====="
-
-            cat "$TUNNEL_LOG" || true
-
-            exit 1
-
-          fi
-
-          echo
-          echo "=========================================="
-          echo "CLOUDFLARE DASHBOARD URL:"
-          echo "$URL"
-          echo "=========================================="
-
-          echo
-          echo "HEALTH URL:"
-          echo "$URL/api/health"
-
-          echo
-          echo "DEBUG URL:"
-          echo "$URL/api/debug"
-
-          echo
-          echo "DASHBOARD API URL:"
-          echo "$URL/api/dashboard"
-
-          echo
-          echo "===== TUNNEL PROCESS ====="
-
-          ps -p "$TUNNEL_PID_VALUE" -f || true
-
-          echo
-          echo "===== HEALTH TEST ====="
-
-          HEALTH_OK=""
-
-          for i in $(seq 1 10); do
-
-            RESPONSE=$(curl -sS \
-              --connect-timeout 10 \
-              --max-time 20 \
-              "$URL/api/health" \
-              2>/dev/null || true)
-
-            if [ "$RESPONSE" = '{"status":"ok"}' ]; then
-              HEALTH_OK="yes"
-              echo "$RESPONSE"
-              break
-            fi
-
-            sleep 3
-
-          done
-
-          if [ "$HEALTH_OK" != "yes" ]; then
-
-            echo
-            echo "ERROR: Cloudflare health test failed."
-
-            echo
-            echo "===== TUNNEL PROCESS ====="
-
-            ps -p "$TUNNEL_PID_VALUE" -f || true
-
-            echo
-            echo "===== CLOUDFLARE LOG ====="
-
-            tail -n 100 "$TUNNEL_LOG" || true
-
-            exit 1
-
-          fi
-
-          echo
-          echo "===== DASHBOARD DATA TEST ====="
-
-          curl -sS \
-            --connect-timeout 10 \
-            --max-time 60 \
-            "$URL/api/dashboard" \
-            || true
-
-          echo
-
-          EOF
-
-      - name: Verify Dashboard
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ServerAliveInterval=30 \
-            -o ServerAliveCountMax=10 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
-          echo "===== DASHBOARD PROCESS ====="
-
-          pgrep -af \
-            "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
-            || true
-
-          echo
-          echo "===== PORT 8000 ====="
-
-          ss -lntp | grep ':8000' || true
-
-          echo
-          echo "===== QUICK TUNNEL ====="
-
-          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
-
-            PID=$(cat \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid \
-              2>/dev/null || true)
-
-            if [ -n "$PID" ]; then
-              ps -p "$PID" -f || true
-            fi
-
-          fi
-
-          echo
-          echo "===== LOCAL HEALTH ====="
-
-          curl -fsS \
-            --connect-timeout 10 \
-            --max-time 20 \
-            http://127.0.0.1:8000/api/health
-
-          echo
-
+          # Ensure dependencies are installed
+          python3 -m pip install --user flask flask-cors requests python-dotenv > /dev/null 2>&1
+
+          # Create systemd unit file for Dashboard API
+          sudo bash -c 'cat <<SERVICE > /etc/systemd/system/dashboard-api.service
+          [Unit]
+          Description=XAUTUSD Dashboard API
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=opc
+          WorkingDirectory=/home/opc/xautusd-bot/dashboard
+          ExecStart=/usr/bin/python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py
+          Restart=always
+          RestartSec=5
+          StandardOutput=append:/home/opc/xautusd-bot/dashboard/dashboard.log
+          StandardError=append:/home/opc/xautusd-bot/dashboard/dashboard.log
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE'
+
+          # Reload systemd and restart service
+          sudo systemctl daemon-reload
+          sudo systemctl enable dashboard-api
+          sudo systemctl restart dashboard-api
+
+          sleep 3
+
+          # Local Verification
+          echo "===== LOCAL HEALTH CHECK ====="
+          curl -fsS http://127.0.0.1:8000/api/health
+          echo ""
           EOF
