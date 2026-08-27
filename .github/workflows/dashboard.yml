@@ -2,7 +2,7 @@ name: Update Dashboard Data
 
 on:
   schedule:
-    - cron: '*/5 * * * *'  # Runs automatically every 5 minutes
+    - cron: '*/5 * * * *'
   workflow_dispatch:
   push:
     branches:
@@ -22,7 +22,13 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install requests python-dotenv
+          pip install requests python-dotenv flask flask-cors
+
+      - name: Ensure Dummy State File Exists
+        run: |
+          if [ ! -f xautusd_state.json ]; then
+            echo '{}' > xautusd_state.json
+          fi
 
       - name: Generate Dashboard JSON
         env:
@@ -31,7 +37,7 @@ jobs:
           DELTA_SYMBOL: 'XAUTUSD'
           DELTA_BASE_URL: 'https://api.india.delta.exchange'
         run: |
-          python3 -c "from dashboard_api import build_dashboard; import json; print(json.dumps(build_dashboard()))" > dashboard.json
+          python3 -c "import json; from dashboard_api import build_dashboard; print(json.dumps(build_dashboard()))" > dashboard.json
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
