@@ -65,42 +65,46 @@ def fetch_ticker_price():
 
 
 def fetch_live_position():
-    try:
-        endpoint = "/v2/positions/margined"
-        url = BASE_URL + endpoint
-        headers = get_headers("GET", endpoint)
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        positions = []
-        if res.status_code == 200:
-            positions = res.json().get("result", [])
-        else:
-            # Fallback to standard positions endpoint
-            endpoint_alt = "/v2/positions"
-            res_alt = requests.get(BASE_URL + endpoint_alt, headers=get_headers("GET", endpoint_alt), timeout=10)
-            if res_alt.status_code == 200:
-                positions = res_alt.json().get("result", [])
+    # 1. Try Live Delta API Position Check
+    if API_KEY and API_SECRET:
+        endpoints = ["/v2/positions/margined", "/v2/positions"]
+        for ep in endpoints:
+            try:
+                headers = get_headers("GET", ep)
+                res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
+                if res.status_code == 200:
+                    positions = res.json().get("result", [])
+                    for pos in positions:
+                        prod_symbol = str(pos.get("product_symbol", "")).upper()
+                        size = float(pos.get("size", 0))
+                        if ("XAUT" in prod_symbol or prod_symbol == SYMBOL) and size != 0:
+                            direction = "LONG" if size > 0 else "SHORT"
+                            return {
+                                "direction": direction,
+                                "size": abs(size),
+                                "entry_price": float(pos.get("entry_price", 0.0)),
+                                "stop_loss": float(pos.get("stop_loss", 0.0)),
+                                "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0))
+                            }
+            except Exception as e:
+                print(f"Position API error on {ep}:", e)
 
-        for pos in positions:
-            prod_symbol = str(pos.get("product_symbol", "")).upper()
-            size = float(pos.get("size", 0))
-
-            if ("XAUT" in prod_symbol or prod_symbol == SYMBOL) and size != 0:
-                direction = "LONG" if size > 0 else "SHORT"
-                entry_price = float(pos.get("entry_price", 0.0))
-                stop_loss = float(pos.get("stop_loss", 0.0))
-                realized = float(pos.get("realized_pnl", 0.0))
-                unrealized = float(pos.get("unrealized_pnl", 0.0))
-
-                return {
-                    "direction": direction,
-                    "size": abs(size),
-                    "entry_price": entry_price,
-                    "stop_loss": stop_loss,
-                    "unrealized_pnl": unrealized + realized
-                }
-    except Exception as e:
-        print("Position fetch error:", e)
+    # 2. Fallback to Local State File (xautusd_state.json)
+    if os.path.exists("xautusd_state.json"):
+        try:
+            with open("xautusd_state.json", "r") as f:
+                state = json.load(f)
+                pos = state.get("position", {})
+                if pos.get("direction") in ["LONG", "SHORT"] and float(pos.get("size", 0)) > 0:
+                    return {
+                        "direction": pos.get("direction"),
+                        "size": float(pos.get("size", 0)),
+                        "entry_price": float(pos.get("entry_price", 0.0)),
+                        "stop_loss": float(pos.get("stop_loss", 0.0)),
+                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0))
+                    }
+        except Exception as e:
+            print("State file read error:", e)
 
     return {
         "direction": "FLAT",
