@@ -1,53 +1,36 @@
-from flask import Flask, jsonify
-from flask_cors import CORS
 import os
-import json
 import time
+import json
 import hmac
 import hashlib
 import subprocess
 from decimal import Decimal
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import requests
+from flask import Flask, jsonify
+from flask_cors import CORS
 from dotenv import load_dotenv
 
 
 # ============================================================
 # XAUTUSD DASHBOARD API
+#
+# IMPORTANT:
+# This file ONLY READS the bot/account.
+# It does NOT start, stop, modify, or restart bot.py.
 # ============================================================
 
-app = Flask(__name__)
-CORS(app)
-
-
-# ============================================================
-# PATHS
-# ============================================================
-
-BASE_DIR = "/home/opc/xautusd-bot"
-
-TRADE_HISTORY = os.path.join(
-    BASE_DIR,
-    "trade_history.json"
-)
-
-STATE_FILE = os.path.join(
-    BASE_DIR,
-    "xautusd_state.json"
-)
-
-ENV_FILE = os.path.join(
-    BASE_DIR,
-    ".env"
-)
-
-load_dotenv(ENV_FILE)
+load_dotenv()
 
 
 # ============================================================
-# DELTA CONFIG
+# CONFIGURATION
 # ============================================================
+
+IST = ZoneInfo("Asia/Kolkata")
 
 BASE_URL = os.getenv(
     "DELTA_BASE_URL",
@@ -57,7 +40,7 @@ BASE_URL = os.getenv(
 SYMBOL = os.getenv(
     "DELTA_SYMBOL",
     "XAUTUSD"
-)
+).strip()
 
 API_KEY = os.getenv(
     "DELTA_API_KEY",
@@ -68,6 +51,37 @@ API_SECRET = os.getenv(
     "DELTA_API_SECRET",
     ""
 ).strip()
+
+BOT_DIR = "/home/opc/xautusd-bot"
+
+STATE_FILE = os.getenv(
+    "STATE_FILE",
+    os.path.join(
+        BOT_DIR,
+        "xautusd_state.json"
+    )
+)
+
+BOT_FILE = os.path.join(
+    BOT_DIR,
+    "bot.py"
+)
+
+
+# ============================================================
+# FLASK
+# ============================================================
+
+app = Flask(__name__)
+
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": "*"
+        }
+    }
+)
 
 
 # ============================================================
@@ -88,7 +102,6 @@ session.headers.update({
 # ============================================================
 
 def decimal_value(value, default=None):
-
     if value is None:
         return default
 
@@ -99,54 +112,27 @@ def decimal_value(value, default=None):
 
 
 def json_number(value):
-
     if value is None:
         return None
 
-    try:
-        number = Decimal(str(value))
+    if isinstance(value, Decimal):
+        return float(value)
 
-        if number == number.to_integral_value():
-            return int(number)
+    return value
 
-        return float(number)
 
-    except Exception:
+def now_ist():
+    return datetime.now(IST)
+
+
+def iso_ist(dt):
+    if dt is None:
         return None
 
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
 
-# ============================================================
-# BOT STATUS
-# ============================================================
-
-def get_bot_running():
-
-    try:
-
-        result = subprocess.run(
-            [
-                "pgrep",
-                "-af",
-                "/home/opc/xautusd-bot/bot.py"
-            ],
-            capture_output=True,
-            text=True
-        )
-
-        if result.returncode != 0:
-            return False
-
-        lines = result.stdout.strip().splitlines()
-
-        for line in lines:
-
-            if "pgrep" not in line:
-                return True
-
-        return False
-
-    except Exception:
-        return False
+    return dt.astimezone(IST).isoformat()
 
 
 # ============================================================
@@ -159,7 +145,6 @@ def sign_request(
     query_string="",
     body=""
 ):
-
     timestamp = str(
         int(time.time())
     )
@@ -186,31 +171,21 @@ def sign_request(
 
 
 # ============================================================
-# DELTA API CALL
+# DELTA REQUEST
 # ============================================================
 
-def api_call(
+def delta_request(
     method,
     path,
     params=None,
-    body=None,
-    auth=False
+    authenticated=False
 ):
 
     params = params or {}
 
-    body_text = ""
-
-    if body is not None:
-
-        body_text = json.dumps(
-            body,
-            separators=(",", ":"),
-            ensure_ascii=False
-        )
-
     query_string = (
-        "?" + urlencode(
+        "?"
+        + urlencode(
             params,
             doseq=True
         )
@@ -220,10 +195,9 @@ def api_call(
 
     headers = {}
 
-    if auth:
+    if authenticated:
 
         if not API_KEY or not API_SECRET:
-
             raise RuntimeError(
                 "Delta API credentials are missing."
             )
@@ -232,24 +206,27 @@ def api_call(
             method,
             path,
             query_string,
-            body_text
+            ""
         )
 
     response = session.request(
         method.upper(),
         BASE_URL + path,
         params=params,
-        data=body_text if body is not None else None,
         headers=headers,
         timeout=15
     )
 
-    response.raise_for_status()
+    if not response.ok:
+        raise RuntimeError(
+            f"Delta API HTTP "
+            f"{response.status_code}: "
+            f"{response.text[:500]}"
+        )
 
     data = response.json()
 
     if data.get("success") is False:
-
         raise RuntimeError(
             f"Delta API error: {data}"
         )
@@ -263,7 +240,7 @@ def api_call(
 
 def get_product():
 
-    data = api_call(
+    data = delta_request(
         "GET",
         f"/v2/products/{SYMBOL}"
     )
@@ -275,106 +252,69 @@ def get_product():
 
 
 # ============================================================
-# LIVE PRICE
+# LIVE TICKER
 # ============================================================
 
-def get_price():
+def get_ticker():
 
-    data = api_call(
+    data = delta_request(
         "GET",
         f"/v2/tickers/{SYMBOL}"
     )
 
-    ticker = data.get(
+    return data.get(
         "result",
         {}
     )
 
-    value = (
-        ticker.get("close")
-        or ticker.get("last_price")
-        or ticker.get("mark_price")
-    )
 
-    if value is None:
+def get_current_price():
 
-        raise RuntimeError(
-            "Delta ticker returned no price."
-        )
+    ticker = get_ticker()
 
-    return Decimal(
-        str(value)
-    )
-
-
-# ============================================================
-# LIVE POSITION
-# ============================================================
-
-def get_position(
-    product_id
-):
-
-    data = api_call(
-        "GET",
-        "/v2/positions",
-        params={
-            "product_id": int(product_id)
-        },
-        auth=True
-    )
-
-    result = data.get(
-        "result"
-    )
-
-    if not result:
-
-        return {
-            "size": 0,
-            "entry_price": None
-        }
-
-    if not isinstance(
-        result,
-        dict
+    for key in (
+        "close",
+        "last_price",
+        "mark_price",
+        "spot_price"
     ):
 
-        return {
-            "size": 0,
-            "entry_price": None
-        }
+        value = ticker.get(key)
 
-    return {
-        "size": int(
-            result.get(
-                "size",
-                0
+        if value not in (
+            None,
+            ""
+        ):
+
+            return decimal_value(
+                value
             )
-        ),
-        "entry_price":
-            result.get(
-                "entry_price"
-            )
-    }
+
+    return None
 
 
 # ============================================================
-# LIVE BALANCE
+# BALANCE
 # ============================================================
 
-def get_balance():
+def get_balance_data():
 
-    data = api_call(
+    data = delta_request(
         "GET",
         "/v2/wallet/balances",
-        auth=True
+        authenticated=True
     )
 
-    for wallet in data.get(
+    wallets = data.get(
         "result",
         []
-    ):
+    )
+
+    if isinstance(wallets, dict):
+        wallets = [wallets]
+
+    # Prefer USD / USDT.
+    for wallet in wallets:
 
         asset = str(
             wallet.get(
@@ -383,24 +323,39 @@ def get_balance():
             )
         ).upper()
 
-        if asset in (
+        if asset not in (
             "USD",
             "USDT"
         ):
+            continue
 
-            value = (
-                wallet.get("balance")
-                or wallet.get(
-                    "available_balance"
-                )
+        balance = (
+            wallet.get("balance")
+            if wallet.get("balance") is not None
+            else wallet.get(
+                "available_balance"
             )
+        )
 
-            if value is not None:
+        if balance not in (
+            None,
+            ""
+        ):
 
-                return Decimal(
-                    str(value)
-                )
+            return {
+                "balance": decimal_value(
+                    balance
+                ),
+                "available_balance": decimal_value(
+                    wallet.get(
+                        "available_balance"
+                    )
+                ),
+                "asset": asset,
+                "raw": wallet
+            }
 
+    # Fallback.
     meta = data.get(
         "meta",
         {}
@@ -410,279 +365,254 @@ def get_balance():
         "net_equity"
     )
 
-    if net_equity is not None:
+    if net_equity not in (
+        None,
+        ""
+    ):
 
-        return Decimal(
-            str(net_equity)
-        )
+        return {
+            "balance": decimal_value(
+                net_equity
+            ),
+            "available_balance": None,
+            "asset": "EQUITY",
+            "raw": meta
+        }
 
-    return None
-
-
-# ============================================================
-# STATE FILE
-# ============================================================
-
-def load_state():
-
-    try:
-
-        if not os.path.exists(
-            STATE_FILE
-        ):
-
-            return {}
-
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            data = json.load(file)
-
-        if isinstance(
-            data,
-            dict
-        ):
-
-            return data
-
-        return {}
-
-    except Exception:
-
-        return {}
+    raise RuntimeError(
+        "USD/USDT balance was not found."
+    )
 
 
 # ============================================================
-# TRADE HISTORY
+# POSITION
 # ============================================================
 
-def load_trades():
-
-    try:
-
-        if not os.path.exists(
-            TRADE_HISTORY
-        ):
-
-            return []
-
-        with open(
-            TRADE_HISTORY,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            data = json.load(file)
-
-        if isinstance(
-            data,
-            dict
-        ):
-
-            trades = data.get(
-                "trades",
-                []
-            )
-
-            if isinstance(
-                trades,
-                list
-            ):
-
-                return trades
-
-        if isinstance(
-            data,
-            list
-        ):
-
-            return data
-
-        return []
-
-    except Exception:
-
-        return []
-
-
-# ============================================================
-# TRADE P&L HELPERS
-# ============================================================
-
-def trade_pnl(trade):
-
-    possible_keys = [
-        "pnl",
-        "realized_pnl",
-        "realised_pnl",
-        "profit",
-        "profit_loss"
-    ]
-
-    for key in possible_keys:
-
-        value = trade.get(
-            key
-        )
-
-        if value is not None:
-
-            return decimal_value(
-                value,
-                Decimal("0")
-            )
-
-    return Decimal("0")
-
-
-def calculate_trade_statistics(
-    trades
+def get_position_data(
+    product_id
 ):
 
-    total_trades = len(
-        trades
+    data = delta_request(
+        "GET",
+        "/v2/positions",
+        params={
+            "product_id": int(
+                product_id
+            )
+        },
+        authenticated=True
     )
 
-    winning = 0
-    losing = 0
-
-    total_pnl = Decimal("0")
-
-    for trade in trades:
-
-        pnl = trade_pnl(
-            trade
-        )
-
-        total_pnl += pnl
-
-        if pnl > 0:
-
-            winning += 1
-
-        elif pnl < 0:
-
-            losing += 1
-
-    closed_trades = (
-        winning + losing
+    result = data.get(
+        "result"
     )
 
-    if closed_trades > 0:
-
-        win_rate = (
-            Decimal(winning)
-            / Decimal(closed_trades)
-            * Decimal("100")
-        )
-
-    else:
-
-        win_rate = Decimal("0")
+    if not result:
+        return {
+            "size": 0,
+            "entry_price": None,
+            "raw": {}
+        }
 
     return {
-        "total_trades":
-            total_trades,
-
-        "winning_trades":
-            winning,
-
-        "losing_trades":
-            losing,
-
-        "win_rate":
-            json_number(
-                win_rate
-            ),
-
-        "total_pnl":
-            json_number(
-                total_pnl
+        "size": int(
+            result.get(
+                "size",
+                0
             )
+        ),
+        "entry_price": decimal_value(
+            result.get(
+                "entry_price"
+            )
+        ),
+        "raw": result
     }
 
 
 # ============================================================
-# TODAY P&L
+# BOT STATE FILE
 # ============================================================
 
-def get_today_pnl(
-    trades
-):
+def load_bot_state():
 
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
-    today = datetime.now(
-        ZoneInfo("Asia/Kolkata")
-    ).date()
-
-    total = Decimal("0")
-
-    for trade in trades:
-
-        timestamp = (
-            trade.get("timestamp")
-            or trade.get("time")
-            or trade.get("created_at")
-            or trade.get("createdAt")
+    candidates = [
+        STATE_FILE,
+        os.path.join(
+            BOT_DIR,
+            "xautusd_state.json"
+        ),
+        os.path.join(
+            BOT_DIR,
+            "dashboard",
+            "xautusd_state.json"
         )
+    ]
 
-        if not timestamp:
-
-            continue
+    for filename in candidates:
 
         try:
 
-            if isinstance(
-                timestamp,
-                (int, float)
+            if not os.path.exists(
+                filename
             ):
+                continue
 
-                trade_date = (
-                    datetime.fromtimestamp(
-                        timestamp,
-                        tz=ZoneInfo(
-                            "Asia/Kolkata"
-                        )
-                    ).date()
+            with open(
+                filename,
+                "r",
+                encoding="utf-8"
+            ) as file:
+
+                state = json.load(
+                    file
                 )
 
-            else:
-
-                text = str(
-                    timestamp
-                )
-
-                trade_date = (
-                    datetime.fromisoformat(
-                        text.replace(
-                            "Z",
-                            "+00:00"
-                        )
-                    )
-                    .astimezone(
-                        ZoneInfo(
-                            "Asia/Kolkata"
-                        )
-                    )
-                    .date()
-                )
-
-            if trade_date == today:
-
-                total += trade_pnl(
-                    trade
-                )
+            if isinstance(
+                state,
+                dict
+            ):
+                return state
 
         except Exception:
-
             continue
 
-    return total
+    return {}
+
+
+# ============================================================
+# BOT PROCESS CHECK
+#
+# READ ONLY.
+# NEVER STARTS OR STOPS BOT.
+# ============================================================
+
+def is_bot_running():
+
+    try:
+
+        result = subprocess.run(
+            [
+                "pgrep",
+                "-af",
+                BOT_FILE
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+
+        if result.returncode != 0:
+            return False
+
+        lines = []
+
+        for line in result.stdout.splitlines():
+
+            if (
+                "pgrep" in line
+                or "dashboard_api.py" in line
+            ):
+                continue
+
+            lines.append(
+                line
+            )
+
+        return len(lines) > 0
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
+# STOP LOSS
+# ============================================================
+
+def get_stop_loss(
+    state
+):
+
+    # Strategy state.
+    for key in (
+        "current_sl",
+        "stop_loss",
+        "active_stop_loss"
+    ):
+
+        value = state.get(
+            key
+        )
+
+        if value not in (
+            None,
+            ""
+        ):
+
+            return decimal_value(
+                value
+            )
+
+    # Look for an active stop order as a second source.
+    return None
+
+
+# ============================================================
+# OPEN STOP ORDER
+# ============================================================
+
+def get_open_stop_order(
+    product_id
+):
+
+    try:
+
+        data = delta_request(
+            "GET",
+            "/v2/orders",
+            params={
+                "product_ids": str(
+                    product_id
+                ),
+                "states": "open,pending",
+                "order_types": "all_stop"
+            },
+            authenticated=True
+        )
+
+        result = data.get(
+            "result",
+            []
+        )
+
+        if isinstance(
+            result,
+            dict
+        ):
+            result = [result]
+
+        if not result:
+            return None
+
+        # Prefer stop-loss orders.
+        for order in result:
+
+            stop_type = str(
+                order.get(
+                    "stop_order_type",
+                    ""
+                )
+            ).lower()
+
+            if "stop" in stop_type:
+                return order
+
+        return result[0]
+
+    except Exception:
+
+        return None
 
 
 # ============================================================
@@ -690,386 +620,163 @@ def get_today_pnl(
 # ============================================================
 
 def calculate_unrealized_pnl(
-    size,
-    entry_price,
-    current_price
+    position,
+    current_price,
+    product
 ):
 
-    if not size:
-        return Decimal("0")
-
-    entry = decimal_value(
-        entry_price
-    )
-
-    current = decimal_value(
-        current_price
-    )
-
-    if entry is None or current is None:
-
-        return Decimal("0")
-
-    # XAUTUSD position P&L is represented
-    # approximately as price difference × size.
-    if size > 0:
-
-        return (
-            current - entry
-        ) * Decimal(
-            abs(size)
-        )
-
-    return (
-        entry - current
-    ) * Decimal(
-        abs(size)
-    )
-
-
-# ============================================================
-# DASHBOARD
-# ============================================================
-
-@app.get("/api/dashboard")
-def dashboard():
-
-    errors = []
-
-    # --------------------------------------------------------
-    # BOT
-    # --------------------------------------------------------
-
-    bot_running = get_bot_running()
-
-
-    # --------------------------------------------------------
-    # TRADES
-    # --------------------------------------------------------
-
-    trades = load_trades()
-
-    statistics = (
-        calculate_trade_statistics(
-            trades
-        )
-    )
-
-    today_pnl = get_today_pnl(
-        trades
-    )
-
-
-    # --------------------------------------------------------
-    # STATE
-    # --------------------------------------------------------
-
-    state = load_state()
-
-    state_sl = decimal_value(
-        state.get(
-            "current_sl"
-        )
-    )
-
-
-    # --------------------------------------------------------
-    # PRODUCT
-    # --------------------------------------------------------
-
-    product = {}
-
-    try:
-
-        product = get_product()
-
-    except Exception as exc:
-
-        errors.append(
-            f"Product: {exc}"
-        )
-
-
-    product_id = product.get(
-        "id"
-    )
-
-
-    # --------------------------------------------------------
-    # LIVE PRICE
-    # --------------------------------------------------------
-
-    current_price = None
-
-    try:
-
-        current_price = get_price()
-
-    except Exception as exc:
-
-        errors.append(
-            f"Price: {exc}"
-        )
-
-
-    # --------------------------------------------------------
-    # BALANCE
-    # --------------------------------------------------------
-
-    balance = None
-
-    try:
-
-        balance = get_balance()
-
-    except Exception as exc:
-
-        errors.append(
-            f"Balance: {exc}"
-        )
-
-
-    # --------------------------------------------------------
-    # POSITION
-    # --------------------------------------------------------
-
-    raw_position = {
-        "size": 0,
-        "entry_price": None
-    }
-
-    if product_id is not None:
-
-        try:
-
-            raw_position = get_position(
-                product_id
-            )
-
-        except Exception as exc:
-
-            errors.append(
-                f"Position: {exc}"
-            )
-
-
     size = int(
-        raw_position.get(
+        position.get(
             "size",
             0
-        ) or 0
+        )
     )
 
-    entry_price = raw_position.get(
+    entry = position.get(
         "entry_price"
     )
 
+    if (
+        size == 0
+        or entry is None
+        or current_price is None
+    ):
+        return Decimal("0")
 
-    # --------------------------------------------------------
-    # DIRECTION
-    # --------------------------------------------------------
+    entry = decimal_value(
+        entry
+    )
 
-    if size > 0:
+    if entry is None:
+        return Decimal("0")
 
-        direction = "LONG"
+    contract_value = None
 
-    elif size < 0:
+    for key in (
+        "contract_value",
+        "contract_value_usd",
+        "contract_unit_value"
+    ):
 
-        direction = "SHORT"
-
-    else:
-
-        direction = "FLAT"
-
-
-    # --------------------------------------------------------
-    # STOP LOSS
-    # --------------------------------------------------------
-
-    stop_loss = state_sl
-
-
-    # --------------------------------------------------------
-    # UNREALIZED P&L
-    # --------------------------------------------------------
-
-    unrealized_pnl = (
-        calculate_unrealized_pnl(
-            size,
-            entry_price,
-            current_price
+        value = product.get(
+            key
         )
-    )
 
+        if value not in (
+            None,
+            ""
+        ):
 
-    # --------------------------------------------------------
-    # TOTAL P&L
-    # --------------------------------------------------------
-
-    total_pnl = statistics[
-        "total_pnl"
-    ]
-
-    if total_pnl is None:
-
-        total_pnl = 0
-
-
-    # --------------------------------------------------------
-    # RESPONSE
-    # --------------------------------------------------------
-
-    response = {
-
-        "success": True,
-
-        "bot_running":
-            bot_running,
-
-        "symbol":
-            SYMBOL,
-
-        "current_price":
-            json_number(
-                current_price
-            ),
-
-        "balance":
-            json_number(
-                balance
-            ),
-
-        "today_pnl":
-            json_number(
-                today_pnl
-            ),
-
-        "total_pnl":
-            total_pnl,
-
-        "position": {
-
-            "direction":
-                direction,
-
-            "size":
-                abs(size),
-
-            "entry_price":
-                json_number(
-                    entry_price
-                ),
-
-            "stop_loss":
-                json_number(
-                    stop_loss
-                ),
-
-            "unrealized_pnl":
-                json_number(
-                    unrealized_pnl
-                )
-        },
-
-        "statistics": {
-
-            "total_trades":
-                statistics[
-                    "total_trades"
-                ],
-
-            "winning_trades":
-                statistics[
-                    "winning_trades"
-                ],
-
-            "losing_trades":
-                statistics[
-                    "losing_trades"
-                ],
-
-            "win_rate":
-                statistics[
-                    "win_rate"
-                ]
-        },
-
-        "trades":
-            trades,
-
-        "errors":
-            errors
-    }
-
-
-    return jsonify(
-        response
-    )
-
-
-# ============================================================
-# START BOT
-# ============================================================
-
-@app.post("/api/start")
-def start_bot():
-
-    return jsonify({
-
-        "success": True,
-
-        "message":
-            "START command received."
-
-    })
-
-
-# ============================================================
-# STOP BOT
-# ============================================================
-
-@app.post("/api/stop")
-def stop_bot():
-
-    return jsonify({
-
-        "success": True,
-
-        "message":
-            "STOP command received."
-
-    })
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.get("/api/health")
-def health():
-
-    return jsonify({
-
-        "status":
-            "ok",
-
-        "bot_running":
-            get_bot_running(),
-
-        "symbol":
-            SYMBOL
-
-    })
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-if __name__ == "__main__":
-
-    app.run(
-        host="0.0.0.0",
-        port=8000,
-        debug=False
+            contract_value = decimal_value(
+                value
             )
+
+            if (
+                contract_value is not None
+                and contract_value > 0
+            ):
+                break
+
+    if (
+        contract_value is None
+        or contract_value <= 0
+    ):
+        contract_value = Decimal("1")
+
+    # Long = positive size.
+    # Short = negative size.
+    return (
+        Decimal(size)
+        * (
+            current_price
+            - entry
+        )
+        * contract_value
+    )
+
+
+# ============================================================
+# FILLS
+# ============================================================
+
+def get_fills():
+
+    data = delta_request(
+        "GET",
+        "/v2/fills",
+        params={
+            "product_ids": None
+        },
+        authenticated=True
+    )
+
+    result = data.get(
+        "result",
+        []
+    )
+
+    if isinstance(
+        result,
+        dict
+    ):
+        result = [result]
+
+    return result
+
+
+# ============================================================
+# SAFE FILL REQUEST
+# ============================================================
+
+def get_xautusd_fills(
+    product_id
+):
+
+    try:
+
+        data = delta_request(
+            "GET",
+            "/v2/fills",
+            params={
+                "product_ids": str(
+                    product_id
+                ),
+                "page_size": 50
+            },
+            authenticated=True
+        )
+
+        result = data.get(
+            "result",
+            []
+        )
+
+        if isinstance(
+            result,
+            dict
+        ):
+            result = [result]
+
+        return result
+
+    except Exception:
+
+        return []
+
+
+# ============================================================
+# REALIZED P&L FROM FILLS
+#
+# FIFO calculation.
+# Used for dashboard history.
+# ============================================================
+
+def calculate_fill_statistics(
+    fills,
+    product
+):
+
+    if not fills:
+
+        return {
+            "realized_pnl
