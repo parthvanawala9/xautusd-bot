@@ -1,10 +1,14 @@
 name: Deploy Dashboard API
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - "dashboard_api.py"
+      - "requirements.txt"
+      - ".github/workflows/dashboard.yml"
+  workflow_dispatch:
 
 jobs:
   deploy-dashboard:
@@ -15,58 +19,38 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare SSH
-        env:
-          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
-          chmod 600 ~/.ssh/oracle.key
+          echo "${{ secrets.OCI_SSH_KEY }}" > ~/.ssh/oci_key
+          chmod 600 ~/.ssh/oci_key
+          ssh-keyscan -H "${{ secrets.OCI_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Copy dashboard API
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "mkdir -p /home/opc/xautusd-bot/dashboard"
-
-          scp \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            dashboard_api.py \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+          for i in 1 2 3 4 5; do
+            scp \
+              -i ~/.ssh/oci_key \
+              -o ConnectTimeout=20 \
+              -o ConnectionAttempts=3 \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=3 \
+              dashboard_api.py \
+              "${{ secrets.OCI_USER }}@${{ secrets.OCI_HOST }}:/home/opc/dashboard_api.py" && break
+            echo "SSH attempt $i failed. Retrying..."
+            sleep 10
+          done
 
       - name: Start dashboard API
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
-          cd /home/opc/xautusd-bot
-
-          python3 -m pip install --user flask flask-cors
-
-          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
-
-          nohup python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py \
-            > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
-
-          sleep 5
-
-          echo "=== DASHBOARD PROCESS ==="
-          pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
-
-          echo "=== PORT 8000 ==="
-          ss -lntp | grep ':8000' || true
-
-          echo "=== LOCAL API TEST ==="
-          curl -v http://127.0.0.1:8000/api/health
-
-          EOF
+          for i in 1 2 3 4 5; do
+            ssh \
+              -i ~/.ssh/oci_key \
+              -o ConnectTimeout=20 \
+              -o ConnectionAttempts=3 \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=3 \
+              "${{ secrets.OCI_USER }}@${{ secrets.OCI_HOST }}" \
+              'cd /home/opc && python3 -m pip install -r requirements.txt && pkill -f "dashboard_api.py" || true; nohup python3 dashboard_api.py > dashboard_api.log 2>&1 &' && break
+            echo "SSH attempt $i failed. Retrying..."
+            sleep 10
+          done
