@@ -1,248 +1,522 @@
-const API_URL = "";
+let refreshTimer = null;
 
-const $ = (id) => document.getElementById(id);
 
-async function api(path, options = {}) {
-  const response = await fetch(`${API_URL}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
+function money(value) {
+
+    if (value === null || value === undefined) {
+        return "--";
     }
-  });
 
-  if (!response.ok) {
-    throw new Error(`API error ${response.status}`);
-  }
+    const number = Number(value);
 
-  return response.json();
+    if (Number.isNaN(number)) {
+        return "--";
+    }
+
+    return "$" + number.toLocaleString(
+        "en-US",
+        {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        }
+    );
 }
 
-function setBotStatus(running) {
-  $("botStatus").textContent = running ? "RUNNING" : "STOPPED";
-  $("bigBotStatus").textContent = running ? "RUNNING" : "OFFLINE";
 
-  $("botStatusDot").className =
-    `status-dot ${running ? "online" : "offline"}`;
+function number(value) {
 
-  $("bigStatusDot").className =
-    `status-dot ${running ? "online" : "offline"}`;
+    if (value === null || value === undefined) {
+        return "--";
+    }
+
+    return Number(value).toLocaleString(
+        "en-US",
+        {
+            maximumFractionDigits: 4
+        }
+    );
 }
 
-function formatNumber(value, decimals = 2) {
-  if (value === null || value === undefined || value === "") {
-    return "--";
-  }
 
-  const number = Number(value);
+function setPnl(element, value) {
 
-  if (!Number.isFinite(number)) {
-    return "--";
-  }
+    element.textContent = money(value);
 
-  return number.toLocaleString("en-US", {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals
-  });
-}
-
-function formatPnl(value) {
-  if (value === null || value === undefined || value === "") {
-    return "--";
-  }
-
-  const number = Number(value);
-
-  if (!Number.isFinite(number)) {
-    return "--";
-  }
-
-  const formatted =
-    `${number >= 0 ? "+" : ""}$${formatNumber(number)}`;
-
-  return formatted;
-}
-
-function applyPnlClass(element, value) {
-  element.classList.remove("profit", "loss");
-
-  if (Number(value) > 0) {
-    element.classList.add("profit");
-  } else if (Number(value) < 0) {
-    element.classList.add("loss");
-  }
-}
-
-async function loadDashboard() {
-  try {
-    const data = await api("/api/dashboard");
-
-    $("connectionStatus").textContent = "Connected";
-
-    setBotStatus(Boolean(data.bot_running));
-
-    $("currentPrice").textContent =
-      `$${formatNumber(data.current_price)}`;
-
-    $("position").textContent =
-      data.position?.direction || "FLAT";
-
-    $("entryPrice").textContent =
-      data.position?.entry_price
-        ? `$${formatNumber(data.position.entry_price)}`
-        : "--";
-
-    $("stopLoss").textContent =
-      data.position?.stop_loss
-        ? `$${formatNumber(data.position.stop_loss)}`
-        : "--";
-
-    $("unrealizedPnl").textContent =
-      formatPnl(data.position?.unrealized_pnl);
-
-    applyPnlClass(
-      $("unrealizedPnl"),
-      data.position?.unrealized_pnl
+    element.classList.remove(
+        "profit",
+        "loss"
     );
 
-    $("todayPnl").textContent =
-      formatPnl(data.today_pnl);
+    if (Number(value) > 0) {
+        element.classList.add("profit");
+    }
 
-    applyPnlClass(
-      $("todayPnl"),
-      data.today_pnl
-    );
-
-    $("totalPnl").textContent =
-      formatPnl(data.total_pnl);
-
-    applyPnlClass(
-      $("totalPnl"),
-      data.total_pnl
-    );
-
-    $("totalTrades").textContent =
-      data.statistics?.total_trades ?? "--";
-
-    $("winningTrades").textContent =
-      data.statistics?.winning_trades ?? "--";
-
-    $("losingTrades").textContent =
-      data.statistics?.losing_trades ?? "--";
-
-    $("winRate").textContent =
-      data.statistics?.win_rate !== undefined
-        ? `${formatNumber(data.statistics.win_rate)}%`
-        : "--";
-
-    $("balance").textContent =
-      data.balance !== undefined
-        ? `$${formatNumber(data.balance)}`
-        : "--";
-
-    $("symbol").textContent =
-      data.symbol || "XAUTUSD";
-
-    $("lastUpdate").textContent =
-      new Date().toLocaleTimeString();
-
-    renderTrades(data.trades || []);
-
-  } catch (error) {
-    $("connectionStatus").textContent = "Disconnected";
-    setBotStatus(false);
-    console.error(error);
-  }
+    if (Number(value) < 0) {
+        element.classList.add("loss");
+    }
 }
+
+
+function showMessage(text) {
+
+    const message =
+        document.getElementById("message");
+
+    message.textContent = text;
+
+    message.classList.add("show");
+
+    setTimeout(() => {
+        message.classList.remove("show");
+    }, 3000);
+}
+
+
+function updateBotStatus(running) {
+
+    const status =
+        document.getElementById("botStatus");
+
+    const statusCard =
+        document.getElementById("botStatusCard");
+
+    if (running) {
+
+        status.className =
+            "status running";
+
+        status.innerHTML =
+            '<span class="status-dot"></span> BOT RUNNING';
+
+        statusCard.textContent =
+            "RUNNING";
+
+        statusCard.classList.remove(
+            "loss"
+        );
+
+        statusCard.classList.add(
+            "profit"
+        );
+
+    } else {
+
+        status.className =
+            "status stopped";
+
+        status.innerHTML =
+            '<span class="status-dot"></span> BOT STOPPED';
+
+        statusCard.textContent =
+            "STOPPED";
+
+        statusCard.classList.remove(
+            "profit"
+        );
+
+        statusCard.classList.add(
+            "loss"
+        );
+    }
+}
+
+
+function updatePosition(position) {
+
+    const direction =
+        position.direction || "FLAT";
+
+    const badge =
+        document.getElementById(
+            "positionBadge"
+        );
+
+    badge.textContent = direction;
+
+    badge.className =
+        direction === "LONG"
+            ? "position-long"
+            : direction === "SHORT"
+                ? "position-short"
+                : "position-flat";
+
+
+    document.getElementById(
+        "direction"
+    ).textContent = direction;
+
+
+    document.getElementById(
+        "positionSize"
+    ).textContent = number(
+        position.size
+    );
+
+
+    document.getElementById(
+        "entryPrice"
+    ).textContent = number(
+        position.entry_price
+    );
+
+
+    document.getElementById(
+        "stopLoss"
+    ).textContent = number(
+        position.stop_loss
+    );
+
+
+    setPnl(
+        document.getElementById(
+            "unrealizedPnl"
+        ),
+        position.unrealized_pnl
+    );
+}
+
 
 function renderTrades(trades) {
-  const table = $("tradeTable");
 
-  $("tradeCount").textContent =
-    `${trades.length} trade${trades.length === 1 ? "" : "s"}`;
+    const table =
+        document.getElementById(
+            "tradeTable"
+        );
 
-  if (!trades.length) {
-    table.innerHTML = `
-      <tr>
-        <td colspan="7" class="empty">
-          No trades available
-        </td>
-      </tr>
-    `;
-    return;
-  }
+    if (!trades || trades.length === 0) {
 
-  table.innerHTML = trades.map((trade) => {
-    const direction =
-      String(trade.direction || "").toUpperCase();
+        table.innerHTML = `
+            <tr>
+                <td colspan="6" class="empty">
+                    No trades yet
+                </td>
+            </tr>
+        `;
 
-    const pnl = Number(trade.pnl || 0);
+        return;
+    }
 
-    return `
-      <tr>
-        <td>${trade.time || "--"}</td>
 
-        <td class="${direction === "LONG" ? "long" : "short"}">
-          ${direction || "--"}
-        </td>
+    table.innerHTML = trades.map(
+        trade => {
 
-        <td>${formatNumber(trade.entry_price)}</td>
+            const side =
+                String(
+                    trade.side || ""
+                ).toUpperCase();
 
-        <td>${formatNumber(trade.exit_price)}</td>
+            const sideClass =
+                side === "BUY"
+                    ? "side-buy"
+                    : "side-sell";
 
-        <td>${trade.size ?? "--"}</td>
+            return `
+                <tr>
 
-        <td>${trade.reason || "--"}</td>
+                    <td>
+                        ${formatTime(
+                            trade.timestamp
+                        )}
+                    </td>
 
-        <td class="${pnl >= 0 ? "profit" : "loss"}">
-          ${formatPnl(pnl)}
-        </td>
-      </tr>
-    `;
-  }).join("");
+                    <td class="${sideClass}">
+                        ${side || "--"}
+                    </td>
+
+                    <td>
+                        ${number(
+                            trade.price
+                        )}
+                    </td>
+
+                    <td>
+                        ${number(
+                            trade.size
+                        )}
+                    </td>
+
+                    <td>
+                        ${money(
+                            trade.commission
+                        )}
+                    </td>
+
+                    <td class="${
+                        Number(trade.pnl) > 0
+                            ? "profit"
+                            : Number(trade.pnl) < 0
+                                ? "loss"
+                                : ""
+                    }">
+                        ${money(
+                            trade.pnl
+                        )}
+                    </td>
+
+                </tr>
+            `;
+        }
+    ).join("");
 }
+
+
+function formatTime(timestamp) {
+
+    if (!timestamp) {
+        return "--";
+    }
+
+    const date =
+        new Date(timestamp);
+
+    if (Number.isNaN(
+        date.getTime()
+    )) {
+        return timestamp;
+    }
+
+    return date.toLocaleString(
+        "en-IN",
+        {
+            day: "2-digit",
+            month: "short",
+            hour: "2-digit",
+            minute: "2-digit"
+        }
+    );
+}
+
+
+async function loadDashboard() {
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/dashboard",
+                {
+                    cache: "no-store"
+                }
+            );
+
+        const data =
+            await response.json();
+
+
+        if (!data.success) {
+            throw new Error(
+                data.error || "Dashboard error"
+            );
+        }
+
+
+        updateBotStatus(
+            data.bot_running
+        );
+
+
+        document.getElementById(
+            "currentPrice"
+        ).textContent =
+            number(
+                data.current_price
+            );
+
+
+        document.getElementById(
+            "balance"
+        ).textContent =
+            money(
+                data.balance
+            );
+
+
+        setPnl(
+            document.getElementById(
+                "totalPnl"
+            ),
+            data.total_pnl
+        );
+
+
+        setPnl(
+            document.getElementById(
+                "todayPnl"
+            ),
+            data.today_pnl
+        );
+
+
+        document.getElementById(
+            "winRate"
+        ).textContent =
+            Number(
+                data.statistics.win_rate
+            ).toFixed(1) + "%";
+
+
+        document.getElementById(
+            "totalTrades"
+        ).textContent =
+            data.statistics.total_trades;
+
+
+        document.getElementById(
+            "winningTrades"
+        ).textContent =
+            data.statistics.winning_trades;
+
+
+        document.getElementById(
+            "losingTrades"
+        ).textContent =
+            data.statistics.losing_trades;
+
+
+        updatePosition(
+            data.position
+        );
+
+
+        renderTrades(
+            data.trades
+        );
+
+
+        document.getElementById(
+            "lastUpdated"
+        ).textContent =
+            new Date().toLocaleTimeString(
+                "en-IN",
+                {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit"
+                }
+            );
+
+    } catch (error) {
+
+        console.error(error);
+
+        document.getElementById(
+            "lastUpdated"
+        ).textContent =
+            "Connection error";
+    }
+}
+
 
 async function startBot() {
-  if (!confirm("Start the XAUTUSD bot?")) {
-    return;
-  }
 
-  try {
-    await api("/api/start", {
-      method: "POST"
-    });
+    try {
 
-    await loadDashboard();
+        const response =
+            await fetch(
+                "/api/start",
+                {
+                    method: "POST"
+                }
+            );
 
-  } catch (error) {
-    alert("Could not start the bot.");
-    console.error(error);
-  }
+        const data =
+            await response.json();
+
+        showMessage(
+            data.message
+        );
+
+        await loadDashboard();
+
+    } catch (error) {
+
+        showMessage(
+            "Unable to start bot."
+        );
+    }
 }
+
 
 async function stopBot() {
-  if (!confirm(
-    "STOP BOT?\n\nThe existing position will also be closed."
-  )) {
-    return;
-  }
 
-  try {
-    await api("/api/stop", {
-      method: "POST"
-    });
+    if (
+        !confirm(
+            "Stop the bot? Existing position remains open."
+        )
+    ) {
+        return;
+    }
 
-    await loadDashboard();
+    try {
 
-  } catch (error) {
-    alert("Could not stop the bot.");
-    console.error(error);
-  }
+        const response =
+            await fetch(
+                "/api/stop",
+                {
+                    method: "POST"
+                }
+            );
+
+        const data =
+            await response.json();
+
+        showMessage(
+            data.message
+        );
+
+        await loadDashboard();
+
+    } catch (error) {
+
+        showMessage(
+            "Unable to stop bot."
+        );
+    }
 }
 
-$("startBtn").addEventListener("click", startBot);
-$("stopBtn").addEventListener("click", stopBot);
+
+async function stopAndExit() {
+
+    if (
+        !confirm(
+            "STOP BOT AND EXIT THE EXISTING POSITION AT MARKET?"
+        )
+    ) {
+        return;
+    }
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/stop-exit",
+                {
+                    method: "POST"
+                }
+            );
+
+        const data =
+            await response.json();
+
+        showMessage(
+            data.message
+        );
+
+        await loadDashboard();
+
+    } catch (error) {
+
+        showMessage(
+            "Unable to stop and exit."
+        );
+    }
+}
+
 
 loadDashboard();
 
-setInterval(loadDashboard, 3000);
+refreshTimer =
+    setInterval(
+        loadDashboard,
+        3000
+    );
