@@ -63,4 +63,12 @@ jobs:
           echo "===== LOCAL HEALTH CHECK ====="
           curl -fsS http://127.0.0.1:8000/api/health
           echo ""
+
+          echo "===== DEBUG DATA ====="
+          curl -sS http://127.0.0.1:8000/api/debug
+          echo ""
+
+          echo "===== DASHBOARD DATA ====="
+          curl -sS http://127.0.0.1:8000/api/dashboard
+          echo ""
           EOF
