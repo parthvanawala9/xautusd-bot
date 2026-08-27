@@ -40,7 +40,7 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-      - name: Install dashboard dependencies and restart API
+      - name: Restart Dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -50,40 +50,68 @@ jobs:
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          cd /home/opc/xautusd-bot
+          set -e
 
-          python3 -m pip install --user flask flask-cors requests python-dotenv
+          DASHBOARD="/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-          # ONLY restart dashboard API.
-          # NEVER TOUCH bot.py.
-          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+          echo "===== STOP OLD DASHBOARD API ====="
 
-          sleep 2
+          PIDS=$(ps -eo pid=,args= | \
+            awk '$0 ~ /\/home\/opc\/xautusd-bot\/dashboard\/dashboard_api\.py/ && $0 !~ /awk/ {print $1}')
 
-          nohup python3 \
-            /home/opc/xautusd-bot/dashboard/dashboard_api.py \
+          if [ -n "$PIDS" ]; then
+            echo "$PIDS" | xargs -r kill
+            sleep 3
+          fi
+
+          echo
+          echo "===== VERIFY OLD PROCESS STOPPED ====="
+
+          ps -eo pid=,args= | \
+            awk '$0 ~ /\/home\/opc\/xautusd-bot\/dashboard\/dashboard_api\.py/ && $0 !~ /awk/ {print}' \
+            || true
+
+          echo
+          echo "===== START NEW DASHBOARD API ====="
+
+          nohup python3 -u "$DASHBOARD" \
             > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
+
+          NEW_PID=$!
+
+          echo "Dashboard PID: $NEW_PID"
 
           sleep 5
 
+          echo
           echo "===== DASHBOARD PROCESS ====="
-          pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+
+          ps -p "$NEW_PID" -f || true
 
           echo
           echo "===== PORT 8000 ====="
+
           ss -lntp | grep ':8000' || true
 
           echo
           echo "===== LOCAL HEALTH ====="
-          curl -fsS http://127.0.0.1:8000/api/health
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/health
 
           echo
-          echo "===== DASHBOARD DEBUG ====="
-          curl -sS http://127.0.0.1:8000/api/debug || true
+          echo
+          echo "===== LOCAL DEBUG ====="
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/debug
 
           echo
-          echo "===== DASHBOARD DATA ====="
-          curl -sS http://127.0.0.1:8000/api/dashboard || true
+          echo
+          echo "===== LOCAL DASHBOARD ====="
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/dashboard
 
           echo
 
@@ -99,7 +127,13 @@ jobs:
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          cd /home/opc/xautusd-bot
+          set -e
+
+          DASHBOARD_DIR="/home/opc/xautusd-bot/dashboard"
+          PID_FILE="$DASHBOARD_DIR/quick-tunnel.pid"
+          LOG_FILE="$DASHBOARD_DIR/quick-tunnel.log"
+
+          mkdir -p "$DASHBOARD_DIR"
 
           echo "===== CLOUDFLARE ====="
 
@@ -110,43 +144,38 @@ jobs:
             exit 1
           fi
 
-          echo "cloudflared: $CLOUDFLARED"
           "$CLOUDFLARED" version
 
-          mkdir -p /home/opc/xautusd-bot/dashboard
-          touch /home/opc/xautusd-bot/dashboard/quick-tunnel.log
+          echo
+          echo "===== STOP OLD QUICK TUNNEL ====="
 
-          # Stop ONLY previous Quick Tunnel.
-          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
+          if [ -f "$PID_FILE" ]; then
 
-            OLD_PID=$(cat \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid \
-              2>/dev/null || true)
+            OLD_PID=$(cat "$PID_FILE" 2>/dev/null || true)
 
             if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
               kill "$OLD_PID" 2>/dev/null || true
-              sleep 2
+              sleep 3
             fi
 
-            rm -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
+            rm -f "$PID_FILE"
+
           fi
 
-          : > /home/opc/xautusd-bot/dashboard/quick-tunnel.log
+          : > "$LOG_FILE"
 
-          echo "Starting Quick Tunnel..."
+          echo
+          echo "===== START QUICK TUNNEL ====="
 
           nohup "$CLOUDFLARED" tunnel \
             --url http://127.0.0.1:8000 \
-            > /home/opc/xautusd-bot/dashboard/quick-tunnel.log 2>&1 &
+            > "$LOG_FILE" 2>&1 &
 
           TUNNEL_PID=$!
 
-          echo "$TUNNEL_PID" \
-            > /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
+          echo "$TUNNEL_PID" > "$PID_FILE"
 
           echo "Quick Tunnel PID: $TUNNEL_PID"
-
-          echo "Waiting for Cloudflare URL..."
 
           URL=""
 
@@ -156,7 +185,7 @@ jobs:
 
             URL=$(grep -oE \
               'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.log \
+              "$LOG_FILE" \
               | tail -n 1 || true)
 
             if [ -n "$URL" ]; then
@@ -166,12 +195,8 @@ jobs:
           done
 
           if [ -z "$URL" ]; then
-
-            echo "ERROR: Cloudflare URL was not found."
-
-            echo "===== CLOUDFLARE LOG ====="
-            cat /home/opc/xautusd-bot/dashboard/quick-tunnel.log || true
-
+            echo "ERROR: Cloudflare URL not found."
+            cat "$LOG_FILE" || true
             exit 1
           fi
 
@@ -182,36 +207,39 @@ jobs:
           echo "=========================================="
 
           echo
-          echo "HEALTH URL:"
+          echo "HEALTH:"
           echo "$URL/api/health"
 
           echo
-          echo "DASHBOARD API URL:"
+          echo "DASHBOARD:"
           echo "$URL/api/dashboard"
 
           echo
-          echo "DEBUG URL:"
+          echo "DEBUG:"
           echo "$URL/api/debug"
 
           echo
-          echo "===== HEALTH TEST ====="
-
-          sleep 3
+          echo "===== CLOUDFLARE HEALTH TEST ====="
 
           curl -fsS "$URL/api/health"
 
           echo
+          echo
+          echo "===== CLOUDFLARE DEBUG TEST ====="
+
+          curl -fsS "$URL/api/debug"
 
           echo
-          echo "===== DASHBOARD DATA TEST ====="
+          echo
+          echo "===== CLOUDFLARE DASHBOARD TEST ====="
 
-          curl -sS "$URL/api/dashboard" || true
+          curl -fsS "$URL/api/dashboard"
 
           echo
 
           EOF
 
-      - name: Verify dashboard and bot
+      - name: Verify Dashboard and Bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -228,7 +256,7 @@ jobs:
             || true
 
           echo
-          echo "===== DASHBOARD API CHECK ====="
+          echo "===== DASHBOARD CHECK ====="
 
           pgrep -af \
             "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
@@ -240,31 +268,17 @@ jobs:
           ss -lntp | grep ':8000' || true
 
           echo
-          echo "===== CLOUDFLARE QUICK TUNNEL ====="
-
-          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
-
-            PID=$(cat \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid)
-
-            ps -p "$PID" -f || true
-
-          fi
-
-          echo
-          echo "===== LOCAL HEALTH ====="
+          echo "===== HEALTH ====="
 
           curl -fsS \
             http://127.0.0.1:8000/api/health
 
           echo
-
           echo
-          echo "===== LOCAL DEBUG ====="
+          echo "===== DEBUG ====="
 
-          curl -sS \
-            http://127.0.0.1:8000/api/debug \
-            || true
+          curl -fsS \
+            http://127.0.0.1:8000/api/debug
 
           echo
 
