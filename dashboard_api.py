@@ -11,7 +11,7 @@ load_dotenv()
 API_KEY = os.getenv("DELTA_API_KEY", "")
 API_SECRET = os.getenv("DELTA_API_SECRET", "")
 SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD")
-BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange")
+BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip('/')
 
 
 def generate_signature(method, endpoint, payload="", timestamp=""):
@@ -66,24 +66,39 @@ def fetch_ticker_price():
 
 def fetch_live_position():
     try:
-        endpoint = "/v2/positions"
+        endpoint = "/v2/positions/margined"
         url = BASE_URL + endpoint
         headers = get_headers("GET", endpoint)
         res = requests.get(url, headers=headers, timeout=10)
         
+        positions = []
         if res.status_code == 200:
             positions = res.json().get("result", [])
-            for pos in positions:
-                if pos.get("product_symbol") == SYMBOL and float(pos.get("size", 0)) != 0:
-                    size = float(pos.get("size", 0))
-                    direction = "LONG" if size > 0 else "SHORT"
-                    return {
-                        "direction": direction,
-                        "size": abs(size),
-                        "entry_price": float(pos.get("entry_price", 0.0)),
-                        "stop_loss": float(pos.get("stop_loss", 0.0)),
-                        "unrealized_pnl": float(pos.get("realized_pnl", 0.0)) + float(pos.get("unrealized_pnl", 0.0))
-                    }
+        else:
+            # Fallback to standard positions endpoint
+            endpoint_alt = "/v2/positions"
+            res_alt = requests.get(BASE_URL + endpoint_alt, headers=get_headers("GET", endpoint_alt), timeout=10)
+            if res_alt.status_code == 200:
+                positions = res_alt.json().get("result", [])
+
+        for pos in positions:
+            prod_symbol = str(pos.get("product_symbol", "")).upper()
+            size = float(pos.get("size", 0))
+
+            if ("XAUT" in prod_symbol or prod_symbol == SYMBOL) and size != 0:
+                direction = "LONG" if size > 0 else "SHORT"
+                entry_price = float(pos.get("entry_price", 0.0))
+                stop_loss = float(pos.get("stop_loss", 0.0))
+                realized = float(pos.get("realized_pnl", 0.0))
+                unrealized = float(pos.get("unrealized_pnl", 0.0))
+
+                return {
+                    "direction": direction,
+                    "size": abs(size),
+                    "entry_price": entry_price,
+                    "stop_loss": stop_loss,
+                    "unrealized_pnl": unrealized + realized
+                }
     except Exception as e:
         print("Position fetch error:", e)
 
