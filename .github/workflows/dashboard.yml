@@ -5,9 +5,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - "dashboard_api.py"
-      - ".github/workflows/dashboard.yml"
 
 jobs:
   deploy-dashboard:
@@ -25,23 +22,7 @@ jobs:
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
           chmod 600 ~/.ssh/oracle.key
 
-          echo "Checking SSH key..."
-          ssh-keygen -y -f ~/.ssh/oracle.key > /dev/null
-          echo "SSH key is valid."
-
-      - name: Check Oracle connection
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=30 \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "echo 'Oracle SSH connection OK'"
-
-      - name: Deploy Dashboard API
+      - name: Copy dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -60,7 +41,7 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-      - name: Check Dashboard API
+      - name: Install dashboard dependencies and restart API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -71,39 +52,113 @@ jobs:
             -o ConnectTimeout=30 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo "======================================"
-          echo "DASHBOARD / BOT SAFETY CHECK"
-          echo "======================================"
+          cd /home/opc/xautusd-bot
 
-          echo ""
-          echo "===== BOT PROCESS ====="
-          pgrep -af "/home/opc/xautusd-bot/bot.py" || echo "Bot process not found"
+          echo "===== INSTALL DASHBOARD DEPENDENCIES ====="
 
-          echo ""
+          python3 -m pip install --user flask flask-cors
+
+          echo "===== STOP OLD DASHBOARD API ONLY ====="
+
+          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+
+          sleep 2
+
+          echo "===== START DASHBOARD API ====="
+
+          nohup python3 \
+            /home/opc/xautusd-bot/dashboard/dashboard_api.py \
+            > /home/opc/xautusd-bot/dashboard/dashboard.log 2>&1 &
+
+          sleep 5
+
+          echo "===== DASHBOARD PROCESS ====="
+
+          pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+
           echo "===== PORT 8000 ====="
-          ss -lntp | grep ':8000' || echo "Nothing listening on port 8000"
 
-          echo ""
-          echo "===== DASHBOARD API PROCESS ====="
-          pgrep -af "dashboard/dashboard_api.py" || echo "Dashboard API process not found"
+          ss -lntp | grep ':8000' || true
 
-          echo ""
-          echo "===== DASHBOARD HEALTH ====="
-          curl -sS --max-time 10 http://127.0.0.1:8000/api/health || true
+          echo "===== LOCAL HEALTH CHECK ====="
 
-          echo ""
-          echo ""
-          echo "===== DASHBOARD DATA ====="
-          curl -sS --max-time 10 http://127.0.0.1:8000/api/dashboard || true
+          curl -f http://127.0.0.1:8000/api/health
 
-          echo ""
-          echo ""
-          echo "===== DASHBOARD LOG ====="
-          tail -30 /home/opc/xautusd-bot/dashboard/dashboard.log 2>/dev/null || echo "No dashboard log found"
+          echo
 
-          echo ""
-          echo "======================================"
-          echo "CHECK COMPLETE"
-          echo "======================================"
+          echo "===== DASHBOARD CHECK ====="
+
+          curl -f http://127.0.0.1:8000/api/dashboard
+
+          echo
+
+          EOF
+
+      - name: Install and start Cloudflare Tunnel
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "CLOUDFLARE_TUNNEL_TOKEN='$CLOUDFLARE_TUNNEL_TOKEN' bash -s" << 'EOF'
+
+          set -e
+
+          echo "===== CLOUDFLARE TUNNEL ====="
+
+          if ! command -v cloudflared >/dev/null 2>&1; then
+            echo "cloudflared not installed. Installing..."
+
+            cd /tmp
+
+            curl -fL \
+              https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-x86_64.rpm \
+              -o cloudflared.rpm
+
+            sudo rpm -Uvh cloudflared.rpm
+
+            rm -f cloudflared.rpm
+          else
+            echo "cloudflared already installed."
+          fi
+
+          echo "===== CLOUDFLARED VERSION ====="
+
+          cloudflared --version
+
+          echo "===== CHECK CLOUDFLARE SERVICE ====="
+
+          if sudo systemctl list-unit-files | grep -q '^cloudflared.service'; then
+
+            echo "Cloudflare service already exists."
+
+            sudo systemctl enable cloudflared
+            sudo systemctl restart cloudflared
+
+          else
+
+            echo "Installing Cloudflare Tunnel service..."
+
+            sudo cloudflared service install "$CLOUDFLARE_TUNNEL_TOKEN"
+
+            sudo systemctl enable cloudflared
+            sudo systemctl start cloudflared
+
+          fi
+
+          sleep 5
+
+          echo "===== CLOUDFLARE SERVICE STATUS ====="
+
+          sudo systemctl --no-pager --full status cloudflared || true
+
+          echo "===== CLOUDFLARE SERVICE CHECK ====="
+
+          sudo systemctl is-active cloudflared
 
           EOF
