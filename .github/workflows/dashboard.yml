@@ -39,7 +39,7 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-      - name: Install dashboard dependencies and start API
+      - name: Start dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -60,6 +60,13 @@ jobs:
 
           sleep 5
 
-          pgrep -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+          echo "=== DASHBOARD PROCESS ==="
+          pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+
+          echo "=== PORT 8000 ==="
+          ss -lntp | grep ':8000' || true
+
+          echo "=== LOCAL API TEST ==="
+          curl -v http://127.0.0.1:8000/api/health
 
           EOF
