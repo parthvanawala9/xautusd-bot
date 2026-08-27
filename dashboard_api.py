@@ -1,18 +1,34 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 import os
 import json
+import subprocess
 
 app = Flask(__name__)
 CORS(app)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-HISTORY_FILE = os.path.join(BASE_DIR, "trade_history.json")
+BASE_DIR = "/home/opc/xautusd-bot"
+TRADE_HISTORY = os.path.join(BASE_DIR, "trade_history.json")
 
 
-def load_history():
+def get_bot_running():
     try:
-        with open(HISTORY_FILE, "r") as f:
+        result = subprocess.run(
+            ["pgrep", "-f", "/home/opc/xautusd-bot/bot.py"],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def load_trades():
+    try:
+        if not os.path.exists(TRADE_HISTORY):
+            return []
+
+        with open(TRADE_HISTORY, "r") as f:
             data = json.load(f)
 
         if isinstance(data, dict):
@@ -29,20 +45,16 @@ def load_history():
 
 @app.get("/api/dashboard")
 def dashboard():
-    trades = load_history()
 
-    winning = [t for t in trades if float(t.get("pnl", 0) or 0) > 0]
-    losing = [t for t in trades if float(t.get("pnl", 0) or 0) < 0]
-
-    total_pnl = sum(float(t.get("pnl", 0) or 0) for t in trades)
+    trades = load_trades()
 
     return jsonify({
-        "bot_running": True,
+        "bot_running": get_bot_running(),
         "symbol": "XAUTUSD",
         "current_price": None,
         "balance": None,
-        "today_pnl": total_pnl,
-        "total_pnl": total_pnl,
+        "today_pnl": 0,
+        "total_pnl": 0,
         "position": {
             "direction": "FLAT",
             "entry_price": None,
@@ -51,12 +63,9 @@ def dashboard():
         },
         "statistics": {
             "total_trades": len(trades),
-            "winning_trades": len(winning),
-            "losing_trades": len(losing),
-            "win_rate": (
-                round(len(winning) / len(trades) * 100, 2)
-                if trades else 0
-            )
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "win_rate": 0
         },
         "trades": trades
     })
@@ -75,6 +84,13 @@ def stop_bot():
     return jsonify({
         "success": True,
         "message": "STOP command received"
+    })
+
+
+@app.get("/api/health")
+def health():
+    return jsonify({
+        "status": "ok"
     })
 
 
