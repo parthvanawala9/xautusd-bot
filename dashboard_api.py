@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-API_KEY = os.getenv("DELTA_API_KEY", "")
-API_SECRET = os.getenv("DELTA_API_SECRET", "")
-SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD")
+API_KEY = os.getenv("DELTA_API_KEY", "").strip()
+API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
+SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD").strip()
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip('/')
 
 
@@ -48,7 +48,7 @@ def fetch_account_balance():
             if data:
                 return float(data[0].get("balance", 0.0))
     except Exception as e:
-        print("Balance fetch error:", e)
+        pass
     return 0.0
 
 
@@ -60,51 +60,48 @@ def fetch_ticker_price():
         if res.status_code == 200:
             return float(res.json().get("result", {}).get("close", 0.0))
     except Exception as e:
-        print("Ticker fetch error:", e)
+        pass
     return 0.0
 
 
 def fetch_live_position():
-    # 1. Try Live Delta API Position Check
-    if API_KEY and API_SECRET:
-        endpoints = ["/v2/positions/margined", "/v2/positions"]
-        for ep in endpoints:
-            try:
-                headers = get_headers("GET", ep)
-                res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
-                if res.status_code == 200:
-                    positions = res.json().get("result", [])
-                    for pos in positions:
-                        prod_symbol = str(pos.get("product_symbol", "")).upper()
-                        size = float(pos.get("size", 0))
-                        if ("XAUT" in prod_symbol or prod_symbol == SYMBOL) and size != 0:
-                            direction = "LONG" if size > 0 else "SHORT"
-                            return {
-                                "direction": direction,
-                                "size": abs(size),
-                                "entry_price": float(pos.get("entry_price", 0.0)),
-                                "stop_loss": float(pos.get("stop_loss", 0.0)),
-                                "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0))
-                            }
-            except Exception as e:
-                print(f"Position API error on {ep}:", e)
+    if not API_KEY or not API_SECRET:
+        return {
+            "direction": "FLAT",
+            "size": 0,
+            "entry_price": 0.0,
+            "stop_loss": 0.0,
+            "unrealized_pnl": 0.0
+        }
 
-    # 2. Fallback to Local State File (xautusd_state.json)
-    if os.path.exists("xautusd_state.json"):
+    endpoints = ["/v2/positions/margined", "/v2/positions"]
+
+    for ep in endpoints:
         try:
-            with open("xautusd_state.json", "r") as f:
-                state = json.load(f)
-                pos = state.get("position", {})
-                if pos.get("direction") in ["LONG", "SHORT"] and float(pos.get("size", 0)) > 0:
-                    return {
-                        "direction": pos.get("direction"),
-                        "size": float(pos.get("size", 0)),
-                        "entry_price": float(pos.get("entry_price", 0.0)),
-                        "stop_loss": float(pos.get("stop_loss", 0.0)),
-                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0))
-                    }
-        except Exception as e:
-            print("State file read error:", e)
+            headers = get_headers("GET", ep)
+            res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
+            if res.status_code == 200:
+                positions = res.json().get("result", [])
+                for pos in positions:
+                    prod_symbol = str(pos.get("product_symbol", "")).upper()
+                    size = float(pos.get("size", 0))
+
+                    if size != 0 and ("XAUT" in prod_symbol or prod_symbol == SYMBOL):
+                        direction = "LONG" if size > 0 else "SHORT"
+                        entry_price = float(pos.get("entry_price", 0.0))
+                        stop_loss = float(pos.get("stop_loss", 0.0))
+                        unrealized = float(pos.get("unrealized_pnl", 0.0))
+                        realized = float(pos.get("realized_pnl", 0.0))
+
+                        return {
+                            "direction": direction,
+                            "size": abs(size),
+                            "entry_price": entry_price,
+                            "stop_loss": stop_loss,
+                            "unrealized_pnl": unrealized + realized
+                        }
+        except Exception:
+            pass
 
     return {
         "direction": "FLAT",
@@ -135,8 +132,8 @@ def fetch_trade_history():
                     "pnl": float(fill.get("pnl", 0.0))
                 })
             return formatted_trades
-    except Exception as e:
-        print("Trade history fetch error:", e)
+    except Exception:
+        pass
     return []
 
 
