@@ -2,13 +2,12 @@
 // XAUTUSD DASHBOARD
 // ============================================================
 //
-// Dashboard API is running directly on Oracle VM.
-// Do NOT change bot.py or the XAUTUSD bot workflow.
+// Dashboard reads live state directly from GitHub Pages storage.
+// Do NOT change bot.py or the XAUTUSD trading engine.
 //
 // ============================================================
 
-const API_BASE_URL =
-    "http://80.225.246.202:8000";
+const API_BASE_URL = ".";
 
 let refreshTimer = null;
 
@@ -458,7 +457,7 @@ function formatTime(
 
 
 // ============================================================
-// DASHBOARD API
+// DASHBOARD API / DATA LOAD
 // ============================================================
 
 async function loadDashboard() {
@@ -467,8 +466,7 @@ async function loadDashboard() {
 
         const response =
             await fetch(
-                API_BASE_URL +
-                "/api/dashboard",
+                "./dashboard.json",
                 {
                     cache: "no-store"
                 }
@@ -478,7 +476,7 @@ async function loadDashboard() {
         if (!response.ok) {
 
             throw new Error(
-                "Dashboard API HTTP " +
+                "Dashboard Data HTTP " +
                 response.status
             );
         }
@@ -488,9 +486,6 @@ async function loadDashboard() {
             await response.json();
 
 
-        // Some dashboard API versions return
-        // success:true, while the current API may
-        // return the dashboard object directly.
         if (
             data.success === false
         ) {
@@ -507,7 +502,7 @@ async function loadDashboard() {
         // ----------------------------------------------------
 
         updateBotStatus(
-            data.bot_running
+            data.bot_running ?? true
         );
 
 
@@ -713,154 +708,19 @@ async function loadDashboard() {
 
 
 // ============================================================
-// START BOT
+// BOT CONTROLS (PLACEHOLDERS FOR STATIC DEPLOYMENT)
 // ============================================================
 
 async function startBot() {
-
-    try {
-
-        const response =
-            await fetch(
-                API_BASE_URL +
-                "/api/start",
-                {
-                    method: "POST"
-                }
-            );
-
-
-        const data =
-            await response.json();
-
-
-        showMessage(
-            data.message ||
-            "Bot start request sent."
-        );
-
-
-        await loadDashboard();
-
-
-    } catch (error) {
-
-        console.error(
-            error
-        );
-
-        showMessage(
-            "Unable to start bot."
-        );
-    }
+    showMessage("Bot state managed directly via server workflow.");
 }
-
-
-// ============================================================
-// STOP BOT
-// ============================================================
 
 async function stopBot() {
-
-    if (
-        !confirm(
-            "Stop the bot? Existing position remains open."
-        )
-    ) {
-
-        return;
-    }
-
-
-    try {
-
-        const response =
-            await fetch(
-                API_BASE_URL +
-                "/api/stop",
-                {
-                    method: "POST"
-                }
-            );
-
-
-        const data =
-            await response.json();
-
-
-        showMessage(
-            data.message ||
-            "Bot stopped."
-        );
-
-
-        await loadDashboard();
-
-
-    } catch (error) {
-
-        console.error(
-            error
-        );
-
-        showMessage(
-            "Unable to stop bot."
-        );
-    }
+    showMessage("Bot state managed directly via server workflow.");
 }
 
-
-// ============================================================
-// STOP & EXIT
-// ============================================================
-
 async function stopAndExit() {
-
-    if (
-        !confirm(
-            "STOP BOT AND EXIT THE EXISTING POSITION AT MARKET?"
-        )
-    ) {
-
-        return;
-    }
-
-
-    try {
-
-        const response =
-            await fetch(
-                API_BASE_URL +
-                "/api/stop-exit",
-                {
-                    method: "POST"
-                }
-            );
-
-
-        const data =
-            await response.json();
-
-
-        showMessage(
-            data.message ||
-            "Bot stopped and position exit requested."
-        );
-
-
-        await loadDashboard();
-
-
-    } catch (error) {
-
-        console.error(
-            error
-        );
-
-        showMessage(
-            "Unable to stop and exit."
-        );
-    }
+    showMessage("Manual position exit must be executed on Exchange directly.");
 }
 
 
@@ -873,5 +733,5 @@ loadDashboard();
 refreshTimer =
     setInterval(
         loadDashboard,
-        3000
+        5000
     );
