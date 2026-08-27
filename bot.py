@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 22.3 (STRICT 05:45 CARRYOVER LOCK)
+# XAUTUSD BREAKOUT BOT - VERSION 23.0 (RE-ENTRY CARRYFORWARD)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/22.3"
+    "User-Agent": "XAUTUSD-Breakout-Engine/23.0"
 })
 
 # ============================================================
@@ -210,19 +210,6 @@ def execute_bracket_market_order(product_id, side, size, sl_price):
     logging.warning(f"LIVE BRACKET MARKET ORDER | SIDE={side} | SIZE={abs(size)} | SL={sl_price}")
     return api_call("POST", "/v2/orders", body=body, auth=True)
 
-def update_position_bracket_sl(product_id, sl_price):
-    body = {
-        "product_id": int(product_id),
-        "stop_loss_price": str(sl_price),
-        "stop_type": "stop_loss",
-        "stop_trigger_method": "last_traded_price"
-    }
-    logging.warning(f"UPDATING BRACKET SL ON POSITION | PRODUCT={product_id} | NEW SL={sl_price}")
-    res = api_call("POST", "/v2/positions/change_pos_bracket", body=body, auth=True)
-    if not res.get("success", False) and "result" not in res:
-        raise RuntimeError(f"Delta API rejected bracket SL update: {res}")
-    return res
-
 def close_position_market(product_id, size):
     side = "sell" if size > 0 else "buy"
     body = {
@@ -279,7 +266,7 @@ class TradingStrategy:
         self.locked_day_low = None
         self.range_ready = False
 
-        # B. DYNAMIC RUNNING DAY EXTREMES (Updated up to entry time)
+        # B. DYNAMIC RUNNING DAY EXTREMES
         self.running_day_high = None
         self.running_day_low = None
 
@@ -357,7 +344,7 @@ class TradingStrategy:
         if current_position != 0:
             self.carried_position = True
             self.needs_0545_sl_reset = True
-            logging.warning("POSITION CARRIED INTO NEW DAY. OLD BRACKET SL REMAINS ACTIVE UNTIL 05:45 IST.")
+            logging.warning("POSITION CARRIED INTO NEW DAY. WILL RE-OPEN AT 05:45 IST WITH NEW DAY SL.")
         else:
             self.carried_position = False
             self.needs_0545_sl_reset = False
@@ -517,44 +504,26 @@ class TradingStrategy:
         if new_sl is None:
             return False
 
-        logging.warning(f"05:45 NEW DAY RANGE BRACKET SL REPLACEMENT | {direction} | NEW SL={new_sl}")
-        
-        try:
-            update_position_bracket_sl(self.product_id, new_sl)
-            self.current_sl = new_sl
-            self.needs_0545_sl_reset = False
-            self.carried_position = False
-            self.save_state()
-            return True
-        except Exception as exc:
-            logging.error(f"FAILED TO UPDATE BRACKET SL: {exc}")
-            return False
+        logging.warning(f"05:45 CARRYFORWARD RESET: CLOSING & RE-OPENING {direction} WITH NEW SL={new_sl}")
 
-    def fix_active_sl_if_incorrect(self, current_size, current_price):
-        now = now_ist()
-        self.update_running_day_extremes(now, current_price)
+        # 1. Close current carried position
+        close_position_market(self.product_id, position_size)
 
-        if current_size > 0 and self.running_day_low is not None:
-            correct_sl = self.running_day_low
-            if self.current_sl is not None and self.current_sl > correct_sl:
-                logging.warning(f"CORRECTING BRACKET SL FROM {self.current_sl} TO TRUE DAY LOW {correct_sl}")
-                try:
-                    update_position_bracket_sl(self.product_id, correct_sl)
-                    self.current_sl = correct_sl
-                    self.save_state()
-                except Exception as exc:
-                    logging.error(f"SL CORRECTION FAILED: {exc}")
+        # Wait briefly for position clear
+        for _ in range(15):
+            time.sleep(0.20)
+            if get_position(self.product_id)["size"] == 0:
+                break
 
-        elif current_size < 0 and self.running_day_high is not None:
-            correct_sl = self.running_day_high
-            if self.current_sl is not None and self.current_sl < correct_sl:
-                logging.warning(f"CORRECTING BRACKET SL FROM {self.current_sl} TO TRUE DAY HIGH {correct_sl}")
-                try:
-                    update_position_bracket_sl(self.product_id, correct_sl)
-                    self.current_sl = correct_sl
-                    self.save_state()
-                except Exception as exc:
-                    logging.error(f"SL CORRECTION FAILED: {exc}")
+        # 2. Re-open exact direction with fresh Bracket SL
+        side = "buy" if position_size > 0 else "sell"
+        execute_bracket_market_order(self.product_id, side, abs(position_size), new_sl)
+
+        self.current_sl = new_sl
+        self.needs_0545_sl_reset = False
+        self.carried_position = False
+        self.save_state()
+        return True
 
     def run_cycle(self):
         now = now_ist()
@@ -602,13 +571,9 @@ class TradingStrategy:
                 if not self.range_ready:
                     self.build_initial_range(now)
 
-                # Execute 05:45 IST SL reset for carried position
+                # Execute 05:45 IST Position Reset for carried position
                 if self.needs_0545_sl_reset and self.range_ready:
-                    if self.update_carried_position_stop(current_size, current_price):
-                        logging.warning(f"05:45 BRACKET SL SUCCESSFULLY RESET TO {self.current_sl}")
-                    return  # Prevent running auto-correct on the exact same cycle
-
-                self.fix_active_sl_if_incorrect(current_size, current_price)
+                    self.update_carried_position_stop(current_size, current_price)
             return
 
         # 5. Hold Flat States Before 05:45 IST
@@ -656,7 +621,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v22.3 (STRICT 05:45 CARRYOVER LOCK) ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v23.0 (RE-ENTRY CARRYFORWARD) ONLINE.")
 
         while True:
             try:
