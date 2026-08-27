@@ -13,7 +13,7 @@ import requests
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 23.0 (RE-ENTRY CARRYFORWARD)
+# XAUTUSD BREAKOUT BOT - VERSION 23.1 (BULLETPROOF BRACKET & FALLBACK)
 # ============================================================
 
 load_dotenv()
@@ -43,7 +43,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/23.0"
+    "User-Agent": "XAUTUSD-Breakout-Engine/23.1"
 })
 
 # ============================================================
@@ -208,6 +208,32 @@ def execute_bracket_market_order(product_id, side, size, sl_price):
         "client_order_id": f"xent_{int(time.time()*1000)}"[:32]
     }
     logging.warning(f"LIVE BRACKET MARKET ORDER | SIDE={side} | SIZE={abs(size)} | SL={sl_price}")
+    res = api_call("POST", "/v2/orders", body=body, auth=True)
+    
+    # Fallback check if bracket attachment fails
+    time.sleep(0.5)
+    stops = api_call("GET", "/v2/orders", params={"product_ids": str(product_id), "states": "open,pending"}, auth=True).get("result", [])
+    if not stops:
+        logging.warning("BRACKET ATTACHMENT SLOW/FAILED. CREATING DIRECT FALLBACK STOP LOSS ORDER...")
+        create_fallback_stop_loss(product_id, side, size, sl_price)
+    
+    return res
+
+def create_fallback_stop_loss(product_id, side, size, sl_price):
+    stop_side = "sell" if side == "buy" else "buy"
+    body = {
+        "product_id": int(product_id),
+        "product_symbol": SYMBOL,
+        "size": int(abs(size)),
+        "side": stop_side,
+        "order_type": "market_order",
+        "stop_order_type": "stop_loss_order",
+        "stop_price": str(sl_price),
+        "stop_trigger_method": "last_traded_price",
+        "reduce_only": True,
+        "client_order_id": f"xsl_{int(time.time()*1000)}"[:32]
+    }
+    logging.warning(f"FALLBACK SL CREATED | SIDE={stop_side} | SIZE={abs(size)} | SL={sl_price}")
     return api_call("POST", "/v2/orders", body=body, auth=True)
 
 def close_position_market(product_id, size):
@@ -509,13 +535,14 @@ class TradingStrategy:
         # 1. Close current carried position
         close_position_market(self.product_id, position_size)
 
-        # Wait briefly for position clear
+        # 2. Pause 1.5 seconds for Delta Exchange margin settlement
+        time.sleep(1.5)
         for _ in range(15):
-            time.sleep(0.20)
             if get_position(self.product_id)["size"] == 0:
                 break
+            time.sleep(0.20)
 
-        # 2. Re-open exact direction with fresh Bracket SL
+        # 3. Re-open exact direction with fresh Bracket SL
         side = "buy" if position_size > 0 else "sell"
         execute_bracket_market_order(self.product_id, side, abs(position_size), new_sl)
 
@@ -621,7 +648,7 @@ class TradingStrategy:
 
     def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v23.0 (RE-ENTRY CARRYFORWARD) ONLINE.")
+        logging.warning("XAUTUSD BREAKOUT ENGINE v23.1 (BULLETPROOF BRACKET & FALLBACK) ONLINE.")
 
         while True:
             try:
