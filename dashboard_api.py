@@ -47,8 +47,10 @@ def fetch_account_balance():
                     return float(asset.get("balance", 0.0))
             if data:
                 return float(data[0].get("balance", 0.0))
+        else:
+            print(f"[Balance API Error] Status: {res.status_code}, Body: {res.text}")
     except Exception as e:
-        pass
+        print("[Balance Exception]:", e)
     return 0.0
 
 
@@ -59,13 +61,16 @@ def fetch_ticker_price():
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             return float(res.json().get("result", {}).get("close", 0.0))
+        else:
+            print(f"[Ticker API Error] Status: {res.status_code}, Body: {res.text}")
     except Exception as e:
-        pass
+        print("[Ticker Exception]:", e)
     return 0.0
 
 
 def fetch_live_position():
     if not API_KEY or not API_SECRET:
+        print("[Position] API key or secret missing from environment.")
         return {
             "direction": "FLAT",
             "size": 0,
@@ -80,6 +85,9 @@ def fetch_live_position():
         try:
             headers = get_headers("GET", ep)
             res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
+            
+            print(f"[Position Check {ep}] Status: {res.status_code}")
+            
             if res.status_code == 200:
                 positions = res.json().get("result", [])
                 for pos in positions:
@@ -100,8 +108,10 @@ def fetch_live_position():
                             "stop_loss": stop_loss,
                             "unrealized_pnl": unrealized + realized
                         }
-        except Exception:
-            pass
+            else:
+                print(f"[Position API Error] {ep} -> {res.text}")
+        except Exception as e:
+            print(f"[Position Exception on {ep}]:", e)
 
     return {
         "direction": "FLAT",
@@ -132,8 +142,10 @@ def fetch_trade_history():
                     "pnl": float(fill.get("pnl", 0.0))
                 })
             return formatted_trades
-    except Exception:
-        pass
+        else:
+            print(f"[Fills API Error] Status: {res.status_code}, Body: {res.text}")
+    except Exception as e:
+        print("[Fills Exception]:", e)
     return []
 
 
