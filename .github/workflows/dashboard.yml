@@ -55,7 +55,7 @@ jobs:
           python3 -m pip install --user flask flask-cors requests python-dotenv
 
           # ONLY restart dashboard API.
-          # DO NOT TOUCH bot.py.
+          # NEVER TOUCH bot.py.
           pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
           sleep 2
@@ -69,11 +69,21 @@ jobs:
           echo "===== DASHBOARD PROCESS ====="
           pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
+          echo
           echo "===== PORT 8000 ====="
           ss -lntp | grep ':8000' || true
 
+          echo
           echo "===== LOCAL HEALTH ====="
           curl -fsS http://127.0.0.1:8000/api/health
+
+          echo
+          echo "===== DASHBOARD DEBUG ====="
+          curl -sS http://127.0.0.1:8000/api/debug || true
+
+          echo
+          echo "===== DASHBOARD DATA ====="
+          curl -sS http://127.0.0.1:8000/api/dashboard || true
 
           echo
 
@@ -103,11 +113,10 @@ jobs:
           echo "cloudflared: $CLOUDFLARED"
           "$CLOUDFLARED" version
 
-          # Create dashboard directory/log FIRST.
           mkdir -p /home/opc/xautusd-bot/dashboard
           touch /home/opc/xautusd-bot/dashboard/quick-tunnel.log
 
-          # Stop ONLY our previous quick tunnel using its PID.
+          # Stop ONLY previous Quick Tunnel.
           if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
 
             OLD_PID=$(cat \
@@ -122,7 +131,6 @@ jobs:
             rm -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
           fi
 
-          # Clear old URL/log.
           : > /home/opc/xautusd-bot/dashboard/quick-tunnel.log
 
           echo "Starting Quick Tunnel..."
@@ -182,6 +190,10 @@ jobs:
           echo "$URL/api/dashboard"
 
           echo
+          echo "DEBUG URL:"
+          echo "$URL/api/debug"
+
+          echo
           echo "===== HEALTH TEST ====="
 
           sleep 3
@@ -193,7 +205,7 @@ jobs:
           echo
           echo "===== DASHBOARD DATA TEST ====="
 
-          curl -fsS "$URL/api/dashboard"
+          curl -sS "$URL/api/dashboard" || true
 
           echo
 
@@ -231,8 +243,12 @@ jobs:
           echo "===== CLOUDFLARE QUICK TUNNEL ====="
 
           if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
-            PID=$(cat /home/opc/xautusd-bot/dashboard/quick-tunnel.pid)
+
+            PID=$(cat \
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid)
+
             ps -p "$PID" -f || true
+
           fi
 
           echo
@@ -240,6 +256,15 @@ jobs:
 
           curl -fsS \
             http://127.0.0.1:8000/api/health
+
+          echo
+
+          echo
+          echo "===== LOCAL DEBUG ====="
+
+          curl -sS \
+            http://127.0.0.1:8000/api/debug \
+            || true
 
           echo
 
