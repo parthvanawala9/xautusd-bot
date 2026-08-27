@@ -1,4 +1,4 @@
-Name: Deploy Dashboard API
+name: Deploy Dashboard API
 
 on:
   workflow_dispatch:
@@ -27,18 +27,14 @@ jobs:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-          # 1. Ensure Directory Exists & Copy dashboard_api.py
           ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" "mkdir -p /home/opc/xautusd-bot/dashboard"
           scp -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no dashboard_api.py "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-          # 2. Setup Systemd Service and Restart
           ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
           set -e
 
-          # Ensure dependencies are installed
           python3 -m pip install --user flask flask-cors requests python-dotenv > /dev/null 2>&1
 
-          # Create systemd unit file for Dashboard API
           sudo bash -c 'cat <<SERVICE > /etc/systemd/system/dashboard-api.service
           [Unit]
           Description=XAUTUSD Dashboard API
@@ -58,14 +54,12 @@ jobs:
           WantedBy=multi-user.target
           SERVICE'
 
-          # Reload systemd and restart service
           sudo systemctl daemon-reload
           sudo systemctl enable dashboard-api
           sudo systemctl restart dashboard-api
 
           sleep 3
 
-          # Local Verification
           echo "===== LOCAL HEALTH CHECK ====="
           curl -fsS http://127.0.0.1:8000/api/health
           echo ""
