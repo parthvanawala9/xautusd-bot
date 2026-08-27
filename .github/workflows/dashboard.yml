@@ -12,40 +12,22 @@ jobs:
 
     steps:
 
-      # ============================================================
-      # CHECKOUT
-      # ============================================================
-
       - name: Checkout
         uses: actions/checkout@v4
-
-
-      # ============================================================
-      # SSH
-      # ============================================================
 
       - name: Prepare SSH
         env:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" \
-            > ~/.ssh/oracle.key
-
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
           chmod 600 ~/.ssh/oracle.key
-
-
-      # ============================================================
-      # COPY DASHBOARD API
-      # ============================================================
 
       - name: Copy dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
@@ -58,48 +40,23 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
-
-      # ============================================================
-      # DASHBOARD API
-      #
-      # IMPORTANT:
-      # ONLY dashboard_api.py is restarted.
-      # bot.py is NOT touched.
-      # ============================================================
-
-      - name: Install dashboard dependencies and start API
+      - name: Install dashboard dependencies and restart API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          set -e
-
           cd /home/opc/xautusd-bot
 
-          echo "=========================================="
-          echo "INSTALL DASHBOARD DEPENDENCIES"
-          echo "=========================================="
+          python3 -m pip install --user flask flask-cors requests python-dotenv
 
-          python3 -m pip install --user \
-            flask \
-            flask-cors \
-            requests \
-            python-dotenv
-
-
-          echo "=========================================="
-          echo "RESTART ONLY DASHBOARD API"
-          echo "=========================================="
-
-          pkill -f \
-            "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
-            || true
+          # ONLY restart dashboard API.
+          # DO NOT TOUCH bot.py.
+          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
           sleep 2
 
@@ -109,182 +66,79 @@ jobs:
 
           sleep 5
 
+          echo "===== DASHBOARD PROCESS ====="
+          pgrep -af "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
 
-          echo "=========================================="
-          echo "DASHBOARD PROCESS"
-          echo "=========================================="
-
-          pgrep -af \
-            "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
-            || true
-
-
-          echo "=========================================="
-          echo "PORT 8000"
-          echo "=========================================="
-
+          echo "===== PORT 8000 ====="
           ss -lntp | grep ':8000' || true
 
-
-          echo "=========================================="
-          echo "LOCAL HEALTH CHECK"
-          echo "=========================================="
-
-          curl -fsS \
-            http://127.0.0.1:8000/api/health
+          echo "===== LOCAL HEALTH ====="
+          curl -fsS http://127.0.0.1:8000/api/health
 
           echo
 
           EOF
 
-
-      # ============================================================
-      # CLOUDFLARE QUICK TUNNEL
-      # ============================================================
-
-      - name: Install persistent Cloudflare Quick Tunnel
+      - name: Start Cloudflare Quick Tunnel
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          set -e
+          cd /home/opc/xautusd-bot
 
-          DASHBOARD_DIR="/home/opc/xautusd-bot/dashboard"
-          CLOUDFLARE_LOG="$DASHBOARD_DIR/cloudflare.log"
-          SERVICE_NAME="xautusd-dashboard.service"
+          echo "===== CLOUDFLARE ====="
 
+          CLOUDFLARED=$(command -v cloudflared || true)
 
-          echo "=========================================="
-          echo "CHECK CLOUDFLARED"
-          echo "=========================================="
-
-          CLOUDFLARED_PATH=$(command -v cloudflared || true)
-
-          if [ -z "$CLOUDFLARED_PATH" ]; then
+          if [ -z "$CLOUDFLARED" ]; then
             echo "ERROR: cloudflared is not installed."
             exit 1
           fi
 
-          echo "cloudflared path:"
-          echo "$CLOUDFLARED_PATH"
+          echo "cloudflared: $CLOUDFLARED"
+          "$CLOUDFLARED" version
 
-          echo
-          cloudflared version
+          # Create dashboard directory/log FIRST.
+          mkdir -p /home/opc/xautusd-bot/dashboard
+          touch /home/opc/xautusd-bot/dashboard/quick-tunnel.log
 
-
-          echo "=========================================="
-          echo "PREPARE DASHBOARD DIRECTORY"
-          echo "=========================================="
-
-          mkdir -p "$DASHBOARD_DIR"
-
-          touch "$CLOUDFLARE_LOG"
-
-          chmod 664 "$CLOUDFLARE_LOG"
-
-
-          echo "=========================================="
-          echo "STOP OLD DASHBOARD CLOUDFLARE SERVICE"
-          echo "=========================================="
-
-          sudo systemctl stop "$SERVICE_NAME" \
-            2>/dev/null || true
-
-
-          echo "=========================================="
-          echo "REMOVE OLD QUICK TUNNEL PROCESS"
-          echo "=========================================="
-
-          if [ -f "$DASHBOARD_DIR/quick-tunnel.pid" ]; then
+          # Stop ONLY our previous quick tunnel using its PID.
+          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
 
             OLD_PID=$(cat \
-              "$DASHBOARD_DIR/quick-tunnel.pid" \
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid \
               2>/dev/null || true)
 
-            if [ -n "$OLD_PID" ]; then
-              kill "$OLD_PID" \
-                2>/dev/null || true
+            if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+              kill "$OLD_PID" 2>/dev/null || true
+              sleep 2
             fi
 
-            rm -f \
-              "$DASHBOARD_DIR/quick-tunnel.pid"
-
+            rm -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
           fi
 
+          # Clear old URL/log.
+          : > /home/opc/xautusd-bot/dashboard/quick-tunnel.log
 
-          echo "=========================================="
-          echo "CLEAR OLD CLOUDFLARE LOG"
-          echo "=========================================="
+          echo "Starting Quick Tunnel..."
 
-          : > "$CLOUDFLARE_LOG"
+          nohup "$CLOUDFLARED" tunnel \
+            --url http://127.0.0.1:8000 \
+            > /home/opc/xautusd-bot/dashboard/quick-tunnel.log 2>&1 &
 
+          TUNNEL_PID=$!
 
-          echo "=========================================="
-          echo "CREATE SYSTEMD SERVICE"
-          echo "=========================================="
+          echo "$TUNNEL_PID" \
+            > /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
 
-          sudo tee "/etc/systemd/system/$SERVICE_NAME" > /dev/null << SERVICE
+          echo "Quick Tunnel PID: $TUNNEL_PID"
 
-          [Unit]
-          Description=XAUTUSD Dashboard Cloudflare Quick Tunnel
-          After=network-online.target
-          Wants=network-online.target
-
-          [Service]
-          Type=simple
-          User=opc
-          WorkingDirectory=/home/opc/xautusd-bot
-
-          ExecStart=$CLOUDFLARED_PATH tunnel --url http://127.0.0.1:8000
-
-          Restart=always
-          RestartSec=5
-
-          StandardOutput=append:$CLOUDFLARE_LOG
-          StandardError=append:$CLOUDFLARE_LOG
-
-          [Install]
-          WantedBy=multi-user.target
-
-          SERVICE
-
-
-          echo "=========================================="
-          echo "ENABLE SERVICE"
-          echo "=========================================="
-
-          sudo systemctl daemon-reload
-
-          sudo systemctl enable "$SERVICE_NAME"
-
-
-          echo "=========================================="
-          echo "START CLOUDFLARE"
-          echo "=========================================="
-
-          sudo systemctl restart "$SERVICE_NAME"
-
-          sleep 8
-
-
-          echo "=========================================="
-          echo "SERVICE STATUS"
-          echo "=========================================="
-
-          sudo systemctl --no-pager \
-            status "$SERVICE_NAME" \
-            || true
-
-
-          echo "=========================================="
-          echo "WAIT FOR CLOUDFLARE URL"
-          echo "=========================================="
+          echo "Waiting for Cloudflare URL..."
 
           URL=""
 
@@ -294,9 +148,8 @@ jobs:
 
             URL=$(grep -oE \
               'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-              "$CLOUDFLARE_LOG" \
-              | tail -n 1 \
-              || true)
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.log \
+              | tail -n 1 || true)
 
             if [ -n "$URL" ]; then
               break
@@ -304,115 +157,63 @@ jobs:
 
           done
 
-
           if [ -z "$URL" ]; then
 
-            echo
-            echo "ERROR: CLOUDFLARE URL WAS NOT CREATED."
-            echo
+            echo "ERROR: Cloudflare URL was not found."
 
-            echo "===== SYSTEMD STATUS ====="
-
-            sudo systemctl --no-pager \
-              status "$SERVICE_NAME" \
-              || true
-
-            echo
-            echo "===== SYSTEMD JOURNAL ====="
-
-            sudo journalctl \
-              -u "$SERVICE_NAME" \
-              -n 100 \
-              --no-pager \
-              || true
-
-            echo
             echo "===== CLOUDFLARE LOG ====="
-
-            cat "$CLOUDFLARE_LOG" \
-              || true
+            cat /home/opc/xautusd-bot/dashboard/quick-tunnel.log || true
 
             exit 1
-
           fi
 
-
           echo
           echo "=========================================="
-          echo "CLOUDFLARE DASHBOARD URL"
-          echo "=========================================="
-
+          echo "CLOUDFLARE DASHBOARD URL:"
           echo "$URL"
+          echo "=========================================="
 
           echo
-          echo "=========================================="
-          echo "HEALTH URL"
-          echo "=========================================="
-
+          echo "HEALTH URL:"
           echo "$URL/api/health"
 
           echo
-          echo "=========================================="
-          echo "DASHBOARD API URL"
-          echo "=========================================="
-
+          echo "DASHBOARD API URL:"
           echo "$URL/api/dashboard"
 
-
           echo
-          echo "=========================================="
-          echo "TEST CLOUDFLARE HEALTH"
-          echo "=========================================="
+          echo "===== HEALTH TEST ====="
 
           sleep 3
 
-          curl -fsS \
-            "$URL/api/health"
+          curl -fsS "$URL/api/health"
 
           echo
 
-
           echo
-          echo "=========================================="
-          echo "TEST DASHBOARD DATA"
-          echo "=========================================="
+          echo "===== DASHBOARD DATA TEST ====="
 
-          curl -fsS \
-            "$URL/api/dashboard"
+          curl -fsS "$URL/api/dashboard"
 
           echo
 
           EOF
-
-
-      # ============================================================
-      # FINAL CHECK
-      # ============================================================
 
       - name: Verify dashboard and bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo
-          echo "=========================================="
-          echo "FINAL VERIFICATION"
-          echo "=========================================="
-
-
-          echo
           echo "===== BOT CHECK ====="
 
           pgrep -af \
             "/home/opc/xautusd-bot/bot.py" \
             || true
-
 
           echo
           echo "===== DASHBOARD API CHECK ====="
@@ -421,46 +222,25 @@ jobs:
             "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
             || true
 
-
           echo
           echo "===== PORT 8000 ====="
 
-          ss -lntp | grep ':8000' \
-            || true
-
+          ss -lntp | grep ':8000' || true
 
           echo
-          echo "===== CLOUDFLARE SERVICE ====="
+          echo "===== CLOUDFLARE QUICK TUNNEL ====="
 
-          sudo systemctl is-enabled \
-            xautusd-dashboard.service \
-            || true
-
-          sudo systemctl is-active \
-            xautusd-dashboard.service \
-            || true
-
+          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
+            PID=$(cat /home/opc/xautusd-bot/dashboard/quick-tunnel.pid)
+            ps -p "$PID" -f || true
+          fi
 
           echo
-          echo "===== CLOUDFLARE PROCESS ====="
-
-          pgrep -af \
-            "cloudflared tunnel --url http://127.0.0.1:8000" \
-            || true
-
-
-          echo
-          echo "===== LOCAL API ====="
+          echo "===== LOCAL HEALTH ====="
 
           curl -fsS \
             http://127.0.0.1:8000/api/health
 
           echo
-
-
-          echo
-          echo "=========================================="
-          echo "DEPLOYMENT COMPLETE"
-          echo "=========================================="
 
           EOF
