@@ -1,83 +1,40 @@
-name: Deploy Dashboard API
+name: Update Dashboard Data
 
 on:
+  schedule:
+    - cron: '*/5 * * * *'  # Runs automatically every 5 minutes
   workflow_dispatch:
   push:
     branches:
       - main
 
 jobs:
-  deploy-dashboard:
+  build-and-publish:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Prepare SSH
-        env:
-          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
-          chmod 600 ~/.ssh/oracle.key
+          pip install requests python-dotenv
 
-      - name: Deploy Dashboard API and Restart Service
+      - name: Generate Dashboard JSON
         env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
+          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
+          DELTA_SYMBOL: 'XAUTUSD'
+          DELTA_BASE_URL: 'https://api.india.delta.exchange'
         run: |
-          # Copy updated python file
-          ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" "mkdir -p /home/opc/xautusd-bot/dashboard"
-          scp -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no dashboard_api.py "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+          python3 -c "from dashboard_api import build_dashboard; import json; print(json.dumps(build_dashboard()))" > dashboard.json
 
-          ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-          set -e
-
-          # Install dependencies
-          python3 -m pip install --user flask flask-cors requests python-dotenv > /dev/null 2>&1
-
-          # Kill any legacy background processes occupying port 8000
-          sudo fuser -k 8000/tcp || true
-          pkill -f dashboard_api.py || true
-          sleep 2
-
-          # Create systemd service
-          sudo bash -c 'cat <<SERVICE > /etc/systemd/system/dashboard-api.service
-          [Unit]
-          Description=XAUTUSD Dashboard API
-          After=network.target
-
-          [Service]
-          Type=simple
-          User=opc
-          WorkingDirectory=/home/opc/xautusd-bot/dashboard
-          ExecStart=/usr/bin/python3 /home/opc/xautusd-bot/dashboard/dashboard_api.py
-          Restart=always
-          RestartSec=5
-          StandardOutput=append:/home/opc/xautusd-bot/dashboard/dashboard.log
-          StandardError=append:/home/opc/xautusd-bot/dashboard/dashboard.log
-
-          [Install]
-          WantedBy=multi-user.target
-          SERVICE'
-
-          # Force reload and start
-          sudo systemctl daemon-reload
-          sudo systemctl enable dashboard-api
-          sudo systemctl restart dashboard-api
-
-          sleep 3
-
-          echo "===== LOCAL HEALTH CHECK ====="
-          curl -fsS http://127.0.0.1:8000/api/health
-          echo ""
-
-          echo "===== DEBUG DATA ====="
-          curl -sS http://127.0.0.1:8000/api/debug
-          echo ""
-
-          echo "===== DASHBOARD DATA ====="
-          curl -sS http://127.0.0.1:8000/api/dashboard
-          echo ""
-          EOF
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .
