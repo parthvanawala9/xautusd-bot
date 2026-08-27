@@ -19,46 +19,57 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare SSH
-        env:
-          SSH_KEY: ${{ secrets.OCI_SSH_KEY }}
         run: |
-          KEY_FILE="$RUNNER_TEMP/oci_key"
-          printf '%s\n' "$SSH_KEY" > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          ssh-keyscan -H 80.225.246.202 > "$RUNNER_TEMP/known_hosts"
+          mkdir -p ~/.ssh
+          printf '%s\n' '${{ secrets.OCI_SSH_KEY }}' > ~/.ssh/oci_key
+          chmod 600 ~/.ssh/oci_key
+          ssh-keygen -y -f ~/.ssh/oci_key > /dev/null
 
       - name: Copy dashboard API
         run: |
           scp \
-            -i "$RUNNER_TEMP/oci_key" \
-            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-            -o StrictHostKeyChecking=yes \
+            -i ~/.ssh/oci_key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=30 \
+            -o ConnectionAttempts=3 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
             dashboard_api.py \
             opc@80.225.246.202:/home/opc/dashboard_api.py
 
       - name: Copy requirements
         run: |
           scp \
-            -i "$RUNNER_TEMP/oci_key" \
-            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-            -o StrictHostKeyChecking=yes \
+            -i ~/.ssh/oci_key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=30 \
+            -o ConnectionAttempts=3 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
             requirements.txt \
             opc@80.225.246.202:/home/opc/requirements.txt
 
       - name: Start dashboard API
         run: |
           ssh \
-            -i "$RUNNER_TEMP/oci_key" \
-            -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts" \
-            -o StrictHostKeyChecking=yes \
+            -i ~/.ssh/oci_key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
             -o ConnectTimeout=30 \
-            opc@80.225.246.202 '
-              cd /home/opc
-              python3 -m pip install -r requirements.txt
-              pkill -f "dashboard_api.py" || true
-              nohup python3 dashboard_api.py > dashboard_api.log 2>&1 &
-              sleep 3
-              curl -f http://127.0.0.1:8000/api/dashboard
-            '
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            opc@80.225.246.202 << 'EOF'
+          cd /home/opc
+
+          python3 -m pip install -r requirements.txt
+
+          pkill -f "dashboard_api.py" || true
+
+          nohup python3 dashboard_api.py > dashboard_api.log 2>&1 &
+
+          sleep 3
+
+          curl -f http://127.0.0.1:8000/api/dashboard
+          EOF
