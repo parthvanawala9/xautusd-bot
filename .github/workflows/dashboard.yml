@@ -27,14 +27,22 @@ jobs:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
+          # Copy updated python file
           ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" "mkdir -p /home/opc/xautusd-bot/dashboard"
           scp -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no dashboard_api.py "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
           ssh -i ~/.ssh/oracle.key -o StrictHostKeyChecking=no "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
           set -e
 
+          # Install dependencies
           python3 -m pip install --user flask flask-cors requests python-dotenv > /dev/null 2>&1
 
+          # Kill any legacy background processes occupying port 8000
+          sudo fuser -k 8000/tcp || true
+          pkill -f dashboard_api.py || true
+          sleep 2
+
+          # Create systemd service
           sudo bash -c 'cat <<SERVICE > /etc/systemd/system/dashboard-api.service
           [Unit]
           Description=XAUTUSD Dashboard API
@@ -54,6 +62,7 @@ jobs:
           WantedBy=multi-user.target
           SERVICE'
 
+          # Force reload and start
           sudo systemctl daemon-reload
           sudo systemctl enable dashboard-api
           sudo systemctl restart dashboard-api
