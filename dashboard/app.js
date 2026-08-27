@@ -1,19 +1,39 @@
+// ============================================================
+// XAUTUSD DASHBOARD
+// ============================================================
+//
+// Dashboard API is running on Oracle VM through Cloudflare.
+// Do NOT change bot.py or the XAUTUSD bot workflow.
+//
+// ============================================================
+
+const API_BASE_URL =
+    "https://es-bus-jacob.trycloudflare.com";
+
 let refreshTimer = null;
 
 
+// ============================================================
+// FORMAT MONEY
+// ============================================================
+
 function money(value) {
 
-    if (value === null || value === undefined) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
         return "--";
     }
 
-    const number = Number(value);
+    const numberValue = Number(value);
 
-    if (Number.isNaN(number)) {
+    if (Number.isNaN(numberValue)) {
         return "--";
     }
 
-    return "$" + number.toLocaleString(
+    return "$" + numberValue.toLocaleString(
         "en-US",
         {
             minimumFractionDigits: 2,
@@ -23,13 +43,27 @@ function money(value) {
 }
 
 
+// ============================================================
+// FORMAT NUMBER
+// ============================================================
+
 function number(value) {
 
-    if (value === null || value === undefined) {
+    if (
+        value === null ||
+        value === undefined ||
+        value === ""
+    ) {
         return "--";
     }
 
-    return Number(value).toLocaleString(
+    const numberValue = Number(value);
+
+    if (Number.isNaN(numberValue)) {
+        return "--";
+    }
+
+    return numberValue.toLocaleString(
         "en-US",
         {
             maximumFractionDigits: 4
@@ -38,9 +72,17 @@ function number(value) {
 }
 
 
-function setPnl(element, value) {
+// ============================================================
+// P&L
+// ============================================================
 
-    element.textContent = money(value);
+function setPnl(
+    element,
+    value
+) {
+
+    element.textContent =
+        money(value);
 
     element.classList.remove(
         "profit",
@@ -48,37 +90,80 @@ function setPnl(element, value) {
     );
 
     if (Number(value) > 0) {
-        element.classList.add("profit");
+
+        element.classList.add(
+            "profit"
+        );
+
     }
 
     if (Number(value) < 0) {
-        element.classList.add("loss");
+
+        element.classList.add(
+            "loss"
+        );
     }
 }
 
 
-function showMessage(text) {
+// ============================================================
+// MESSAGE
+// ============================================================
+
+function showMessage(
+    text
+) {
 
     const message =
-        document.getElementById("message");
+        document.getElementById(
+            "message"
+        );
 
-    message.textContent = text;
+    if (!message) {
+        return;
+    }
 
-    message.classList.add("show");
+    message.textContent =
+        text || "";
 
-    setTimeout(() => {
-        message.classList.remove("show");
-    }, 3000);
+    message.classList.add(
+        "show"
+    );
+
+    setTimeout(
+        () => {
+
+            message.classList.remove(
+                "show"
+            );
+
+        },
+        3000
+    );
 }
 
 
-function updateBotStatus(running) {
+// ============================================================
+// BOT STATUS
+// ============================================================
+
+function updateBotStatus(
+    running
+) {
 
     const status =
-        document.getElementById("botStatus");
+        document.getElementById(
+            "botStatus"
+        );
 
     const statusCard =
-        document.getElementById("botStatusCard");
+        document.getElementById(
+            "botStatusCard"
+        );
+
+    if (!status) {
+        return;
+    }
 
     if (running) {
 
@@ -88,16 +173,19 @@ function updateBotStatus(running) {
         status.innerHTML =
             '<span class="status-dot"></span> BOT RUNNING';
 
-        statusCard.textContent =
-            "RUNNING";
+        if (statusCard) {
 
-        statusCard.classList.remove(
-            "loss"
-        );
+            statusCard.textContent =
+                "RUNNING";
 
-        statusCard.classList.add(
-            "profit"
-        );
+            statusCard.classList.remove(
+                "loss"
+            );
+
+            statusCard.classList.add(
+                "profit"
+            );
+        }
 
     } else {
 
@@ -107,21 +195,33 @@ function updateBotStatus(running) {
         status.innerHTML =
             '<span class="status-dot"></span> BOT STOPPED';
 
-        statusCard.textContent =
-            "STOPPED";
+        if (statusCard) {
 
-        statusCard.classList.remove(
-            "profit"
-        );
+            statusCard.textContent =
+                "STOPPED";
 
-        statusCard.classList.add(
-            "loss"
-        );
+            statusCard.classList.remove(
+                "profit"
+            );
+
+            statusCard.classList.add(
+                "loss"
+            );
+        }
     }
 }
 
 
-function updatePosition(position) {
+// ============================================================
+// POSITION
+// ============================================================
+
+function updatePosition(
+    position
+) {
+
+    position =
+        position || {};
 
     const direction =
         position.direction || "FLAT";
@@ -131,63 +231,117 @@ function updatePosition(position) {
             "positionBadge"
         );
 
-    badge.textContent = direction;
+    if (badge) {
 
-    badge.className =
-        direction === "LONG"
-            ? "position-long"
-            : direction === "SHORT"
-                ? "position-short"
-                : "position-flat";
+        badge.textContent =
+            direction;
 
-
-    document.getElementById(
-        "direction"
-    ).textContent = direction;
-
-
-    document.getElementById(
-        "positionSize"
-    ).textContent = number(
-        position.size
-    );
+        badge.className =
+            direction === "LONG"
+                ? "position-long"
+                : direction === "SHORT"
+                    ? "position-short"
+                    : "position-flat";
+    }
 
 
-    document.getElementById(
-        "entryPrice"
-    ).textContent = number(
-        position.entry_price
-    );
+    const directionElement =
+        document.getElementById(
+            "direction"
+        );
+
+    if (directionElement) {
+
+        directionElement.textContent =
+            direction;
+    }
 
 
-    document.getElementById(
-        "stopLoss"
-    ).textContent = number(
-        position.stop_loss
-    );
+    const sizeElement =
+        document.getElementById(
+            "positionSize"
+        );
+
+    if (sizeElement) {
+
+        sizeElement.textContent =
+            number(
+                position.size
+            );
+    }
 
 
-    setPnl(
+    const entryElement =
+        document.getElementById(
+            "entryPrice"
+        );
+
+    if (entryElement) {
+
+        entryElement.textContent =
+            number(
+                position.entry_price
+            );
+    }
+
+
+    const stopElement =
+        document.getElementById(
+            "stopLoss"
+        );
+
+    if (stopElement) {
+
+        stopElement.textContent =
+            number(
+                position.stop_loss
+            );
+    }
+
+
+    const unrealizedElement =
         document.getElementById(
             "unrealizedPnl"
-        ),
-        position.unrealized_pnl
-    );
+        );
+
+    if (unrealizedElement) {
+
+        setPnl(
+            unrealizedElement,
+            position.unrealized_pnl
+        );
+    }
 }
 
 
-function renderTrades(trades) {
+// ============================================================
+// TRADE HISTORY
+// ============================================================
+
+function renderTrades(
+    trades
+) {
 
     const table =
         document.getElementById(
             "tradeTable"
         );
 
-    if (!trades || trades.length === 0) {
+    if (!table) {
+        return;
+    }
+
+    if (
+        !trades ||
+        trades.length === 0
+    ) {
 
         table.innerHTML = `
             <tr>
-                <td colspan="6" class="empty">
+                <td
+                    colspan="6"
+                    class="empty"
+                >
                     No trades yet
                 </td>
             </tr>
@@ -197,81 +351,97 @@ function renderTrades(trades) {
     }
 
 
-    table.innerHTML = trades.map(
-        trade => {
+    table.innerHTML =
+        trades.map(
+            trade => {
 
-            const side =
-                String(
-                    trade.side || ""
-                ).toUpperCase();
+                const side =
+                    String(
+                        trade.side || ""
+                    ).toUpperCase();
 
-            const sideClass =
-                side === "BUY"
-                    ? "side-buy"
-                    : "side-sell";
+                const sideClass =
+                    side === "BUY"
+                        ? "side-buy"
+                        : "side-sell";
 
-            return `
-                <tr>
+                return `
+                    <tr>
 
-                    <td>
-                        ${formatTime(
-                            trade.timestamp
-                        )}
-                    </td>
+                        <td>
+                            ${formatTime(
+                                trade.timestamp
+                            )}
+                        </td>
 
-                    <td class="${sideClass}">
-                        ${side || "--"}
-                    </td>
+                        <td class="${sideClass}">
+                            ${side || "--"}
+                        </td>
 
-                    <td>
-                        ${number(
-                            trade.price
-                        )}
-                    </td>
+                        <td>
+                            ${number(
+                                trade.price
+                            )}
+                        </td>
 
-                    <td>
-                        ${number(
-                            trade.size
-                        )}
-                    </td>
+                        <td>
+                            ${number(
+                                trade.size
+                            )}
+                        </td>
 
-                    <td>
-                        ${money(
-                            trade.commission
-                        )}
-                    </td>
+                        <td>
+                            ${money(
+                                trade.commission
+                            )}
+                        </td>
 
-                    <td class="${
-                        Number(trade.pnl) > 0
-                            ? "profit"
-                            : Number(trade.pnl) < 0
-                                ? "loss"
-                                : ""
-                    }">
-                        ${money(
-                            trade.pnl
-                        )}
-                    </td>
+                        <td class="${
+                            Number(
+                                trade.pnl
+                            ) > 0
+                                ? "profit"
+                                : Number(
+                                    trade.pnl
+                                ) < 0
+                                    ? "loss"
+                                    : ""
+                        }">
+                            ${money(
+                                trade.pnl
+                            )}
+                        </td>
 
-                </tr>
-            `;
-        }
-    ).join("");
+                    </tr>
+                `;
+            }
+        ).join("");
 }
 
 
-function formatTime(timestamp) {
+// ============================================================
+// TIME
+// ============================================================
+
+function formatTime(
+    timestamp
+) {
 
     if (!timestamp) {
         return "--";
     }
 
     const date =
-        new Date(timestamp);
+        new Date(
+            timestamp
+        );
 
-    if (Number.isNaN(
-        date.getTime()
-    )) {
+    if (
+        Number.isNaN(
+            date.getTime()
+        )
+    ) {
+
         return timestamp;
     }
 
@@ -287,125 +457,264 @@ function formatTime(timestamp) {
 }
 
 
+// ============================================================
+// DASHBOARD API
+// ============================================================
+
 async function loadDashboard() {
 
     try {
 
         const response =
             await fetch(
+                API_BASE_URL +
                 "/api/dashboard",
                 {
                     cache: "no-store"
                 }
             );
 
+
+        if (!response.ok) {
+
+            throw new Error(
+                "Dashboard API HTTP " +
+                response.status
+            );
+        }
+
+
         const data =
             await response.json();
 
 
-        if (!data.success) {
+        // Some dashboard API versions return
+        // success:true, while the current API may
+        // return the dashboard object directly.
+        if (
+            data.success === false
+        ) {
+
             throw new Error(
-                data.error || "Dashboard error"
+                data.error ||
+                "Dashboard error"
             );
         }
 
+
+        // ----------------------------------------------------
+        // BOT STATUS
+        // ----------------------------------------------------
 
         updateBotStatus(
             data.bot_running
         );
 
 
-        document.getElementById(
-            "currentPrice"
-        ).textContent =
-            number(
-                data.current_price
+        // ----------------------------------------------------
+        // MARKET PRICE
+        // ----------------------------------------------------
+
+        const currentPrice =
+            document.getElementById(
+                "currentPrice"
             );
 
+        if (currentPrice) {
 
-        document.getElementById(
-            "balance"
-        ).textContent =
-            money(
-                data.balance
+            currentPrice.textContent =
+                number(
+                    data.current_price
+                );
+        }
+
+
+        // ----------------------------------------------------
+        // BALANCE
+        // ----------------------------------------------------
+
+        const balance =
+            document.getElementById(
+                "balance"
             );
 
+        if (balance) {
 
-        setPnl(
+            balance.textContent =
+                money(
+                    data.balance
+                );
+        }
+
+
+        // ----------------------------------------------------
+        // TOTAL P&L
+        // ----------------------------------------------------
+
+        const totalPnl =
             document.getElementById(
                 "totalPnl"
-            ),
-            data.total_pnl
-        );
+            );
+
+        if (totalPnl) {
+
+            setPnl(
+                totalPnl,
+                data.total_pnl
+            );
+        }
 
 
-        setPnl(
+        // ----------------------------------------------------
+        // TODAY P&L
+        // ----------------------------------------------------
+
+        const todayPnl =
             document.getElementById(
                 "todayPnl"
-            ),
-            data.today_pnl
-        );
+            );
+
+        if (todayPnl) {
+
+            setPnl(
+                todayPnl,
+                data.today_pnl
+            );
+        }
 
 
-        document.getElementById(
-            "winRate"
-        ).textContent =
-            Number(
-                data.statistics.win_rate
-            ).toFixed(1) + "%";
+        // ----------------------------------------------------
+        // WIN RATE
+        // ----------------------------------------------------
+
+        const winRate =
+            document.getElementById(
+                "winRate"
+            );
+
+        if (winRate) {
+
+            const value =
+                Number(
+                    data.statistics?.win_rate
+                );
+
+            winRate.textContent =
+                Number.isNaN(value)
+                    ? "--"
+                    : value.toFixed(1) + "%";
+        }
 
 
-        document.getElementById(
-            "totalTrades"
-        ).textContent =
-            data.statistics.total_trades;
+        // ----------------------------------------------------
+        // STATISTICS
+        // ----------------------------------------------------
+
+        const totalTrades =
+            document.getElementById(
+                "totalTrades"
+            );
+
+        if (totalTrades) {
+
+            totalTrades.textContent =
+                data.statistics?.total_trades ??
+                "--";
+        }
 
 
-        document.getElementById(
-            "winningTrades"
-        ).textContent =
-            data.statistics.winning_trades;
+        const winningTrades =
+            document.getElementById(
+                "winningTrades"
+            );
+
+        if (winningTrades) {
+
+            winningTrades.textContent =
+                data.statistics?.winning_trades ??
+                "--";
+        }
 
 
-        document.getElementById(
-            "losingTrades"
-        ).textContent =
-            data.statistics.losing_trades;
+        const losingTrades =
+            document.getElementById(
+                "losingTrades"
+            );
 
+        if (losingTrades) {
+
+            losingTrades.textContent =
+                data.statistics?.losing_trades ??
+                "--";
+        }
+
+
+        // ----------------------------------------------------
+        // POSITION
+        // ----------------------------------------------------
 
         updatePosition(
             data.position
         );
 
 
+        // ----------------------------------------------------
+        // TRADES
+        // ----------------------------------------------------
+
         renderTrades(
             data.trades
         );
 
 
-        document.getElementById(
-            "lastUpdated"
-        ).textContent =
-            new Date().toLocaleTimeString(
-                "en-IN",
-                {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                    second: "2-digit"
-                }
+        // ----------------------------------------------------
+        // LAST UPDATED
+        // ----------------------------------------------------
+
+        const lastUpdated =
+            document.getElementById(
+                "lastUpdated"
             );
+
+        if (lastUpdated) {
+
+            lastUpdated.textContent =
+                new Date().toLocaleTimeString(
+                    "en-IN",
+                    {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit"
+                    }
+                );
+        }
+
 
     } catch (error) {
 
-        console.error(error);
+        console.error(
+            "Dashboard error:",
+            error
+        );
 
-        document.getElementById(
-            "lastUpdated"
-        ).textContent =
-            "Connection error";
+
+        const lastUpdated =
+            document.getElementById(
+                "lastUpdated"
+            );
+
+        if (lastUpdated) {
+
+            lastUpdated.textContent =
+                "Connection error";
+        }
     }
 }
 
+
+// ============================================================
+// START BOT
+// ============================================================
 
 async function startBot() {
 
@@ -413,22 +722,32 @@ async function startBot() {
 
         const response =
             await fetch(
+                API_BASE_URL +
                 "/api/start",
                 {
                     method: "POST"
                 }
             );
 
+
         const data =
             await response.json();
 
+
         showMessage(
-            data.message
+            data.message ||
+            "Bot start request sent."
         );
+
 
         await loadDashboard();
 
+
     } catch (error) {
+
+        console.error(
+            error
+        );
 
         showMessage(
             "Unable to start bot."
@@ -437,6 +756,10 @@ async function startBot() {
 }
 
 
+// ============================================================
+// STOP BOT
+// ============================================================
+
 async function stopBot() {
 
     if (
@@ -444,29 +767,41 @@ async function stopBot() {
             "Stop the bot? Existing position remains open."
         )
     ) {
+
         return;
     }
+
 
     try {
 
         const response =
             await fetch(
+                API_BASE_URL +
                 "/api/stop",
                 {
                     method: "POST"
                 }
             );
 
+
         const data =
             await response.json();
 
+
         showMessage(
-            data.message
+            data.message ||
+            "Bot stopped."
         );
+
 
         await loadDashboard();
 
+
     } catch (error) {
+
+        console.error(
+            error
+        );
 
         showMessage(
             "Unable to stop bot."
@@ -475,6 +810,10 @@ async function stopBot() {
 }
 
 
+// ============================================================
+// STOP & EXIT
+// ============================================================
+
 async function stopAndExit() {
 
     if (
@@ -482,29 +821,41 @@ async function stopAndExit() {
             "STOP BOT AND EXIT THE EXISTING POSITION AT MARKET?"
         )
     ) {
+
         return;
     }
+
 
     try {
 
         const response =
             await fetch(
+                API_BASE_URL +
                 "/api/stop-exit",
                 {
                     method: "POST"
                 }
             );
 
+
         const data =
             await response.json();
 
+
         showMessage(
-            data.message
+            data.message ||
+            "Bot stopped and position exit requested."
         );
+
 
         await loadDashboard();
 
+
     } catch (error) {
+
+        console.error(
+            error
+        );
 
         showMessage(
             "Unable to stop and exit."
@@ -512,6 +863,10 @@ async function stopAndExit() {
     }
 }
 
+
+// ============================================================
+// START
+// ============================================================
 
 loadDashboard();
 
