@@ -36,7 +36,7 @@ jobs:
           scp \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            dashboard/dashboard_api.py \
+            dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
       - name: Install dashboard dependencies and start API
