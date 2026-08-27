@@ -21,7 +21,7 @@ jobs:
 
 
       # ============================================================
-      # PREPARE SSH
+      # SSH
       # ============================================================
 
       - name: Prepare SSH
@@ -60,8 +60,11 @@ jobs:
 
 
       # ============================================================
-      # INSTALL DASHBOARD DEPENDENCIES
-      # AND RESTART ONLY DASHBOARD API
+      # DASHBOARD API
+      #
+      # IMPORTANT:
+      # ONLY dashboard_api.py is restarted.
+      # bot.py is NOT touched.
       # ============================================================
 
       - name: Install dashboard dependencies and start API
@@ -80,17 +83,23 @@ jobs:
           cd /home/opc/xautusd-bot
 
           echo "=========================================="
-          echo "INSTALLING DASHBOARD DEPENDENCIES"
+          echo "INSTALL DASHBOARD DEPENDENCIES"
           echo "=========================================="
 
-          python3 -m pip install --user flask flask-cors requests python-dotenv
+          python3 -m pip install --user \
+            flask \
+            flask-cors \
+            requests \
+            python-dotenv
 
 
           echo "=========================================="
-          echo "RESTARTING ONLY DASHBOARD API"
+          echo "RESTART ONLY DASHBOARD API"
           echo "=========================================="
 
-          pkill -f "/home/opc/xautusd-bot/dashboard/dashboard_api.py" || true
+          pkill -f \
+            "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
+            || true
 
           sleep 2
 
@@ -125,13 +134,12 @@ jobs:
             http://127.0.0.1:8000/api/health
 
           echo
-          echo "Dashboard API is working."
 
           EOF
 
 
       # ============================================================
-      # INSTALL CLOUDFLARE QUICK TUNNEL AS SYSTEMD SERVICE
+      # CLOUDFLARE QUICK TUNNEL
       # ============================================================
 
       - name: Install persistent Cloudflare Quick Tunnel
@@ -147,23 +155,81 @@ jobs:
 
           set -e
 
+          DASHBOARD_DIR="/home/opc/xautusd-bot/dashboard"
+          CLOUDFLARE_LOG="$DASHBOARD_DIR/cloudflare.log"
+          SERVICE_NAME="xautusd-dashboard.service"
+
+
           echo "=========================================="
-          echo "CLOUDFLARE CHECK"
+          echo "CHECK CLOUDFLARED"
           echo "=========================================="
 
-          if ! command -v cloudflared >/dev/null 2>&1; then
+          CLOUDFLARED_PATH=$(command -v cloudflared || true)
+
+          if [ -z "$CLOUDFLARED_PATH" ]; then
             echo "ERROR: cloudflared is not installed."
             exit 1
           fi
 
+          echo "cloudflared path:"
+          echo "$CLOUDFLARED_PATH"
+
+          echo
           cloudflared version
 
 
           echo "=========================================="
-          echo "CREATING DASHBOARD TUNNEL SERVICE"
+          echo "PREPARE DASHBOARD DIRECTORY"
           echo "=========================================="
 
-          sudo tee /etc/systemd/system/xautusd-dashboard.service > /dev/null << 'SERVICE'
+          mkdir -p "$DASHBOARD_DIR"
+
+          touch "$CLOUDFLARE_LOG"
+
+          chmod 664 "$CLOUDFLARE_LOG"
+
+
+          echo "=========================================="
+          echo "STOP OLD DASHBOARD CLOUDFLARE SERVICE"
+          echo "=========================================="
+
+          sudo systemctl stop "$SERVICE_NAME" \
+            2>/dev/null || true
+
+
+          echo "=========================================="
+          echo "REMOVE OLD QUICK TUNNEL PROCESS"
+          echo "=========================================="
+
+          if [ -f "$DASHBOARD_DIR/quick-tunnel.pid" ]; then
+
+            OLD_PID=$(cat \
+              "$DASHBOARD_DIR/quick-tunnel.pid" \
+              2>/dev/null || true)
+
+            if [ -n "$OLD_PID" ]; then
+              kill "$OLD_PID" \
+                2>/dev/null || true
+            fi
+
+            rm -f \
+              "$DASHBOARD_DIR/quick-tunnel.pid"
+
+          fi
+
+
+          echo "=========================================="
+          echo "CLEAR OLD CLOUDFLARE LOG"
+          echo "=========================================="
+
+          : > "$CLOUDFLARE_LOG"
+
+
+          echo "=========================================="
+          echo "CREATE SYSTEMD SERVICE"
+          echo "=========================================="
+
+          sudo tee "/etc/systemd/system/$SERVICE_NAME" > /dev/null << SERVICE
 
           [Unit]
           Description=XAUTUSD Dashboard Cloudflare Quick Tunnel
@@ -175,13 +241,13 @@ jobs:
           User=opc
           WorkingDirectory=/home/opc/xautusd-bot
 
-          ExecStart=/usr/bin/cloudflared tunnel --url http://127.0.0.1:8000
+          ExecStart=$CLOUDFLARED_PATH tunnel --url http://127.0.0.1:8000
 
           Restart=always
           RestartSec=5
 
-          StandardOutput=append:/home/opc/xautusd-bot/dashboard/cloudflare.log
-          StandardError=append:/home/opc/xautusd-bot/dashboard/cloudflare.log
+          StandardOutput=append:$CLOUDFLARE_LOG
+          StandardError=append:$CLOUDFLARE_LOG
 
           [Install]
           WantedBy=multi-user.target
@@ -190,65 +256,45 @@ jobs:
 
 
           echo "=========================================="
-          echo "RELOADING SYSTEMD"
+          echo "ENABLE SERVICE"
           echo "=========================================="
 
           sudo systemctl daemon-reload
 
-          sudo systemctl enable xautusd-dashboard.service
+          sudo systemctl enable "$SERVICE_NAME"
 
 
           echo "=========================================="
-          echo "STOPPING OLD QUICK TUNNEL"
+          echo "START CLOUDFLARE"
           echo "=========================================="
 
-          if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
-
-            OLD_PID=$(cat \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid \
-              2>/dev/null || true)
-
-            if [ -n "$OLD_PID" ]; then
-              kill "$OLD_PID" 2>/dev/null || true
-            fi
-
-            rm -f \
-              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
-
-          fi
-
-
-          echo "=========================================="
-          echo "STARTING PERSISTENT TUNNEL"
-          echo "=========================================="
-
-          sudo systemctl restart xautusd-dashboard.service
+          sudo systemctl restart "$SERVICE_NAME"
 
           sleep 8
 
 
           echo "=========================================="
-          echo "CLOUDFLARE SERVICE STATUS"
+          echo "SERVICE STATUS"
           echo "=========================================="
 
-          sudo systemctl --no-pager status \
-            xautusd-dashboard.service \
+          sudo systemctl --no-pager \
+            status "$SERVICE_NAME" \
             || true
 
 
           echo "=========================================="
-          echo "CLOUDFLARE TUNNEL URL"
+          echo "WAIT FOR CLOUDFLARE URL"
           echo "=========================================="
 
           URL=""
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 40); do
 
             sleep 2
 
             URL=$(grep -oE \
               'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
-              /home/opc/xautusd-bot/dashboard/cloudflare.log \
+              "$CLOUDFLARE_LOG" \
               | tail -n 1 \
               || true)
 
@@ -261,12 +307,29 @@ jobs:
 
           if [ -z "$URL" ]; then
 
-            echo "ERROR: Cloudflare URL was not found."
+            echo
+            echo "ERROR: CLOUDFLARE URL WAS NOT CREATED."
+            echo
 
+            echo "===== SYSTEMD STATUS ====="
+
+            sudo systemctl --no-pager \
+              status "$SERVICE_NAME" \
+              || true
+
+            echo
+            echo "===== SYSTEMD JOURNAL ====="
+
+            sudo journalctl \
+              -u "$SERVICE_NAME" \
+              -n 100 \
+              --no-pager \
+              || true
+
+            echo
             echo "===== CLOUDFLARE LOG ====="
 
-            tail -n 100 \
-              /home/opc/xautusd-bot/dashboard/cloudflare.log \
+            cat "$CLOUDFLARE_LOG" \
               || true
 
             exit 1
@@ -277,21 +340,28 @@ jobs:
           echo
           echo "=========================================="
           echo "CLOUDFLARE DASHBOARD URL"
-          echo "$URL"
           echo "=========================================="
 
+          echo "$URL"
+
           echo
+          echo "=========================================="
           echo "HEALTH URL"
+          echo "=========================================="
+
           echo "$URL/api/health"
 
           echo
+          echo "=========================================="
           echo "DASHBOARD API URL"
+          echo "=========================================="
+
           echo "$URL/api/dashboard"
 
 
           echo
           echo "=========================================="
-          echo "TESTING CLOUDFLARE TUNNEL"
+          echo "TEST CLOUDFLARE HEALTH"
           echo "=========================================="
 
           sleep 3
@@ -301,11 +371,22 @@ jobs:
 
           echo
 
+
+          echo
+          echo "=========================================="
+          echo "TEST DASHBOARD DATA"
+          echo "=========================================="
+
+          curl -fsS \
+            "$URL/api/dashboard"
+
+          echo
+
           EOF
 
 
       # ============================================================
-      # FINAL VERIFICATION
+      # FINAL CHECK
       # ============================================================
 
       - name: Verify dashboard and bot
@@ -324,8 +405,9 @@ jobs:
           echo "FINAL VERIFICATION"
           echo "=========================================="
 
+
           echo
-          echo "===== XAUTUSD BOT ====="
+          echo "===== BOT CHECK ====="
 
           pgrep -af \
             "/home/opc/xautusd-bot/bot.py" \
@@ -333,7 +415,7 @@ jobs:
 
 
           echo
-          echo "===== DASHBOARD API ====="
+          echo "===== DASHBOARD API CHECK ====="
 
           pgrep -af \
             "/home/opc/xautusd-bot/dashboard/dashboard_api.py" \
@@ -343,11 +425,16 @@ jobs:
           echo
           echo "===== PORT 8000 ====="
 
-          ss -lntp | grep ':8000' || true
+          ss -lntp | grep ':8000' \
+            || true
 
 
           echo
           echo "===== CLOUDFLARE SERVICE ====="
+
+          sudo systemctl is-enabled \
+            xautusd-dashboard.service \
+            || true
 
           sudo systemctl is-active \
             xautusd-dashboard.service \
@@ -363,12 +450,13 @@ jobs:
 
 
           echo
-          echo "===== LOCAL DASHBOARD HEALTH ====="
+          echo "===== LOCAL API ====="
 
           curl -fsS \
             http://127.0.0.1:8000/api/health
 
           echo
+
 
           echo
           echo "=========================================="
