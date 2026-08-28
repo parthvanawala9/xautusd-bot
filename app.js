@@ -1,7 +1,7 @@
 async function loadDashboardData() {
   try {
-    // Relative fetch with timestamp to prevent caching issues
-    const response = await fetch(`./dashboard.json?t=${new Date().getTime()}`);
+    // Explicitly target dashboard.json relative to the repository path
+    const response = await fetch('dashboard.json?t=' + new Date().getTime());
     
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -13,14 +13,14 @@ async function loadDashboardData() {
     console.error("Error loading dashboard data:", error);
     const statusEl = document.getElementById("bot-status");
     if (statusEl) {
-      statusEl.textContent = "Offline / Error Loading Data";
+      statusEl.textContent = "Error Loading Data";
       statusEl.className = "status-offline";
     }
   }
 }
 
 function renderDashboard(data) {
-  // Update Price & Balance
+  // Price & Balance
   if (data.current_price !== undefined) {
     document.getElementById("current-price").textContent = `$${parseFloat(data.current_price).toFixed(2)}`;
   }
@@ -28,7 +28,7 @@ function renderDashboard(data) {
     document.getElementById("wallet-balance").textContent = `$${parseFloat(data.balance).toFixed(2)}`;
   }
 
-  // Update Status Indicator
+  // Status Indicator
   const statusEl = document.getElementById("bot-status");
   if (statusEl) {
     if (data.bot_running) {
@@ -40,7 +40,7 @@ function renderDashboard(data) {
     }
   }
 
-  // Update Position Data
+  // Position Data
   if (data.position) {
     document.getElementById("pos-direction").textContent = data.position.direction || "FLAT";
     document.getElementById("pos-size").textContent = data.position.size || "0";
@@ -51,19 +51,17 @@ function renderDashboard(data) {
     if (pnlEl) {
       const pnl = parseFloat(data.position.unrealized_pnl || 0);
       pnlEl.textContent = `$${pnl.toFixed(2)}`;
-      pnlEl.className = pnl >= 0 ? "text-green" : "text-red";
     }
   }
 
-  // Update Statistics
+  // Statistics
   if (data.statistics) {
     document.getElementById("total-trades").textContent = data.statistics.total_trades || 0;
     document.getElementById("win-rate").textContent = `${parseFloat(data.statistics.win_rate || 0).toFixed(1)}%`;
   }
 }
 
-// Load on page startup and auto-refresh every 30 seconds
 document.addEventListener("DOMContentLoaded", () => {
   loadDashboardData();
-  setInterval(loadDashboardData, 30000);
+  setInterval(loadDashboardData, 15000);
 });
