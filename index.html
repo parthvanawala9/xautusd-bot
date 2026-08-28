@@ -1,312 +1,49 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>XAUTUSD Trading Dashboard</title>
-
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XAUTUSD Delta Trading Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
-
 <body>
-
-<div class="app">
-
-    <header class="topbar">
-
-        <div>
-            <div class="brand">XAUTUSD</div>
-            <div class="subtitle">Trading Control Center</div>
-        </div>
-
-        <div class="top-right">
-
-            <div id="botStatus" class="status stopped">
-                <span class="status-dot"></span>
-                BOT STOPPED
-            </div>
-
-            <div id="lastUpdated">
-                --:--
-            </div>
-
-        </div>
-
+  <div class="container">
+    <header>
+      <h1>XAUTUSD Live Dashboard</h1>
+      <span id="bot-status" class="status-offline">Connecting...</span>
     </header>
 
-
-    <main class="content">
-
-        <section class="hero">
-
-            <div>
-                <div class="label">MARKET PRICE</div>
-
-                <div id="currentPrice" class="market-price">
-                    --
-                </div>
-
-                <div class="symbol-name">
-                    XAUTUSD · Tether Gold Perpetual
-                </div>
-            </div>
-
-            <div class="controls">
-
-                <button
-                    id="startBtn"
-                    class="btn btn-green"
-                    onclick="startBot()"
-                >
-                    START BOT
-                </button>
-
-                <button
-                    id="stopBtn"
-                    class="btn btn-yellow"
-                    onclick="stopBot()"
-                >
-                    STOP BOT
-                </button>
-
-                <button
-                    id="stopExitBtn"
-                    class="btn btn-red"
-                    onclick="stopAndExit()"
-                >
-                    STOP & EXIT
-                </button>
-
-            </div>
-
-        </section>
-
-
-        <section class="cards">
-
-            <div class="card">
-                <div class="card-title">BALANCE</div>
-                <div id="balance" class="card-value">--</div>
-            </div>
-
-            <div class="card">
-                <div class="card-title">TOTAL P&L</div>
-                <div id="totalPnl" class="card-value">--</div>
-            </div>
-
-            <div class="card">
-                <div class="card-title">TODAY P&L</div>
-                <div id="todayPnl" class="card-value">--</div>
-            </div>
-
-            <div class="card">
-                <div class="card-title">WIN RATE</div>
-                <div id="winRate" class="card-value">--</div>
-            </div>
-
-        </section>
-
-
-        <section class="section">
-
-            <div class="section-header">
-
-                <div>
-                    <h2>Current Position</h2>
-                    <span class="section-subtitle">
-                        Live position information
-                    </span>
-                </div>
-
-                <div id="positionBadge" class="position-flat">
-                    FLAT
-                </div>
-
-            </div>
-
-
-            <div class="position-grid">
-
-                <div class="position-item">
-
-                    <span>Direction</span>
-
-                    <strong id="direction">
-                        FLAT
-                    </strong>
-
-                </div>
-
-
-                <div class="position-item">
-
-                    <span>Size</span>
-
-                    <strong id="positionSize">
-                        --
-                    </strong>
-
-                </div>
-
-
-                <div class="position-item">
-
-                    <span>Entry Price</span>
-
-                    <strong id="entryPrice">
-                        --
-                    </strong>
-
-                </div>
-
-
-                <div class="position-item">
-
-                    <span>Stop Loss</span>
-
-                    <strong id="stopLoss">
-                        --
-                    </strong>
-
-                </div>
-
-
-                <div class="position-item">
-
-                    <span>Unrealized P&L</span>
-
-                    <strong id="unrealizedPnl">
-                        --
-                    </strong>
-
-                </div>
-
-            </div>
-
-        </section>
-
-
-        <section class="cards statistics">
-
-            <div class="card">
-
-                <div class="card-title">
-                    TOTAL TRADES
-                </div>
-
-                <div id="totalTrades" class="card-value">
-                    --
-                </div>
-
-            </div>
-
-
-            <div class="card">
-
-                <div class="card-title">
-                    WINNING TRADES
-                </div>
-
-                <div id="winningTrades" class="card-value profit">
-                    --
-                </div>
-
-            </div>
-
-
-            <div class="card">
-
-                <div class="card-title">
-                    LOSING TRADES
-                </div>
-
-                <div id="losingTrades" class="card-value loss">
-                    --
-                </div>
-
-            </div>
-
-
-            <div class="card">
-
-                <div class="card-title">
-                    BOT STATUS
-                </div>
-
-                <div id="botStatusCard" class="card-value">
-                    STOPPED
-                </div>
-
-            </div>
-
-        </section>
-
-
-        <section class="section">
-
-            <div class="section-header">
-
-                <div>
-                    <h2>Trade History</h2>
-
-                    <span class="section-subtitle">
-                        Completed XAUTUSD trades
-                    </span>
-                </div>
-
-            </div>
-
-
-            <div class="table-container">
-
-                <table>
-
-                    <thead>
-
-                        <tr>
-
-                            <th>TIME</th>
-                            <th>SIDE</th>
-                            <th>PRICE</th>
-                            <th>SIZE</th>
-                            <th>COMMISSION</th>
-                            <th>P&L</th>
-
-                        </tr>
-
-                    </thead>
-
-                    <tbody id="tradeTable">
-
-                        <tr>
-
-                            <td
-                                colspan="6"
-                                class="empty"
-                            >
-                                Loading trades...
-                            </td>
-
-                        </tr>
-
-                    </tbody>
-
-                </table>
-
-            </div>
-
-        </section>
-
-
-        <div id="message" class="message"></div>
-
-    </main>
-
-</div>
-
-
-<script src="app.js"></script>
-
+    <div class="grid">
+      <div class="card">
+        <h3>Current Price</h3>
+        <p id="current-price">$0.00</p>
+      </div>
+      <div class="card">
+        <h3>Wallet Balance</h3>
+        <p id="wallet-balance">$0.00</p>
+      </div>
+      <div class="card">
+        <h3>Total Trades</h3>
+        <p id="total-trades">0</p>
+      </div>
+      <div class="card">
+        <h3>Win Rate</h3>
+        <p id="win-rate">0.0%</p>
+      </div>
+    </div>
+
+    <div class="card position-card">
+      <h2>Active Position</h2>
+      <div class="pos-details">
+        <p><strong>Direction:</strong> <span id="pos-direction">FLAT</span></p>
+        <p><strong>Size:</strong> <span id="pos-size">0</span></p>
+        <p><strong>Entry Price:</strong> <span id="pos-entry">$0.00</span></p>
+        <p><strong>Stop Loss:</strong> <span id="pos-sl">$0.00</span></p>
+        <p><strong>Unrealized PnL:</strong> <span id="pos-pnl">$0.00</span></p>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>
