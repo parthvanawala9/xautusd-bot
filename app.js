@@ -1,737 +1,244 @@
 // ============================================================
 // XAUTUSD DASHBOARD
 // ============================================================
-//
-// Dashboard reads live state directly from GitHub Pages storage.
-// Do NOT change bot.py or the XAUTUSD trading engine.
-//
+// Directly connects to live backend API.
+// Do NOT touch bot.py or the live trading engine.
 // ============================================================
 
-const API_BASE_URL = ".";
+const API_BASE_URL = "http://80.225.246.202:8000";
 
 let refreshTimer = null;
 
-
 // ============================================================
-// FORMAT MONEY
+// FORMATTERS
 // ============================================================
 
 function money(value) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
-        return "--";
-    }
-
-    const numberValue = Number(value);
-
-    if (Number.isNaN(numberValue)) {
-        return "--";
-    }
-
-    return "$" + numberValue.toLocaleString(
-        "en-US",
-        {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2
-        }
-    );
+    if (value === null || value === undefined || value === "") return "--";
+    const num = Number(value);
+    if (Number.isNaN(num)) return "--";
+    return "$" + num.toLocaleString("en-US", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
 }
-
-
-// ============================================================
-// FORMAT NUMBER
-// ============================================================
 
 function number(value) {
-
-    if (
-        value === null ||
-        value === undefined ||
-        value === ""
-    ) {
-        return "--";
-    }
-
-    const numberValue = Number(value);
-
-    if (Number.isNaN(numberValue)) {
-        return "--";
-    }
-
-    return numberValue.toLocaleString(
-        "en-US",
-        {
-            maximumFractionDigits: 4
-        }
-    );
+    if (value === null || value === undefined || value === "") return "--";
+    const num = Number(value);
+    if (Number.isNaN(num)) return "--";
+    return num.toLocaleString("en-US", { maximumFractionDigits: 4 });
 }
 
-
-// ============================================================
-// P&L
-// ============================================================
-
-function setPnl(
-    element,
-    value
-) {
-
-    element.textContent =
-        money(value);
-
-    element.classList.remove(
-        "profit",
-        "loss"
-    );
-
-    if (Number(value) > 0) {
-
-        element.classList.add(
-            "profit"
-        );
-
-    }
-
-    if (Number(value) < 0) {
-
-        element.classList.add(
-            "loss"
-        );
-    }
+function setPnl(element, value) {
+    if (!element) return;
+    element.textContent = money(value);
+    element.classList.remove("profit", "loss");
+    if (Number(value) > 0) element.classList.add("profit");
+    if (Number(value) < 0) element.classList.add("loss");
 }
 
-
-// ============================================================
-// MESSAGE
-// ============================================================
-
-function showMessage(
-    text
-) {
-
-    const message =
-        document.getElementById(
-            "message"
-        );
-
-    if (!message) {
-        return;
-    }
-
-    message.textContent =
-        text || "";
-
-    message.classList.add(
-        "show"
-    );
-
-    setTimeout(
-        () => {
-
-            message.classList.remove(
-                "show"
-            );
-
-        },
-        3000
-    );
+function showMessage(text) {
+    const message = document.getElementById("message");
+    if (!message) return;
+    message.textContent = text || "";
+    message.classList.add("show");
+    setTimeout(() => message.classList.remove("show"), 3000);
 }
-
 
 // ============================================================
 // BOT STATUS
 // ============================================================
 
-function updateBotStatus(
-    running
-) {
-
-    const status =
-        document.getElementById(
-            "botStatus"
-        );
-
-    const statusCard =
-        document.getElementById(
-            "botStatusCard"
-        );
-
-    if (!status) {
-        return;
-    }
+function updateBotStatus(running) {
+    const status = document.getElementById("botStatus");
+    const statusCard = document.getElementById("botStatusCard");
+    if (!status) return;
 
     if (running) {
-
-        status.className =
-            "status running";
-
-        status.innerHTML =
-            '<span class="status-dot"></span> BOT RUNNING';
-
+        status.className = "status running";
+        status.innerHTML = '<span class="status-dot"></span> BOT RUNNING';
         if (statusCard) {
-
-            statusCard.textContent =
-                "RUNNING";
-
-            statusCard.classList.remove(
-                "loss"
-            );
-
-            statusCard.classList.add(
-                "profit"
-            );
+            statusCard.textContent = "RUNNING";
+            statusCard.classList.remove("loss");
+            statusCard.classList.add("profit");
         }
-
     } else {
-
-        status.className =
-            "status stopped";
-
-        status.innerHTML =
-            '<span class="status-dot"></span> BOT STOPPED';
-
+        status.className = "status stopped";
+        status.innerHTML = '<span class="status-dot"></span> BOT STOPPED';
         if (statusCard) {
-
-            statusCard.textContent =
-                "STOPPED";
-
-            statusCard.classList.remove(
-                "profit"
-            );
-
-            statusCard.classList.add(
-                "loss"
-            );
+            statusCard.textContent = "STOPPED";
+            statusCard.classList.remove("profit");
+            statusCard.classList.add("loss");
         }
     }
 }
 
-
 // ============================================================
-// POSITION
+// POSITION DISPLAY
 // ============================================================
 
-function updatePosition(
-    position
-) {
+function updatePosition(position) {
+    position = position || {};
+    const direction = position.direction || "FLAT";
 
-    position =
-        position || {};
-
-    const direction =
-        position.direction || "FLAT";
-
-    const badge =
-        document.getElementById(
-            "positionBadge"
-        );
-
+    const badge = document.getElementById("positionBadge");
     if (badge) {
-
-        badge.textContent =
-            direction;
-
-        badge.className =
-            direction === "LONG"
-                ? "position-long"
-                : direction === "SHORT"
-                    ? "position-short"
-                    : "position-flat";
+        badge.textContent = direction;
+        badge.className = direction === "LONG" ? "position-long" : direction === "SHORT" ? "position-short" : "position-flat";
     }
 
+    const directionElement = document.getElementById("direction");
+    if (directionElement) directionElement.textContent = direction;
 
-    const directionElement =
-        document.getElementById(
-            "direction"
-        );
+    const sizeElement = document.getElementById("positionSize");
+    if (sizeElement) sizeElement.textContent = number(position.size);
 
-    if (directionElement) {
+    const entryElement = document.getElementById("entryPrice");
+    if (entryElement) entryElement.textContent = number(position.entry_price);
 
-        directionElement.textContent =
-            direction;
-    }
+    const stopElement = document.getElementById("stopLoss");
+    if (stopElement) stopElement.textContent = number(position.stop_loss);
 
-
-    const sizeElement =
-        document.getElementById(
-            "positionSize"
-        );
-
-    if (sizeElement) {
-
-        sizeElement.textContent =
-            number(
-                position.size
-            );
-    }
-
-
-    const entryElement =
-        document.getElementById(
-            "entryPrice"
-        );
-
-    if (entryElement) {
-
-        entryElement.textContent =
-            number(
-                position.entry_price
-            );
-    }
-
-
-    const stopElement =
-        document.getElementById(
-            "stopLoss"
-        );
-
-    if (stopElement) {
-
-        stopElement.textContent =
-            number(
-                position.stop_loss
-            );
-    }
-
-
-    const unrealizedElement =
-        document.getElementById(
-            "unrealizedPnl"
-        );
-
-    if (unrealizedElement) {
-
-        setPnl(
-            unrealizedElement,
-            position.unrealized_pnl
-        );
-    }
+    const unrealizedElement = document.getElementById("unrealizedPnl");
+    if (unrealizedElement) setPnl(unrealizedElement, position.unrealized_pnl);
 }
-
 
 // ============================================================
 // TRADE HISTORY
 // ============================================================
 
-function renderTrades(
-    trades
-) {
+function renderTrades(trades) {
+    const table = document.getElementById("tradeTable");
+    if (!table) return;
 
-    const table =
-        document.getElementById(
-            "tradeTable"
-        );
-
-    if (!table) {
+    if (!trades || trades.length === 0) {
+        table.innerHTML = `<tr><td colspan="6" class="empty">No trades logged yet</td></tr>`;
         return;
     }
 
-    if (
-        !trades ||
-        trades.length === 0
-    ) {
-
-        table.innerHTML = `
+    table.innerHTML = trades.map(trade => {
+        const side = String(trade.side || "").toUpperCase();
+        const sideClass = side === "BUY" ? "side-buy" : "side-sell";
+        return `
             <tr>
-                <td
-                    colspan="6"
-                    class="empty"
-                >
-                    No trades yet
-                </td>
+                <td>${formatTime(trade.timestamp)}</td>
+                <td class="${sideClass}">${side || "--"}</td>
+                <td>${number(trade.price)}</td>
+                <td>${number(trade.size)}</td>
+                <td>${money(trade.commission)}</td>
+                <td class="${Number(trade.pnl) > 0 ? "profit" : Number(trade.pnl) < 0 ? "loss" : ""}">${money(trade.pnl)}</td>
             </tr>
         `;
-
-        return;
-    }
-
-
-    table.innerHTML =
-        trades.map(
-            trade => {
-
-                const side =
-                    String(
-                        trade.side || ""
-                    ).toUpperCase();
-
-                const sideClass =
-                    side === "BUY"
-                        ? "side-buy"
-                        : "side-sell";
-
-                return `
-                    <tr>
-
-                        <td>
-                            ${formatTime(
-                                trade.timestamp
-                            )}
-                        </td>
-
-                        <td class="${sideClass}">
-                            ${side || "--"}
-                        </td>
-
-                        <td>
-                            ${number(
-                                trade.price
-                            )}
-                        </td>
-
-                        <td>
-                            ${number(
-                                trade.size
-                            )}
-                        </td>
-
-                        <td>
-                            ${money(
-                                trade.commission
-                            )}
-                        </td>
-
-                        <td class="${
-                            Number(
-                                trade.pnl
-                            ) > 0
-                                ? "profit"
-                                : Number(
-                                    trade.pnl
-                                ) < 0
-                                    ? "loss"
-                                    : ""
-                        }">
-                            ${money(
-                                trade.pnl
-                            )}
-                        </td>
-
-                    </tr>
-                `;
-            }
-        ).join("");
+    }).join("");
 }
 
-
-// ============================================================
-// TIME
-// ============================================================
-
-function formatTime(
-    timestamp
-) {
-
-    if (!timestamp) {
-        return "--";
-    }
-
-    const date =
-        new Date(
-            timestamp
-        );
-
-    if (
-        Number.isNaN(
-            date.getTime()
-        )
-    ) {
-
-        return timestamp;
-    }
-
-    return date.toLocaleString(
-        "en-IN",
-        {
-            day: "2-digit",
-            month: "short",
-            hour: "2-digit",
-            minute: "2-digit"
-        }
-    );
+function formatTime(timestamp) {
+    if (!timestamp) return "--";
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return timestamp;
+    return date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-
 // ============================================================
-// DASHBOARD API / DATA LOAD
+// DASHBOARD DATA LOADER
 // ============================================================
 
 async function loadDashboard() {
-
     try {
-
-        const response =
-            await fetch(
-                "dashboard.json",
-                {
-                    cache: "no-store"
-                }
-            );
-
+        const targetUrl = API_BASE_URL + "/api/dashboard";
+        const response = await fetch(targetUrl, { cache: "no-store" });
 
         if (!response.ok) {
-
-            throw new Error(
-                "Dashboard Data HTTP " +
-                response.status
-            );
+            throw new Error("HTTP " + response.status);
         }
 
+        const data = await response.json();
 
-        const data =
-            await response.json();
+        updateBotStatus(data.bot_running ?? true);
 
+        const currentPrice = document.getElementById("currentPrice");
+        if (currentPrice) currentPrice.textContent = number(data.current_price);
 
-        if (
-            data.success === false
-        ) {
+        const balance = document.getElementById("balance");
+        if (balance) balance.textContent = money(data.balance);
 
-            throw new Error(
-                data.error ||
-                "Dashboard error"
-            );
-        }
+        const totalPnl = document.getElementById("totalPnl");
+        if (totalPnl) setPnl(totalPnl, data.total_pnl);
 
+        const todayPnl = document.getElementById("todayPnl");
+        if (todayPnl) setPnl(todayPnl, data.today_pnl);
 
-        // ----------------------------------------------------
-        // BOT STATUS
-        // ----------------------------------------------------
-
-        updateBotStatus(
-            data.bot_running ?? true
-        );
-
-
-        // ----------------------------------------------------
-        // MARKET PRICE
-        // ----------------------------------------------------
-
-        const currentPrice =
-            document.getElementById(
-                "currentPrice"
-            );
-
-        if (currentPrice) {
-
-            currentPrice.textContent =
-                number(
-                    data.current_price
-                );
-        }
-
-
-        // ----------------------------------------------------
-        // BALANCE
-        // ----------------------------------------------------
-
-        const balance =
-            document.getElementById(
-                "balance"
-            );
-
-        if (balance) {
-
-            balance.textContent =
-                money(
-                    data.balance
-                );
-        }
-
-
-        // ----------------------------------------------------
-        // TOTAL P&L
-        // ----------------------------------------------------
-
-        const totalPnl =
-            document.getElementById(
-                "totalPnl"
-            );
-
-        if (totalPnl) {
-
-            setPnl(
-                totalPnl,
-                data.total_pnl
-            );
-        }
-
-
-        // ----------------------------------------------------
-        // TODAY P&L
-        // ----------------------------------------------------
-
-        const todayPnl =
-            document.getElementById(
-                "todayPnl"
-            );
-
-        if (todayPnl) {
-
-            setPnl(
-                todayPnl,
-                data.today_pnl
-            );
-        }
-
-
-        // ----------------------------------------------------
-        // WIN RATE
-        // ----------------------------------------------------
-
-        const winRate =
-            document.getElementById(
-                "winRate"
-            );
-
+        const winRate = document.getElementById("winRate");
         if (winRate) {
-
-            const value =
-                Number(
-                    data.statistics?.win_rate
-                );
-
-            winRate.textContent =
-                Number.isNaN(value)
-                    ? "--"
-                    : value.toFixed(1) + "%";
+            const val = Number(data.statistics?.win_rate);
+            winRate.textContent = Number.isNaN(val) ? "0.0%" : val.toFixed(1) + "%";
         }
 
+        const totalTrades = document.getElementById("totalTrades");
+        if (totalTrades) totalTrades.textContent = data.statistics?.total_trades ?? "0";
 
-        // ----------------------------------------------------
-        // STATISTICS
-        // ----------------------------------------------------
+        const winningTrades = document.getElementById("winningTrades");
+        if (winningTrades) winningTrades.textContent = data.statistics?.winning_trades ?? "0";
 
-        const totalTrades =
-            document.getElementById(
-                "totalTrades"
-            );
+        const losingTrades = document.getElementById("losingTrades");
+        if (losingTrades) losingTrades.textContent = data.statistics?.losing_trades ?? "0";
 
-        if (totalTrades) {
+        updatePosition(data.position);
+        renderTrades(data.trades);
 
-            totalTrades.textContent =
-                data.statistics?.total_trades ??
-                "--";
-        }
-
-
-        const winningTrades =
-            document.getElementById(
-                "winningTrades"
-            );
-
-        if (winningTrades) {
-
-            winningTrades.textContent =
-                data.statistics?.winning_trades ??
-                "--";
-        }
-
-
-        const losingTrades =
-            document.getElementById(
-                "losingTrades"
-            );
-
-        if (losingTrades) {
-
-            losingTrades.textContent =
-                data.statistics?.losing_trades ??
-                "--";
-        }
-
-
-        // ----------------------------------------------------
-        // POSITION
-        // ----------------------------------------------------
-
-        updatePosition(
-            data.position
-        );
-
-
-        // ----------------------------------------------------
-        // TRADES
-        // ----------------------------------------------------
-
-        renderTrades(
-            data.trades
-        );
-
-
-        // ----------------------------------------------------
-        // LAST UPDATED
-        // ----------------------------------------------------
-
-        const lastUpdated =
-            document.getElementById(
-                "lastUpdated"
-            );
-
+        const lastUpdated = document.getElementById("lastUpdated");
         if (lastUpdated) {
-
-            lastUpdated.textContent =
-                new Date().toLocaleTimeString(
-                    "en-IN",
-                    {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit"
-                    }
-                );
+            lastUpdated.textContent = new Date().toLocaleTimeString("en-IN", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit"
+            });
         }
-
 
     } catch (error) {
-
-        console.error(
-            "Dashboard error:",
-            error
-        );
-
-
-        const lastUpdated =
-            document.getElementById(
-                "lastUpdated"
-            );
-
-        if (lastUpdated) {
-
-            lastUpdated.textContent =
-                "Connection error";
-        }
+        console.error("Live Dashboard Connection Error:", error);
+        const lastUpdated = document.getElementById("lastUpdated");
+        if (lastUpdated) lastUpdated.textContent = "Connecting to VM...";
     }
 }
 
-
 // ============================================================
-// BOT CONTROLS (PLACEHOLDERS FOR STATIC DEPLOYMENT)
+// CONTROL ACTIONS
 // ============================================================
 
 async function startBot() {
-    showMessage("Bot state managed directly via server workflow.");
+    try {
+        const res = await fetch(API_BASE_URL + "/api/start", { method: "POST" });
+        const data = await res.json();
+        showMessage(data.message || "Bot start command sent.");
+        await loadDashboard();
+    } catch (e) { showMessage("Unable to connect to VM."); }
 }
 
 async function stopBot() {
-    showMessage("Bot state managed directly via server workflow.");
+    if (!confirm("Stop the bot? Existing position remains open.")) return;
+    try {
+        const res = await fetch(API_BASE_URL + "/api/stop", { method: "POST" });
+        const data = await res.json();
+        showMessage(data.message || "Bot stopped.");
+        await loadDashboard();
+    } catch (e) { showMessage("Unable to connect to VM."); }
 }
 
 async function stopAndExit() {
-    showMessage("Manual position exit must be executed on Exchange directly.");
+    if (!confirm("STOP BOT AND EXIT THE EXISTING POSITION AT MARKET?")) return;
+    try {
+        const res = await fetch(API_BASE_URL + "/api/stop-exit", { method: "POST" });
+        const data = await res.json();
+        showMessage(data.message || "Bot stopped and position exit requested.");
+        await loadDashboard();
+    } catch (e) { showMessage("Unable to connect to VM."); }
 }
 
-
 // ============================================================
-// START
+// INITIALIZE
 // ============================================================
 
 loadDashboard();
-
-refreshTimer =
-    setInterval(
-        loadDashboard,
-        5000
-    );
+refreshTimer = setInterval(loadDashboard, 3000);
