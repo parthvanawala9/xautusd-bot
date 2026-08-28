@@ -1,11 +1,6 @@
 // ============================================================
 // XAUTUSD DASHBOARD
 // ============================================================
-// Directly connects to live backend API.
-// Do NOT touch bot.py or the live trading engine.
-// ============================================================
-
-const API_BASE_URL = "http://80.225.246.202:8000";
 
 let refreshTimer = null;
 
@@ -146,8 +141,8 @@ function formatTime(timestamp) {
 
 async function loadDashboard() {
     try {
-        const targetUrl = API_BASE_URL + "/api/dashboard";
-        const response = await fetch(targetUrl, { cache: "no-store" });
+        const jsonUrl = "./dashboard.json?t=" + new Date().getTime();
+        const response = await fetch(jsonUrl, { cache: "no-store" });
 
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
@@ -197,44 +192,19 @@ async function loadDashboard() {
         }
 
     } catch (error) {
-        console.error("Live Dashboard Connection Error:", error);
+        console.error("Dashboard Load Error:", error);
         const lastUpdated = document.getElementById("lastUpdated");
-        if (lastUpdated) lastUpdated.textContent = "Connecting to VM...";
+        if (lastUpdated) lastUpdated.textContent = "Updating...";
     }
 }
 
 // ============================================================
-// CONTROL ACTIONS
+// BOT CONTROLS
 // ============================================================
 
-async function startBot() {
-    try {
-        const res = await fetch(API_BASE_URL + "/api/start", { method: "POST" });
-        const data = await res.json();
-        showMessage(data.message || "Bot start command sent.");
-        await loadDashboard();
-    } catch (e) { showMessage("Unable to connect to VM."); }
-}
-
-async function stopBot() {
-    if (!confirm("Stop the bot? Existing position remains open.")) return;
-    try {
-        const res = await fetch(API_BASE_URL + "/api/stop", { method: "POST" });
-        const data = await res.json();
-        showMessage(data.message || "Bot stopped.");
-        await loadDashboard();
-    } catch (e) { showMessage("Unable to connect to VM."); }
-}
-
-async function stopAndExit() {
-    if (!confirm("STOP BOT AND EXIT THE EXISTING POSITION AT MARKET?")) return;
-    try {
-        const res = await fetch(API_BASE_URL + "/api/stop-exit", { method: "POST" });
-        const data = await res.json();
-        showMessage(data.message || "Bot stopped and position exit requested.");
-        await loadDashboard();
-    } catch (e) { showMessage("Unable to connect to VM."); }
-}
+function startBot() { showMessage("Bot state managed directly via server workflow."); }
+function stopBot() { showMessage("Bot state managed directly via server workflow."); }
+function stopAndExit() { showMessage("Manual position exit must be executed on Exchange directly."); }
 
 // ============================================================
 // INITIALIZE
