@@ -1,6 +1,5 @@
 // ============================================================
 // XAUTUSD DASHBOARD FRONTEND
-// Reads generated dashboard.json from GitHub Pages root
 // ============================================================
 
 let refreshTimer = null;
@@ -28,6 +27,14 @@ function setPnl(element, value) {
     element.classList.remove("profit", "loss");
     if (Number(value) > 0) element.classList.add("profit");
     if (Number(value) < 0) element.classList.add("loss");
+}
+
+function showMessage(text) {
+    const message = document.getElementById("message");
+    if (!message) return;
+    message.textContent = text || "";
+    message.classList.add("show");
+    setTimeout(() => message.classList.remove("show"), 3000);
 }
 
 function updateBotStatus(running) {
@@ -114,7 +121,7 @@ function formatTime(timestamp) {
 
 async function loadDashboard() {
     try {
-        const response = await fetch("./dashboard.json?cache=" + Date.now());
+        const response = await fetch("./dashboard.json?t=" + Date.now());
 
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
@@ -167,6 +174,10 @@ async function loadDashboard() {
         console.error("Dashboard Load Error:", error);
     }
 }
+
+function startBot() { showMessage("Bot state managed directly via server workflow."); }
+function stopBot() { showMessage("Bot state managed directly via server workflow."); }
+function stopAndExit() { showMessage("Manual position exit must be executed on Exchange directly."); }
 
 loadDashboard();
 refreshTimer = setInterval(loadDashboard, 5000);
