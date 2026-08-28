@@ -1,0 +1,11 @@
+{
+  "balance": 100.00,
+  "position": {
+    "direction": "LONG",
+    "size": 0.1,
+    "entry_price": 2500.00,
+    "stop_loss": 2480.00,
+    "unrealized_pnl": 5.00
+  },
+  "trades": []
+}
