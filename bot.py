@@ -15,7 +15,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 25.0 (ANYTIME DYNAMIC RUNNING EXTREMES)
+# XAUTUSD DYNAMIC ADAPTIVE BREAKOUT & REVERSAL BOT - VERSION 26.0
 # ============================================================
 
 load_dotenv()
@@ -45,7 +45,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/25.0"
+    "User-Agent": "XAUTUSD-Adaptive-Engine/26.0"
 })
 
 # ============================================================
@@ -234,6 +234,7 @@ class TradingStrategy:
         self.day_start = new_day
         self.running_high = None
         self.running_low = None
+        self.current_sl = None
         self.save_state()
 
     def handle_closed_position(self, old_size, current_price):
@@ -249,20 +250,19 @@ class TradingStrategy:
                 was_sl_triggered = True
 
         if not was_sl_triggered:
-            logging.warning("Position closed manually. Waiting for next breakout.")
+            logging.warning("Position closed manually/externally. Resuming dynamic monitoring.")
             self.save_state()
             return
 
-        logging.warning("STOP LOSS HIT -> INSTANT REVERSAL EXECUTING NOW")
+        logging.warning("STOP LOSS HIT -> ADAPTIVE REVERSAL EXECUTING NOW")
         size = calculate_order_size(self.product, current_price)
 
+        # Reversal: If long stopped, go short using running high as SL. If short stopped, go long using running low as SL.
         if old_size > 0:
-            # Long stopped -> Reverse to Short
             reverse_sl = self.running_high or (current_price + Decimal("1.00"))
             execute_bracket_market_order(self.product_id, "sell", size, reverse_sl)
             self.current_sl = reverse_sl
         else:
-            # Short stopped -> Reverse to Long
             reverse_sl = self.running_low or (current_price - Decimal("1.00"))
             execute_bracket_market_order(self.product_id, "buy", size, reverse_sl)
             self.current_sl = reverse_sl
@@ -284,7 +284,7 @@ class TradingStrategy:
         self.check_new_day(now)
         current_price = Decimal(price_str)
 
-        # Update running day extremes dynamically on every tick
+        # Initialize extremes if not set
         if self.running_high is None or current_price > self.running_high:
             self.running_high = current_price
             self.save_state()
@@ -304,22 +304,32 @@ class TradingStrategy:
 
         self.last_position = current_size
 
-        # If flat, check for immediate breakout of running extremes at any time
-        if current_size == 0 and self.running_high and self.running_low:
+        # If flat, check if price breaks beyond established running bounds (excluding exact initialization ticks)
+        if current_size == 0:
             size = calculate_order_size(self.product, current_price)
             
-            # If price exceeds previous running high (excluding initial tick)
-            if current_price >= self.running_high and current_price != self.running_high:
+            # Breakout above high -> Go Long, SL at running low
+            if current_price > self.running_high:
                 sl = self.running_low
                 execute_bracket_market_order(self.product_id, "buy", size, sl)
                 self.current_sl = sl
                 self.last_position = size
                 self.save_state()
-            elif current_price <= self.running_low and current_price != self.running_low:
+            # Breakout below low -> Go Short, SL at running high
+            elif current_price < self.running_low:
                 sl = self.running_high
                 execute_bracket_market_order(self.product_id, "sell", size, sl)
                 self.current_sl = sl
                 self.last_position = -size
+                self.save_state()
+
+        # Continuously expand running bounds if price prints new extremes while flat
+        if current_size == 0:
+            if current_price > self.running_high:
+                self.running_high = current_price
+                self.save_state()
+            if current_price < self.running_low:
+                self.running_low = current_price
                 self.save_state()
 
     def start_websocket(self):
@@ -334,7 +344,7 @@ class TradingStrategy:
                 logging.error(f"WS Error: {e}")
 
         def on_open(ws):
-            logging.info("WebSocket connected. Streaming ticks anytime...")
+            logging.info("WebSocket connected. Adaptive breakout engine live...")
             sub_payload = {
                 "type": "subscribe",
                 "payload": {
@@ -357,7 +367,7 @@ class TradingStrategy:
                     time.sleep(3)
 
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD DYNAMIC ANYTIME ENGINE v25.0 ONLINE.")
+        logging.warning("XAUTUSD ADAPTIVE BREAKOUT ENGINE v26.0 ONLINE.")
         
         ws_thread = threading.Thread(target=run_ws, daemon=True)
         ws_thread.start()
