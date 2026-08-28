@@ -1,7 +1,7 @@
-[Balance API Error] Status: 401, Body: {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.215.211.58"}},"success":false}
+[Balance API Error] Status: 401, Body: {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.182.212.51"}},"success":false}
 [Position Check /v2/positions/margined] Status: 401
-[Position API Error] /v2/positions/margined -> {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.215.211.58"}},"success":false}
+[Position API Error] /v2/positions/margined -> {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.182.212.51"}},"success":false}
 [Position Check /v2/positions] Status: 401
-[Position API Error] /v2/positions -> {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.215.211.58"}},"success":false}
-[Fills API Error] Status: 401, Body: {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.215.211.58"}},"success":false}
-{"success": true, "bot_running": true, "current_price": 4581.79, "balance": 0.0, "total_pnl": 0, "today_pnl": 0, "position": {"direction": "FLAT", "size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0}, "statistics": {"total_trades": 0, "winning_trades": 0, "losing_trades": 0, "win_rate": 0.0}, "trades": []}
+[Position API Error] /v2/positions -> {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.182.212.51"}},"success":false}
+[Fills API Error] Status: 401, Body: {"error":{"code":"ip_not_whitelisted_for_api_key","context":{"client_ip":"172.182.212.51"}},"success":false}
+{"success": true, "bot_running": true, "current_price": 4581.36, "balance": 0.0, "total_pnl": 0, "today_pnl": 0, "position": {"direction": "FLAT", "size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0}, "statistics": {"total_trades": 0, "winning_trades": 0, "losing_trades": 0, "win_rate": 0.0}, "trades": []}
