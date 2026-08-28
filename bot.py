@@ -4,16 +4,18 @@ import json
 import hmac
 import hashlib
 import logging
+import threading
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
 import requests
+import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BREAKOUT BOT - VERSION 23.2 (STRICT MANUAL EXIT PROTECTION)
+# XAUTUSD BREAKOUT BOT - VERSION 24.0 (INSTANT NATIVE WS REVERSAL)
 # ============================================================
 
 load_dotenv()
@@ -22,13 +24,13 @@ IST = ZoneInfo("Asia/Kolkata")
 UTC = timezone.utc
 
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
+WS_URL = os.getenv("DELTA_WS_URL", "wss://socket.india.delta.exchange")
 SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD")
 API_KEY = os.getenv("DELTA_API_KEY", "").strip()
 API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
 
 LEVERAGE = Decimal(os.getenv("LEVERAGE", "50"))
 BALANCE_FRACTION = Decimal(os.getenv("BALANCE_FRACTION", "0.10"))
-POLL_SECONDS = float(os.getenv("POLL_SECONDS", "0.50"))
 STATE_FILE = os.getenv("STATE_FILE", "xautusd_state.json")
 
 if not API_KEY or not API_SECRET:
@@ -43,7 +45,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Engine/23.2"
+    "User-Agent": "XAUTUSD-Breakout-Engine/24.0"
 })
 
 # ============================================================
@@ -66,11 +68,11 @@ def trading_execution_start(day_start):
 def is_weekend_blocked(dt=None):
     dt = dt or now_ist()
     weekday = dt.weekday()
-    if weekday == 5:  # Saturday from 05:00 IST
+    if weekday == 5:
         return dt.hour >= 5
-    if weekday == 6:  # Entire Sunday
+    if weekday == 6:
         return True
-    if weekday == 0:  # Monday before 05:30 IST
+    if weekday == 0:
         return dt < dt.replace(hour=5, minute=30, second=0, microsecond=0)
     return False
 
@@ -118,13 +120,6 @@ def api_call(method, path, params=None, body=None, auth=False):
 def get_product():
     return api_call("GET", f"/v2/products/{SYMBOL}")["result"]
 
-def get_price():
-    ticker = api_call("GET", f"/v2/tickers/{SYMBOL}")["result"]
-    value = ticker.get("close") or ticker.get("last_price") or ticker.get("mark_price")
-    if value is None:
-        raise RuntimeError("Ticker returned no valid price.")
-    return Decimal(str(value))
-
 def get_position(product_id):
     result = api_call("GET", "/v2/positions", params={"product_id": int(product_id)}, auth=True)["result"]
     if not result or not isinstance(result, dict):
@@ -154,86 +149,54 @@ def get_candles(start_dt, end_dt):
         "end": int(end_dt.astimezone(UTC).timestamp())
     })["result"]
 
-def calculate_candle_extremes(start_dt, end_dt, include_only_completed=True):
+def calculate_candle_extremes(start_dt, end_dt):
     start_ts = int(start_dt.timestamp())
     end_ts = int(end_dt.timestamp())
-
     if end_ts <= start_ts:
         return None, None
 
     candles = get_candles(start_dt, end_dt)
-    highest = None
-    lowest = None
+    highest, lowest = None, None
 
     for candle in candles:
         try:
             candle_start_ts = int(candle["time"])
-        except Exception:
-            continue
-
-        if candle_start_ts < start_ts:
-            continue
-
-        if include_only_completed:
-            if candle_start_ts + 900 > end_ts:
+            if candle_start_ts < start_ts or candle_start_ts + 900 > end_ts:
                 continue
-
-        try:
-            candle_high = Decimal(str(candle["high"]))
-            candle_low = Decimal(str(candle["low"]))
+            h, l = Decimal(str(candle["high"])), Decimal(str(candle["low"]))
+            highest = h if highest is None or h > highest else highest
+            lowest = l if lowest is None or l < lowest else lowest
         except Exception:
             continue
-
-        if highest is None or candle_high > highest:
-            highest = candle_high
-        if lowest is None or candle_low < lowest:
-            lowest = candle_low
-
     return highest, lowest
 
 # ============================================================
-# EXECUTION & SIZING
+# NATIVE EXCHANGE ORDERS
 # ============================================================
 
-def execute_bracket_market_order(product_id, side, size, sl_price):
+def place_native_breakout_order(product_id, side, size, trigger_price, sl_price):
     body = {
         "product_id": int(product_id),
         "product_symbol": SYMBOL,
         "size": int(abs(size)),
         "side": side,
-        "order_type": "market_order",
+        "order_type": "stop_order",
+        "stop_order_type": "stop_market",
+        "stop_price": str(trigger_price),
+        "stop_trigger_method": "last_traded_price",
         "bracket_stop_loss_price": str(sl_price),
         "bracket_stop_loss_type": "market_order",
-        "stop_trigger_method": "last_traded_price",
-        "client_order_id": f"xent_{int(time.time()*1000)}"[:32]
+        "client_order_id": f"xbo_{int(time.time()*1000)}"[:32]
     }
-    logging.warning(f"LIVE BRACKET MARKET ORDER | SIDE={side} | SIZE={abs(size)} | SL={sl_price}")
-    res = api_call("POST", "/v2/orders", body=body, auth=True)
-    
-    time.sleep(0.5)
-    stops = api_call("GET", "/v2/orders", params={"product_ids": str(product_id), "states": "open,pending"}, auth=True).get("result", [])
-    if not stops:
-        logging.warning("BRACKET ATTACHMENT SLOW/FAILED. CREATING DIRECT FALLBACK STOP LOSS ORDER...")
-        create_fallback_stop_loss(product_id, side, size, sl_price)
-    
-    return res
-
-def create_fallback_stop_loss(product_id, side, size, sl_price):
-    stop_side = "sell" if side == "buy" else "buy"
-    body = {
-        "product_id": int(product_id),
-        "product_symbol": SYMBOL,
-        "size": int(abs(size)),
-        "side": stop_side,
-        "order_type": "market_order",
-        "stop_order_type": "stop_loss_order",
-        "stop_price": str(sl_price),
-        "stop_trigger_method": "last_traded_price",
-        "reduce_only": True,
-        "client_order_id": f"xsl_{int(time.time()*1000)}"[:32]
-    }
-    logging.warning(f"FALLBACK SL CREATED | SIDE={stop_side} | SIZE={abs(size)} | SL={sl_price}")
+    logging.warning(f"NATIVE BREAKOUT ORDER PLACED | SIDE={side} | TRIGGER={trigger_price} | SL={sl_price}")
     return api_call("POST", "/v2/orders", body=body, auth=True)
+
+def cancel_all_open_orders(product_id):
+    try:
+        api_call("DELETE", "/v2/orders/all", body={"product_id": int(product_id)}, auth=True)
+        logging.info("All resting open/conditional orders cancelled.")
+    except Exception as exc:
+        logging.warning(f"Failed to cancel open orders: {exc}")
 
 def close_position_market(product_id, size):
     side = "sell" if size > 0 else "buy"
@@ -259,24 +222,15 @@ def calculate_order_size(product, price):
     balance = get_balance()
     margin = balance * BALANCE_FRACTION
     notional = margin * LEVERAGE
-
-    contract_value = Decimal(str(product.get("contract_value") or product.get("contract_value_usd") or "1"))
+    contract_value = Decimal(str(product.get("contract_value") or "1"))
     raw_size = notional / (price * contract_value)
-
-    lot_size = Decimal(str(product.get("lot_size") or product.get("order_size_increment") or "1"))
-    min_size = Decimal(str(product.get("min_order_size") or product.get("minimum_order_size") or lot_size))
-
+    lot_size = Decimal(str(product.get("lot_size") or "1"))
+    min_size = Decimal(str(product.get("min_order_size") or lot_size))
     size_decimal = (raw_size / lot_size).to_integral_value(rounding=ROUND_DOWN) * lot_size
-    if size_decimal < min_size:
-        raise RuntimeError("Calculated size is below exchange minimum order size.")
-
-    size = int(size_decimal)
-    if size <= 0:
-        raise RuntimeError("Calculated order size is zero.")
-    return size
+    return int(max(min_size, size_decimal))
 
 # ============================================================
-# STRATEGY ENGINE
+# STRATEGY STATE & WEBSOCKET ENGINE
 # ============================================================
 
 class TradingStrategy:
@@ -285,28 +239,14 @@ class TradingStrategy:
         self.product_id = int(product["id"])
 
         self.day_start = None
-        
-        # A. LOCKED BREAKOUT LEVELS (Calculated from 05:30–05:45 Range)
         self.locked_day_high = None
         self.locked_day_low = None
         self.range_ready = False
-
-        # B. DYNAMIC RUNNING DAY EXTREMES
+        
         self.running_day_high = None
         self.running_day_low = None
 
-        # C. CURRENT POSITION SL
-        self.current_sl = None
-        self.last_position = 0
-
-        # D. STATE FLAGS
-        self.carried_position = False
-        self.needs_0545_sl_reset = False
-
-        self.manual_flat = False
-        self.manual_exit_high = None
-        self.manual_exit_low = None
-
+        self.orders_placed_for_day = False
         self.load_state()
 
     def load_state(self):
@@ -321,36 +261,26 @@ class TradingStrategy:
             self.running_day_high = Decimal(s["running_day_high"]) if s.get("running_day_high") else None
             self.running_day_low = Decimal(s["running_day_low"]) if s.get("running_day_low") else None
             self.range_ready = bool(s.get("range_ready", False))
-            self.current_sl = Decimal(s["current_sl"]) if s.get("current_sl") else None
-            self.carried_position = bool(s.get("carried_position", False))
-            self.needs_0545_sl_reset = bool(s.get("needs_0545_sl_reset", False))
-            self.manual_flat = bool(s.get("manual_flat", False))
-            self.manual_exit_high = Decimal(s["manual_exit_high"]) if s.get("manual_exit_high") else None
-            self.manual_exit_low = Decimal(s["manual_exit_low"]) if s.get("manual_exit_low") else None
+            self.orders_placed_for_day = bool(s.get("orders_placed_for_day", False))
         except Exception as exc:
             logging.error(f"STATE LOAD ERROR: {exc}")
 
     def save_state(self):
         state = {
             "day_start": self.day_start.isoformat() if self.day_start else None,
-            "locked_day_high": str(self.locked_day_high) if self.locked_day_high is not None else None,
-            "locked_day_low": str(self.locked_day_low) if self.locked_day_low is not None else None,
-            "running_day_high": str(self.running_day_high) if self.running_day_high is not None else None,
-            "running_day_low": str(self.running_day_low) if self.running_day_low is not None else None,
+            "locked_day_high": str(self.locked_day_high) if self.locked_day_high else None,
+            "locked_day_low": str(self.locked_day_low) if self.locked_day_low else None,
+            "running_day_high": str(self.running_day_high) if self.running_day_high else None,
+            "running_day_low": str(self.running_day_low) if self.running_day_low else None,
             "range_ready": self.range_ready,
-            "current_sl": str(self.current_sl) if self.current_sl is not None else None,
-            "carried_position": self.carried_position,
-            "needs_0545_sl_reset": self.needs_0545_sl_reset,
-            "manual_flat": self.manual_flat,
-            "manual_exit_high": str(self.manual_exit_high) if self.manual_exit_high is not None else None,
-            "manual_exit_low": str(self.manual_exit_low) if self.manual_exit_low is not None else None
+            "orders_placed_for_day": self.orders_placed_for_day
         }
         temp = STATE_FILE + ".tmp"
         with open(temp, "w", encoding="utf-8") as file:
             json.dump(state, file, indent=2)
         os.replace(temp, STATE_FILE)
 
-    def handle_new_day(self, now, current_position):
+    def check_new_day(self, now):
         new_day = trading_day_start(now)
         if self.day_start == new_day:
             return
@@ -362,31 +292,20 @@ class TradingStrategy:
         self.running_day_high = None
         self.running_day_low = None
         self.range_ready = False
-        self.manual_flat = False
-        self.manual_exit_high = None
-        self.manual_exit_low = None
-
-        if current_position != 0:
-            self.carried_position = True
-            self.needs_0545_sl_reset = True
-            logging.warning("POSITION CARRIED INTO NEW DAY. WILL RE-OPEN AT 05:45 IST WITH NEW DAY SL.")
-        else:
-            self.carried_position = False
-            self.needs_0545_sl_reset = False
-            self.current_sl = None
-
+        self.orders_placed_for_day = False
+        
+        cancel_all_open_orders(self.product_id)
         self.save_state()
 
-    def build_initial_range(self, now):
+    def try_lock_range(self, now):
         if self.day_start is None:
             return False
         execution_start = trading_execution_start(self.day_start)
         if now < execution_start:
             return False
 
-        high, low = calculate_candle_extremes(self.day_start, execution_start, include_only_completed=True)
+        high, low = calculate_candle_extremes(self.day_start, execution_start)
         if high is None or low is None:
-            logging.warning("05:30-05:45 RANGE NOT READY YET.")
             return False
 
         self.locked_day_high = high
@@ -395,268 +314,106 @@ class TradingStrategy:
         self.running_day_low = low
         self.range_ready = True
         self.save_state()
-        logging.warning(f"LOCKED BREAKOUT RANGE (05:30-05:45) | HIGH={self.locked_day_high} | LOW={self.locked_day_low}")
+        logging.warning(f"RANGE LOCKED | HIGH={self.locked_day_high} | LOW={self.locked_day_low}")
         return True
 
-    def update_running_day_extremes(self, now, current_price):
-        if self.day_start is None or now <= self.day_start:
+    def place_initial_native_orders(self, current_price):
+        if self.orders_placed_for_day or not self.range_ready:
             return
 
-        high, low = calculate_candle_extremes(self.day_start, now, include_only_completed=False)
-        if high is None or current_price > high:
-            high = current_price
-        if low is None or current_price < low:
-            low = current_price
+        position = get_position(self.product_id)
+        if position["size"] != 0:
+            return
 
-        updated = False
-        if self.running_day_high is None or high > self.running_day_high:
-            self.running_day_high = high
-            updated = True
-        if self.running_day_low is None or low < self.running_day_low:
-            self.running_day_low = low
-            updated = True
+        size = calculate_order_size(self.product, current_price)
 
-        if updated:
-            self.save_state()
+        place_native_breakout_order(
+            self.product_id, "buy", size, 
+            trigger_price=self.locked_day_high, 
+            sl_price=self.locked_day_low
+        )
+        place_native_breakout_order(
+            self.product_id, "sell", size, 
+            trigger_price=self.locked_day_low, 
+            sl_price=self.locked_day_high
+        )
 
-    def get_actual_current_day_extremes(self, now, current_price):
-        self.update_running_day_extremes(now, current_price)
-        high = self.running_day_high or current_price
-        low = self.running_day_low or current_price
-        return max(high, current_price), min(low, current_price)
-
-    def execute_entry(self, direction, price, sl_price, reason):
-        if is_weekend_blocked():
-            return False
-        if sl_price is None:
-            logging.error("ENTRY BLOCKED: SL is None.")
-            return False
-
-        if direction == "LONG" and sl_price >= price:
-            logging.error(f"LONG ENTRY BLOCKED | PRICE={price} | SL={sl_price}")
-            return False
-        if direction == "SHORT" and sl_price <= price:
-            logging.error(f"SHORT ENTRY BLOCKED | PRICE={price} | SL={sl_price}")
-            return False
-
-        existing = get_position(self.product_id)
-        if existing["size"] != 0:
-            logging.warning("ENTRY BLOCKED: Position already open.")
-            return False
-
-        size = calculate_order_size(self.product, price)
-        side = "buy" if direction == "LONG" else "sell"
-
-        execute_bracket_market_order(self.product_id, side, size, sl_price)
-
-        filled_size = 0
-        for _ in range(30):
-            time.sleep(0.20)
-            position = get_position(self.product_id)
-            if (direction == "LONG" and position["size"] > 0) or (direction == "SHORT" and position["size"] < 0):
-                filled_size = position["size"]
-                break
-
-        if filled_size == 0:
-            raise RuntimeError("Bracket market entry sent but fill was not confirmed.")
-
-        self.last_position = filled_size
-        self.current_sl = Decimal(str(sl_price))
-        self.manual_flat = False
-        self.manual_exit_high = None
-        self.manual_exit_low = None
-        self.carried_position = False
-        
-        now = now_ist()
-        if now < trading_execution_start(trading_day_start(now)):
-            self.needs_0545_sl_reset = True
-        else:
-            self.needs_0545_sl_reset = False
-
+        self.orders_placed_for_day = True
         self.save_state()
-        logging.warning(f"BRACKET ENTRY CONFIRMED [{reason}] | {direction} | SIZE={filled_size} | ENTRY={price} | SL={sl_price}")
-        return True
+        logging.warning("NATIVE PENDING BREAKOUT ORDERS DEPLOYED TO EXCHANGE BOOK.")
 
-    def handle_closed_position(self, old_size, current_price):
-        old_sl_price = self.current_sl
-        self.current_sl = None
-        self.last_position = 0
-
-        # Strict SL Trigger Verification
-        was_sl_triggered = False
-        if old_sl_price is not None:
-            if old_size > 0 and current_price <= old_sl_price:
-                was_sl_triggered = True
-            elif old_size < 0 and current_price >= old_sl_price:
-                was_sl_triggered = True
-
-        if not was_sl_triggered:
-            logging.warning("POSITION CLOSED MANUALLY/EXTERNALLY. LOCKING RE-ENTRY BASELINE (NO REVERSAL).")
-            self.manual_flat = True
-            self.manual_exit_high = current_price + Decimal("0.20")
-            self.manual_exit_low = current_price - Decimal("0.20")
-            self.carried_position = False
-            self.needs_0545_sl_reset = False
-            self.save_state()
-            return
-
-        logging.warning("STOP LOSS FILLED -> EXECUTING IMMEDIATE REVERSAL")
-        self.manual_flat = False
-
+    def on_tick(self, price_str):
         now = now_ist()
-        day_high_now, day_low_now = self.get_actual_current_day_extremes(now, current_price)
-
-        if old_size > 0:  # LONG stopped -> Reversal to SHORT
-            reverse_sl = day_high_now
-            if reverse_sl is None or reverse_sl <= current_price:
-                reverse_sl = max(day_high_now, current_price + Decimal("0.50"))
-            self.execute_entry("SHORT", current_price, reverse_sl, "LONG SL HIT -> REVERSE SHORT")
-            return
-
-        # SHORT stopped -> Reversal to LONG
-        reverse_sl = day_low_now
-        if reverse_sl is None or reverse_sl >= current_price:
-            reverse_sl = min(day_low_now, current_price - Decimal("0.50"))
-        self.execute_entry("LONG", current_price, reverse_sl, "SHORT SL HIT -> REVERSE LONG")
-
-    def update_carried_position_stop(self, position_size, current_price):
-        if not self.range_ready:
-            return False
-
-        new_sl = self.locked_day_low if position_size > 0 else self.locked_day_high
-        direction = "LONG" if position_size > 0 else "SHORT"
-
-        if new_sl is None:
-            return False
-
-        logging.warning(f"05:45 CARRYFORWARD RESET: CLOSING & RE-OPENING {direction} WITH NEW SL={new_sl}")
-
-        close_position_market(self.product_id, position_size)
-
-        time.sleep(1.5)
-        for _ in range(15):
-            if get_position(self.product_id)["size"] == 0:
-                break
-            time.sleep(0.20)
-
-        side = "buy" if position_size > 0 else "sell"
-        execute_bracket_market_order(self.product_id, side, abs(position_size), new_sl)
-
-        self.current_sl = new_sl
-        self.needs_0545_sl_reset = False
-        self.carried_position = False
-        self.save_state()
-        return True
-
-    def run_cycle(self):
-        now = now_ist()
-
-        # 1. Saturday Squareoff Check
-        if is_saturday_squareoff_time(now):
-            position = get_position(self.product_id)
-            size = position["size"]
-            if size != 0:
-                logging.warning(f"SATURDAY 05:00 SQUARE OFF | SIZE={size}")
-                close_position_market(self.product_id, size)
-                self.last_position = 0
-                self.current_sl = None
-                self.carried_position = False
-                self.needs_0545_sl_reset = False
-                self.save_state()
-            return
 
         if is_weekend_blocked(now):
             return
 
-        current_price = get_price()
-        position = get_position(self.product_id)
-        current_size = position["size"]
-
-        # 2. Check Day Transition
-        self.handle_new_day(now, current_size)
-
-        # 3. Position Closure Transition Check
-        if current_size == 0 and self.last_position != 0:
-            self.handle_closed_position(self.last_position, current_price)
+        if is_saturday_squareoff_time(now):
+            position = get_position(self.product_id)
+            if position["size"] != 0:
+                close_position_market(self.product_id, position["size"])
+                cancel_all_open_orders(self.product_id)
             return
 
-        # Keep updating running extremes dynamically
-        if self.day_start and now >= self.day_start:
-            self.update_running_day_extremes(now, current_price)
+        self.check_new_day(now)
+
+        current_price = Decimal(price_str)
+
+        if self.running_day_high is None or current_price > self.running_day_high:
+            self.running_day_high = current_price
+        if self.running_day_low is None or current_price < self.running_day_low:
+            self.running_day_low = current_price
 
         execution_start = trading_execution_start(self.day_start)
+        if now >= execution_start and not self.range_ready:
+            self.try_lock_range(now)
 
-        # 4. Handle Position Management (If Position Exists)
-        if current_size != 0:
-            self.last_position = current_size
+        if self.range_ready and not self.orders_placed_for_day:
+            self.place_initial_native_orders(current_price)
 
-            if now >= execution_start:
-                if not self.range_ready:
-                    self.build_initial_range(now)
+    def start_websocket(self):
+        def on_message(ws, message):
+            try:
+                data = json.loads(message)
+                if "close" in data or "mark_price" in data or "last_price" in data:
+                    p = data.get("close") or data.get("mark_price") or data.get("last_price")
+                    if p:
+                        self.on_tick(str(p))
+            except Exception as e:
+                logging.error(f"WS Message Error: {e}")
 
-                # Execute 05:45 IST Position Reset for carried position
-                if self.needs_0545_sl_reset and self.range_ready:
-                    self.update_carried_position_stop(current_size, current_price)
-            return
+        def on_open(ws):
+            logging.info("WebSocket connected. Subscribing to live ticker stream...")
+            sub_payload = {
+                "type": "subscribe",
+                "payload": {
+                    "channels": [{"name": "tickers", "symbols": [SYMBOL]}]
+                }
+            }
+            ws.send(json.dumps(sub_payload))
 
-        # 5. Hold Flat States Before 05:45 IST
-        if now < execution_start:
-            return
+        def run_ws():
+            while True:
+                try:
+                    ws_app = websocket.WebSocketApp(
+                        WS_URL,
+                        on_open=on_open,
+                        on_message=on_message
+                    )
+                    ws_app.run_forever(ping_interval=30, ping_timeout=10)
+                except Exception as exc:
+                    logging.error(f"WebSocket connection dropped: {exc}. Reconnecting in 3s...")
+                    time.sleep(3)
 
-        # 6. Build 05:30-05:45 Locked Range (Flat State)
-        if not self.range_ready:
-            if not self.build_initial_range(now):
-                return
-
-        # 7. Flat State Breakout Monitoring
-        self.last_position = 0
-        self.current_sl = None
-
-        if not self.range_ready:
-            return
-
-        # Handle Manual Exit Re-entry
-        if self.manual_flat:
-            if self.manual_exit_high is not None and current_price > self.manual_exit_high:
-                sl = self.running_day_low or self.locked_day_low
-                if self.execute_entry("LONG", current_price, sl, "MANUAL FLAT -> NEW HIGH"):
-                    self.manual_flat = False
-                    self.save_state()
-                    return
-            elif self.manual_exit_low is not None and current_price < self.manual_exit_low:
-                sl = self.running_day_high or self.locked_day_high
-                if self.execute_entry("SHORT", current_price, sl, "MANUAL FLAT -> NEW LOW"):
-                    self.manual_flat = False
-                    self.save_state()
-                    return
-            return
-
-        # Breakout Entry using TRUE RUNNING DAY EXTREMES as SL
-        if self.locked_day_high is not None and current_price > self.locked_day_high:
-            sl = min(self.locked_day_low, self.running_day_low) if self.running_day_low else self.locked_day_low
-            if self.execute_entry("LONG", current_price, sl, "DAY HIGH BREAKOUT"):
-                return
-
-        if self.locked_day_low is not None and current_price < self.locked_day_low:
-            sl = max(self.locked_day_high, self.running_day_high) if self.running_day_high else self.locked_day_high
-            if self.execute_entry("SHORT", current_price, sl, "DAY LOW BREAKOUT"):
-                return
-
-    def start(self):
         set_leverage(self.product_id)
-        logging.warning("XAUTUSD BREAKOUT ENGINE v23.2 (STRICT MANUAL EXIT PROTECTION) ONLINE.")
+        logging.warning("XAUTUSD INSTANT NATIVE ENGINE v24.0 ONLINE.")
+        
+        ws_thread = threading.Thread(target=run_ws, daemon=True)
+        ws_thread.start()
 
         while True:
-            try:
-                self.run_cycle()
-            except KeyboardInterrupt:
-                logging.warning("BOT STOPPED BY USER.")
-                break
-            except Exception as exc:
-                logging.exception(f"UNHANDLED BOT ERROR: {exc}")
-                time.sleep(3)
-            time.sleep(POLL_SECONDS)
+            time.sleep(1)
 
 if __name__ == "__main__":
     product_info = get_product()
-    TradingStrategy(product_info).start()
+    TradingStrategy(product_info).start_websocket()
