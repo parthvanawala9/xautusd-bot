@@ -1,60 +1,544 @@
 name: Dashboard Engine & Deployment
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   push:
     branches:
       - main
   workflow_dispatch:
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  group: oracle-deployment
+  cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+
+  deploy:
+    name: Deploy Dashboard API
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests python-dotenv
+      # ======================================================
+      # SSH SETUP
+      # ======================================================
 
-      - name: Fetch Delta Data and Update JSON
+      - name: Prepare SSH
         env:
-          DELTA_API_KEY: ${{ secrets.DELTA_API_KEY }}
-          DELTA_API_SECRET: ${{ secrets.DELTA_API_SECRET }}
-          DELTA_SYMBOL: ${{ secrets.DELTA_SYMBOL }}
-          DELTA_BASE_URL: ${{ secrets.DELTA_BASE_URL }}
+          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
-          python dashboard_api.py > dashboard.json
+          mkdir -p ~/.ssh
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
 
-      - name: Upload Artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: '.'
+          chmod 600 ~/.ssh/oracle.key
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+
+      # ======================================================
+      # COPY ONLY DASHBOARD API
+      #
+      # bot.py is NOT copied or modified.
+      # ======================================================
+
+      - name: Copy Dashboard API
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot/dashboard"
+
+          scp \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            dashboard_api.py \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
+
+
+      # ======================================================
+      # START / VERIFY BOT + START DASHBOARD
+      #
+      # Existing bot.py is used.
+      # bot.py itself is NOT changed.
+      # ======================================================
+
+      - name: Start Bot and Dashboard API
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          set -e
+
+          BOT_DIR="/home/opc/xautusd-bot"
+          DASHBOARD_DIR="$BOT_DIR/dashboard"
+
+          mkdir -p "$DASHBOARD_DIR"
+
+          echo "=========================================="
+          echo "XAUTUSD SERVER DEPLOYMENT"
+          echo "=========================================="
+
+          echo
+          echo "===== BOT FILE ====="
+
+          if [ ! -f "$BOT_DIR/bot.py" ]; then
+            echo "ERROR: bot.py not found on Oracle."
+            exit 1
+          fi
+
+          echo "bot.py exists."
+
+
+          # ==================================================
+          # PYTHON DEPENDENCIES
+          # ==================================================
+
+          echo
+          echo "===== INSTALL DEPENDENCIES ====="
+
+          python3 -m pip install --user \
+            requests \
+            python-dotenv \
+            flask \
+            flask-cors
+
+
+          # ==================================================
+          # BOT
+          #
+          # DO NOT STOP AN ALREADY RUNNING BOT.
+          #
+          # If bot is already running, leave it alone.
+          # If it is not running, start the existing bot.py.
+          # ==================================================
+
+          echo
+          echo "===== BOT STATUS ====="
+
+          BOT_PID=$(pgrep -f \
+            "^python3 $BOT_DIR/bot.py$" \
+            | head -n 1 || true)
+
+          if [ -n "$BOT_PID" ]; then
+
+            echo "Existing XAUTUSD bot is already running."
+            echo "BOT PID: $BOT_PID"
+
+          else
+
+            echo "Bot is not running."
+            echo "Starting existing bot.py..."
+
+            cd "$BOT_DIR"
+
+            nohup python3 "$BOT_DIR/bot.py" \
+              > "$BOT_DIR/bot.log" 2>&1 &
+
+            NEW_BOT_PID=$!
+
+            echo "$NEW_BOT_PID" \
+              > "$BOT_DIR/bot.pid"
+
+            echo "Started BOT PID: $NEW_BOT_PID"
+
+            sleep 5
+
+          fi
+
+
+          # ==================================================
+          # VERIFY BOT
+          # ==================================================
+
+          echo
+          echo "===== VERIFY BOT ====="
+
+          if pgrep -f \
+            "^python3 $BOT_DIR/bot.py$" \
+            > /dev/null; then
+
+            echo "XAUTUSD BOT: RUNNING"
+
+          else
+
+            echo "ERROR: XAUTUSD BOT DID NOT START."
+
+            echo
+            echo "===== BOT LOG ====="
+
+            tail -n 100 \
+              "$BOT_DIR/bot.log" \
+              || true
+
+            exit 1
+
+          fi
+
+
+          # ==================================================
+          # DASHBOARD API
+          #
+          # Restart ONLY dashboard API.
+          # ==================================================
+
+          echo
+          echo "===== DASHBOARD API ====="
+
+          pkill -f \
+            "python3 $DASHBOARD_DIR/dashboard_api.py" \
+            || true
+
+          sleep 2
+
+          cd "$BOT_DIR"
+
+          nohup python3 \
+            "$DASHBOARD_DIR/dashboard_api.py" \
+            > "$DASHBOARD_DIR/dashboard.log" 2>&1 &
+
+          DASHBOARD_PID=$!
+
+          echo "$DASHBOARD_PID" \
+            > "$DASHBOARD_DIR/dashboard.pid"
+
+          echo "Dashboard PID: $DASHBOARD_PID"
+
+          sleep 5
+
+
+          # ==================================================
+          # VERIFY DASHBOARD
+          # ==================================================
+
+          echo
+          echo "===== DASHBOARD PROCESS ====="
+
+          pgrep -af \
+            "python3 $DASHBOARD_DIR/dashboard_api.py" \
+            || true
+
+
+          echo
+          echo "===== PORT 8000 ====="
+
+          ss -lntp \
+            | grep ':8000' \
+            || true
+
+
+          echo
+          echo "===== LOCAL HEALTH ====="
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/health
+
+          echo
+
+
+          echo
+          echo "===== LOCAL DASHBOARD DATA ====="
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/dashboard
+
+          echo
+
+
+          echo
+          echo "=========================================="
+          echo "DEPLOYMENT SUCCESS"
+          echo "=========================================="
+
+          EOF
+
+
+      # ======================================================
+      # CLOUDFLARE QUICK TUNNEL
+      # ======================================================
+
+      - name: Start Cloudflare Quick Tunnel
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          set -e
+
+          DASHBOARD_DIR="/home/opc/xautusd-bot/dashboard"
+
+          mkdir -p "$DASHBOARD_DIR"
+
+          CLOUDFLARED=$(command -v cloudflared || true)
+
+          if [ -z "$CLOUDFLARED" ]; then
+            echo "ERROR: cloudflared is not installed."
+            exit 1
+          fi
+
+          echo "cloudflared: $CLOUDFLARED"
+
+          "$CLOUDFLARED" version
+
+
+          # --------------------------------------------------
+          # STOP ONLY OUR OLD QUICK TUNNEL
+          # --------------------------------------------------
+
+          if [ -f "$DASHBOARD_DIR/quick-tunnel.pid" ]; then
+
+            OLD_PID=$(cat \
+              "$DASHBOARD_DIR/quick-tunnel.pid" \
+              2>/dev/null || true)
+
+            if [ -n "$OLD_PID" ]; then
+
+              if kill -0 "$OLD_PID" 2>/dev/null; then
+
+                echo "Stopping old dashboard tunnel: $OLD_PID"
+
+                kill "$OLD_PID" \
+                  2>/dev/null \
+                  || true
+
+                sleep 2
+
+              fi
+
+            fi
+
+            rm -f \
+              "$DASHBOARD_DIR/quick-tunnel.pid"
+
+          fi
+
+
+          # --------------------------------------------------
+          # LOG
+          # --------------------------------------------------
+
+          : > "$DASHBOARD_DIR/quick-tunnel.log"
+
+
+          # --------------------------------------------------
+          # START NEW QUICK TUNNEL
+          # --------------------------------------------------
+
+          echo
+          echo "Starting Cloudflare Quick Tunnel..."
+
+          nohup "$CLOUDFLARED" tunnel \
+            --url http://127.0.0.1:8000 \
+            > "$DASHBOARD_DIR/quick-tunnel.log" 2>&1 &
+
+          TUNNEL_PID=$!
+
+          echo "$TUNNEL_PID" \
+            > "$DASHBOARD_DIR/quick-tunnel.pid"
+
+          echo "Tunnel PID: $TUNNEL_PID"
+
+
+          # --------------------------------------------------
+          # WAIT FOR URL
+          # --------------------------------------------------
+
+          URL=""
+
+          for i in $(seq 1 40); do
+
+            sleep 2
+
+            URL=$(grep -oE \
+              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+              "$DASHBOARD_DIR/quick-tunnel.log" \
+              | tail -n 1 \
+              || true)
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+          done
+
+
+          if [ -z "$URL" ]; then
+
+            echo "ERROR: Cloudflare URL not found."
+
+            echo
+            echo "===== CLOUDFLARE LOG ====="
+
+            cat \
+              "$DASHBOARD_DIR/quick-tunnel.log" \
+              || true
+
+            exit 1
+
+          fi
+
+
+          # --------------------------------------------------
+          # SAVE CURRENT URL
+          # --------------------------------------------------
+
+          echo "$URL" \
+            > "$DASHBOARD_DIR/dashboard_url.txt"
+
+
+          echo
+          echo "=========================================="
+          echo "CURRENT DASHBOARD URL"
+          echo "$URL"
+          echo "=========================================="
+
+
+          echo
+          echo "HEALTH:"
+          echo "$URL/api/health"
+
+
+          echo
+          echo "DASHBOARD:"
+          echo "$URL/api/dashboard"
+
+
+          # --------------------------------------------------
+          # HEALTH TEST
+          # --------------------------------------------------
+
+          echo
+          echo "===== HEALTH TEST ====="
+
+          sleep 3
+
+          curl -fsS \
+            "$URL/api/health"
+
+          echo
+
+
+          # --------------------------------------------------
+          # DASHBOARD TEST
+          # --------------------------------------------------
+
+          echo
+          echo "===== DASHBOARD TEST ====="
+
+          curl -fsS \
+            "$URL/api/dashboard"
+
+          echo
+
+
+          echo
+          echo "=========================================="
+          echo "DASHBOARD DEPLOYMENT SUCCESS"
+          echo "=========================================="
+
+          EOF
+
+
+      # ======================================================
+      # FINAL VERIFICATION
+      # ======================================================
+
+      - name: Final Verification
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          BOT_DIR="/home/opc/xautusd-bot"
+          DASHBOARD_DIR="$BOT_DIR/dashboard"
+
+          echo
+          echo "=========================================="
+          echo "FINAL SERVER CHECK"
+          echo "=========================================="
+
+
+          echo
+          echo "===== BOT ====="
+
+          pgrep -af \
+            "python3 $BOT_DIR/bot.py" \
+            || true
+
+
+          echo
+          echo "===== DASHBOARD ====="
+
+          pgrep -af \
+            "python3 $DASHBOARD_DIR/dashboard_api.py" \
+            || true
+
+
+          echo
+          echo "===== PORT ====="
+
+          ss -lntp \
+            | grep ':8000' \
+            || true
+
+
+          echo
+          echo "===== HEALTH ====="
+
+          curl -fsS \
+            http://127.0.0.1:8000/api/health
+
+          echo
+
+
+          echo
+          echo "===== CURRENT DASHBOARD URL ====="
+
+          if [ -f "$DASHBOARD_DIR/dashboard_url.txt" ]; then
+
+            cat \
+              "$DASHBOARD_DIR/dashboard_url.txt"
+
+          else
+
+            echo "Dashboard URL file not found."
+
+          fi
+
+
+          echo
+          echo
+          echo "=========================================="
+          echo "ALL CHECKS FINISHED"
+          echo "=========================================="
+
+          EOF
