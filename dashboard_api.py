@@ -67,36 +67,44 @@ def fetch_ticker_price():
 
 
 def fetch_live_position():
-    if not API_KEY or not API_SECRET:
-        return {
-            "direction": "FLAT",
-            "size": 0,
-            "entry_price": 0.0,
-            "stop_loss": 0.0,
-            "unrealized_pnl": 0.0
-        }
+    # 1. Try Live Delta API Position Check
+    if API_KEY and API_SECRET:
+        endpoints = ["/v2/positions/margined", "/v2/positions"]
+        for ep in endpoints:
+            try:
+                headers = get_headers("GET", ep)
+                res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
+                if res.status_code == 200:
+                    positions = res.json().get("result", [])
+                    for pos in positions:
+                        prod_symbol = str(pos.get("product_symbol", "")).upper()
+                        size = float(pos.get("size", 0))
+                        if size != 0 and ("XAUT" in prod_symbol or prod_symbol == SYMBOL):
+                            direction = "LONG" if size > 0 else "SHORT"
+                            return {
+                                "direction": direction,
+                                "size": abs(size),
+                                "entry_price": float(pos.get("entry_price", 0.0)),
+                                "stop_loss": float(pos.get("stop_loss", 0.0)),
+                                "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0)) + float(pos.get("realized_pnl", 0.0))
+                            }
+            except Exception:
+                pass
 
-    endpoints = ["/v2/positions/margined", "/v2/positions"]
-
-    for ep in endpoints:
+    # 2. Fallback to Local State File (xautusd_state.json)
+    if os.path.exists("xautusd_state.json"):
         try:
-            headers = get_headers("GET", ep)
-            res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
-            if res.status_code == 200:
-                positions = res.json().get("result", [])
-                for pos in positions:
-                    prod_symbol = str(pos.get("product_symbol", "")).upper()
-                    size = float(pos.get("size", 0))
-
-                    if size != 0 and ("XAUT" in prod_symbol or prod_symbol == SYMBOL):
-                        direction = "LONG" if size > 0 else "SHORT"
-                        return {
-                            "direction": direction,
-                            "size": abs(size),
-                            "entry_price": float(pos.get("entry_price", 0.0)),
-                            "stop_loss": float(pos.get("stop_loss", 0.0)),
-                            "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0)) + float(pos.get("realized_pnl", 0.0))
-                        }
+            with open("xautusd_state.json", "r") as f:
+                state = json.load(f)
+                pos = state.get("position", {})
+                if pos.get("direction") in ["LONG", "SHORT"] and float(pos.get("size", 0)) > 0:
+                    return {
+                        "direction": pos.get("direction"),
+                        "size": float(pos.get("size", 0)),
+                        "entry_price": float(pos.get("entry_price", 0.0)),
+                        "stop_loss": float(pos.get("stop_loss", 0.0)),
+                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0))
+                    }
         except Exception:
             pass
 
