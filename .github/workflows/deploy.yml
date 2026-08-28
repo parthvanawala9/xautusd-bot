@@ -2,7 +2,7 @@ name: Dashboard Engine & Deployment
 
 on:
   schedule:
-    - cron: "*/5 * * * *"  # Runs automatically every 5 minutes
+    - cron: "*/5 * * * *"
   push:
     branches:
       - main
