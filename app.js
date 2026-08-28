@@ -1,12 +1,9 @@
 // ============================================================
-// XAUTUSD DASHBOARD
+// XAUTUSD DASHBOARD FRONTEND
+// Reads generated dashboard.json from GitHub Pages root
 // ============================================================
 
 let refreshTimer = null;
-
-// ============================================================
-// FORMATTERS
-// ============================================================
 
 function money(value) {
     if (value === null || value === undefined || value === "") return "--";
@@ -33,18 +30,6 @@ function setPnl(element, value) {
     if (Number(value) < 0) element.classList.add("loss");
 }
 
-function showMessage(text) {
-    const message = document.getElementById("message");
-    if (!message) return;
-    message.textContent = text || "";
-    message.classList.add("show");
-    setTimeout(() => message.classList.remove("show"), 3000);
-}
-
-// ============================================================
-// BOT STATUS
-// ============================================================
-
 function updateBotStatus(running) {
     const status = document.getElementById("botStatus");
     const statusCard = document.getElementById("botStatusCard");
@@ -68,10 +53,6 @@ function updateBotStatus(running) {
         }
     }
 }
-
-// ============================================================
-// POSITION DISPLAY
-// ============================================================
 
 function updatePosition(position) {
     position = position || {};
@@ -98,10 +79,6 @@ function updatePosition(position) {
     const unrealizedElement = document.getElementById("unrealizedPnl");
     if (unrealizedElement) setPnl(unrealizedElement, position.unrealized_pnl);
 }
-
-// ============================================================
-// TRADE HISTORY
-// ============================================================
 
 function renderTrades(trades) {
     const table = document.getElementById("tradeTable");
@@ -135,14 +112,9 @@ function formatTime(timestamp) {
     return date.toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-// ============================================================
-// DASHBOARD DATA LOADER
-// ============================================================
-
 async function loadDashboard() {
     try {
-        const jsonUrl = "./dashboard.json?t=" + new Date().getTime();
-        const response = await fetch(jsonUrl, { cache: "no-store" });
+        const response = await fetch("./dashboard.json?cache=" + Date.now());
 
         if (!response.ok) {
             throw new Error("HTTP " + response.status);
@@ -193,22 +165,8 @@ async function loadDashboard() {
 
     } catch (error) {
         console.error("Dashboard Load Error:", error);
-        const lastUpdated = document.getElementById("lastUpdated");
-        if (lastUpdated) lastUpdated.textContent = "Updating...";
     }
 }
 
-// ============================================================
-// BOT CONTROLS
-// ============================================================
-
-function startBot() { showMessage("Bot state managed directly via server workflow."); }
-function stopBot() { showMessage("Bot state managed directly via server workflow."); }
-function stopAndExit() { showMessage("Manual position exit must be executed on Exchange directly."); }
-
-// ============================================================
-// INITIALIZE
-// ============================================================
-
 loadDashboard();
-refreshTimer = setInterval(loadDashboard, 3000);
+refreshTimer = setInterval(loadDashboard, 5000);
