@@ -35,6 +35,8 @@ def get_headers(method, endpoint, payload=""):
 
 
 def fetch_account_balance():
+    if not API_KEY or not API_SECRET:
+        return 0.0
     try:
         endpoint = "/v2/wallet/balances"
         url = BASE_URL + endpoint
@@ -47,10 +49,8 @@ def fetch_account_balance():
                     return float(asset.get("balance", 0.0))
             if data:
                 return float(data[0].get("balance", 0.0))
-        else:
-            print(f"[Balance API Error] Status: {res.status_code}, Body: {res.text}")
-    except Exception as e:
-        print("[Balance Exception]:", e)
+    except Exception:
+        pass
     return 0.0
 
 
@@ -61,16 +61,13 @@ def fetch_ticker_price():
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             return float(res.json().get("result", {}).get("close", 0.0))
-        else:
-            print(f"[Ticker API Error] Status: {res.status_code}, Body: {res.text}")
-    except Exception as e:
-        print("[Ticker Exception]:", e)
+    except Exception:
+        pass
     return 0.0
 
 
 def fetch_live_position():
     if not API_KEY or not API_SECRET:
-        print("[Position] API key or secret missing from environment.")
         return {
             "direction": "FLAT",
             "size": 0,
@@ -85,9 +82,6 @@ def fetch_live_position():
         try:
             headers = get_headers("GET", ep)
             res = requests.get(BASE_URL + ep, headers=headers, timeout=10)
-            
-            print(f"[Position Check {ep}] Status: {res.status_code}")
-            
             if res.status_code == 200:
                 positions = res.json().get("result", [])
                 for pos in positions:
@@ -96,22 +90,15 @@ def fetch_live_position():
 
                     if size != 0 and ("XAUT" in prod_symbol or prod_symbol == SYMBOL):
                         direction = "LONG" if size > 0 else "SHORT"
-                        entry_price = float(pos.get("entry_price", 0.0))
-                        stop_loss = float(pos.get("stop_loss", 0.0))
-                        unrealized = float(pos.get("unrealized_pnl", 0.0))
-                        realized = float(pos.get("realized_pnl", 0.0))
-
                         return {
                             "direction": direction,
                             "size": abs(size),
-                            "entry_price": entry_price,
-                            "stop_loss": stop_loss,
-                            "unrealized_pnl": unrealized + realized
+                            "entry_price": float(pos.get("entry_price", 0.0)),
+                            "stop_loss": float(pos.get("stop_loss", 0.0)),
+                            "unrealized_pnl": float(pos.get("unrealized_pnl", 0.0)) + float(pos.get("realized_pnl", 0.0))
                         }
-            else:
-                print(f"[Position API Error] {ep} -> {res.text}")
-        except Exception as e:
-            print(f"[Position Exception on {ep}]:", e)
+        except Exception:
+            pass
 
     return {
         "direction": "FLAT",
@@ -123,6 +110,8 @@ def fetch_live_position():
 
 
 def fetch_trade_history():
+    if not API_KEY or not API_SECRET:
+        return []
     try:
         endpoint = f"/v2/fills?product_symbol={SYMBOL}&limit=20"
         url = BASE_URL + endpoint
@@ -142,10 +131,8 @@ def fetch_trade_history():
                     "pnl": float(fill.get("pnl", 0.0))
                 })
             return formatted_trades
-        else:
-            print(f"[Fills API Error] Status: {res.status_code}, Body: {res.text}")
-    except Exception as e:
-        print("[Fills Exception]:", e)
+    except Exception:
+        pass
     return []
 
 
