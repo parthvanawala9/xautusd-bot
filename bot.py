@@ -17,58 +17,117 @@ from dotenv import load_dotenv
 
 # ============================================================
 # XAUTUSD NEW HIGH / NEW LOW BREAKOUT + REVERSAL BOT
-# VERSION 27.1
+# VERSION 28.0
 #
-# STRATEGY
+# IMPORTANT STRATEGY RULE
 # ------------------------------------------------------------
-# 05:45 IST:
-#   - New trading day starts.
-#   - Any old position is closed.
-#   - Old HIGH/LOW are discarded.
+# DAILY STRATEGY START = 05:45 IST
 #
-# NORMAL START:
-#   - First tick after 05:45 establishes HIGH and LOW.
+# 05:45 is NOT a candle range.
+# 05:45 is simply the beginning of the strategy day.
 #
-# LATE START:
-#   - If bot starts after 05:45, it loads today's complete
-#     05:45 -> current-time HIGH and LOW from Delta history.
-#   - If current price is already above today's HIGH:
-#       LONG immediately.
-#   - If current price is already below today's LOW:
-#       SHORT immediately.
-#   - Otherwise it waits for the next breakout.
+# AFTER 05:45:
 #
-# FLAT:
-#   - New HIGH -> LONG immediately.
-#   - New LOW  -> SHORT immediately.
+#   FLAT:
+#       New HIGH -> LONG
+#       New LOW  -> SHORT
 #
-# LONG:
-#   - SL = LOW that existed when LONG was entered.
-#   - Track highest peak made during LONG.
-#   - If SL hits -> immediately SHORT.
-#   - SHORT SL = highest peak made during that LONG.
+#   LONG:
+#       SL = LOW existing when LONG was entered.
+#       Track highest peak made during LONG.
+#       If SL hits -> SHORT.
+#       SHORT SL = highest peak made during LONG.
 #
-# SHORT:
-#   - SL = HIGH that existed when SHORT was entered.
-#   - Track lowest low made during SHORT.
-#   - If SL hits -> immediately LONG.
-#   - LONG SL = lowest low made during that SHORT.
+#   SHORT:
+#       SL = HIGH existing when SHORT was entered.
+#       Track lowest trough made during SHORT.
+#       If SL hits -> LONG.
+#       LONG SL = lowest trough made during SHORT.
 #
 # ONE POSITION ONLY.
 #
-# Saturday:
-#   - 05:00 IST square-off.
+# ------------------------------------------------------------
+# LATE START / RESTART BEHAVIOUR
+# ------------------------------------------------------------
 #
-# Sunday:
-#   - No trading.
+# If bot starts at:
+#
+#   05:45
+#   09:45
+#   12:00
+#   16:00
+#   20:00
+#   or any other time
+#
+# it NEVER creates a new baseline at that startup time.
+#
+# Instead it reconstructs:
+#
+#       05:45 -> current time
+#
+# and finds the actual HIGH and LOW of the trading day.
+#
+# Example:
+#
+#   05:45 HIGH = 4410
+#   06:30 HIGH = 4420
+#   08:00 LOW  = 4390
+#   Bot restarts at 16:00
+#
+# It reconstructs:
+#
+#   DAY HIGH = 4420
+#   DAY LOW  = 4390
+#
+# Then it waits for the NEXT actual breakout.
+#
+# If current price at startup is already above the reconstructed
+# high, the current price is treated as the breakout and LONG
+# is taken.
+#
+# If current price at startup is already below the reconstructed
+# low, SHORT is taken.
+#
+# ------------------------------------------------------------
+# DAILY RESET
+# ------------------------------------------------------------
+#
+# A new trading day is identified at 05:30 IST.
+# Strategy becomes active at 05:45 IST.
+#
+# Old trading-day levels are discarded.
+#
+# An old position from a previous day is closed at 05:45.
 #
 # IMPORTANT:
-#   bot.py itself does NOT depend on GitHub Actions.
-#   It is intended to run continuously on the Oracle VM.
+# Restarting the bot later on the SAME day does NOT perform
+# another 05:45 reset.
+#
+# ------------------------------------------------------------
+# WEEKEND
+# ------------------------------------------------------------
+#
+# Saturday 05:00 IST:
+#       Square off.
+#
+# Saturday after 05:00:
+#       No trading.
+#
+# Sunday:
+#       No trading.
+#
+# Monday before 05:30:
+#       No trading.
+#
 # ============================================================
 
 
 load_dotenv()
+
+
+# ============================================================
+# TIMEZONE
+# ============================================================
 
 IST = ZoneInfo("Asia/Kolkata")
 UTC = timezone.utc
@@ -83,6 +142,7 @@ BASE_URL = os.getenv(
     "https://api.india.delta.exchange"
 ).rstrip("/")
 
+
 WS_URL = os.getenv(
     "DELTA_PUBLIC_WS_URL",
     os.getenv(
@@ -91,20 +151,24 @@ WS_URL = os.getenv(
     )
 )
 
+
 SYMBOL = os.getenv(
     "DELTA_SYMBOL",
     "XAUTUSD"
 )
+
 
 API_KEY = os.getenv(
     "DELTA_API_KEY",
     ""
 ).strip()
 
+
 API_SECRET = os.getenv(
     "DELTA_API_SECRET",
     ""
 ).strip()
+
 
 LEVERAGE = Decimal(
     os.getenv(
@@ -113,6 +177,7 @@ LEVERAGE = Decimal(
     )
 )
 
+
 BALANCE_FRACTION = Decimal(
     os.getenv(
         "BALANCE_FRACTION",
@@ -120,10 +185,12 @@ BALANCE_FRACTION = Decimal(
     )
 )
 
+
 STATE_FILE = os.getenv(
     "STATE_FILE",
     "xautusd_state.json"
 )
+
 
 POLL_SECONDS = float(
     os.getenv(
@@ -131,6 +198,7 @@ POLL_SECONDS = float(
         "0.25"
     )
 )
+
 
 POSITION_CHECK_SECONDS = float(
     os.getenv(
@@ -165,7 +233,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-NewExtreme-Engine/27.1"
+    "User-Agent": "XAUTUSD-NewExtreme-Engine/28.0"
 })
 
 
@@ -179,7 +247,7 @@ def now_ist():
 
 def trading_day_start(dt=None):
     """
-    Trading date boundary = 05:30 IST.
+    The trading DATE changes at 05:30 IST.
 
     Strategy itself starts at 05:45 IST.
     """
@@ -201,24 +269,11 @@ def trading_day_start(dt=None):
 
 def strategy_start_time(day_start):
     """
-    Actual strategy activation = 05:45 IST.
+    Actual strategy start = 05:45 IST.
     """
 
     return day_start + timedelta(
         minutes=15
-    )
-
-
-def is_strategy_active(dt=None):
-    dt = dt or now_ist()
-
-    if is_weekend_blocked(dt):
-        return False
-
-    day_start = trading_day_start(dt)
-
-    return dt >= strategy_start_time(
-        day_start
     )
 
 
@@ -254,6 +309,19 @@ def is_saturday_squareoff_time(dt=None):
         dt.weekday() == 5
         and dt.hour == 5
         and dt.minute < 30
+    )
+
+
+def is_strategy_active(dt=None):
+    dt = dt or now_ist()
+
+    if is_weekend_blocked(dt):
+        return False
+
+    day_start = trading_day_start(dt)
+
+    return dt >= strategy_start_time(
+        day_start
     )
 
 
@@ -316,8 +384,7 @@ def api_call(
     )
 
     query_string = (
-        "?"
-        + urlencode(
+        "?" + urlencode(
             params,
             doseq=True
         )
@@ -356,7 +423,6 @@ def api_call(
         data = response.json()
 
         if data.get("success") is False:
-
             raise RuntimeError(
                 f"Delta API Error: {data}"
             )
@@ -389,29 +455,21 @@ def get_product():
 # POSITION
 # ============================================================
 
-def get_position(
-    product_id
-):
+def get_position(product_id):
 
     result = api_call(
         "GET",
         "/v2/positions",
         params={
-            "product_id": int(
-                product_id
-            )
+            "product_id": int(product_id)
         },
         auth=True
     )["result"]
 
     if (
         not result
-        or not isinstance(
-            result,
-            dict
-        )
+        or not isinstance(result, dict)
     ):
-
         return {
             "size": 0,
             "entry_price": None
@@ -424,9 +482,10 @@ def get_position(
                 0
             )
         ),
-        "entry_price": result.get(
-            "entry_price"
-        )
+        "entry_price":
+            result.get(
+                "entry_price"
+            )
     }
 
 
@@ -467,18 +526,14 @@ def get_balance():
             )
 
             if value is not None:
-
                 return Decimal(
                     str(value)
                 )
 
     net_equity = (
-        data.get(
-            "meta",
-            {}
-        ).get(
-            "net_equity"
-        )
+        data
+        .get("meta", {})
+        .get("net_equity")
     )
 
     if net_equity is not None:
@@ -496,22 +551,15 @@ def get_balance():
 # HISTORICAL CANDLES
 # ============================================================
 
-def get_historical_extremes(
+def get_candles(
     start_dt,
     end_dt
 ):
     """
-    Get the actual HIGH and LOW between start_dt and end_dt.
+    Get 15-minute candles between 05:45 and now.
 
-    Uses Delta's 1-minute historical OHLC candles.
-
-    This is used ONLY when the bot starts late, so it can
-    reconstruct today's 05:45 -> startup range.
+    Used primarily for late startup/restart recovery.
     """
-
-    if end_dt <= start_dt:
-
-        return None, None
 
     start_ts = int(
         start_dt.astimezone(
@@ -525,32 +573,88 @@ def get_historical_extremes(
         ).timestamp()
     )
 
+    if end_ts <= start_ts:
+        return []
+
     data = api_call(
         "GET",
         "/v2/history/candles",
         params={
-            "resolution": "1m",
+            "resolution": "15m",
             "symbol": SYMBOL,
             "start": start_ts,
             "end": end_ts
         }
     )
 
-    candles = data.get(
+    result = data.get(
         "result",
         []
     )
+
+    if not isinstance(
+        result,
+        list
+    ):
+        return []
+
+    return result
+
+
+def reconstruct_day_extremes(
+    day_start,
+    current_time,
+    current_price
+):
+    """
+    Reconstruct the HIGH and LOW from:
+
+        05:45 IST -> current time
+
+    IMPORTANT:
+    The current incomplete candle is NOT blindly treated as
+    the complete day's range.
+
+    The current live price is added separately.
+
+    This means a late-start bot can recover the day's actual
+    known range and then check whether current price is breaking
+    that range.
+    """
+
+    strategy_start = strategy_start_time(
+        day_start
+    )
+
+    if current_time <= strategy_start:
+        return (
+            current_price,
+            current_price
+        )
+
+    try:
+
+        candles = get_candles(
+            strategy_start,
+            current_time
+        )
+
+    except Exception as exc:
+
+        logging.error(
+            "HISTORY RECOVERY FAILED | "
+            f"{exc}"
+        )
+
+        return (
+            None,
+            None
+        )
 
     highest = None
     lowest = None
 
     for candle in candles:
-
-        if not isinstance(
-            candle,
-            dict
-        ):
-            continue
 
         try:
 
@@ -560,62 +664,81 @@ def get_historical_extremes(
                 )
             )
 
+        except Exception:
+            continue
+
+        candle_dt = datetime.fromtimestamp(
+            candle_time,
+            UTC
+        ).astimezone(IST)
+
+        # Only candles beginning at or after 05:45.
+        if candle_dt < strategy_start:
+            continue
+
+        try:
+
             candle_high = Decimal(
                 str(
-                    candle.get(
-                        "high"
-                    )
+                    candle["high"]
                 )
             )
 
             candle_low = Decimal(
                 str(
-                    candle.get(
-                        "low"
-                    )
+                    candle["low"]
                 )
             )
 
         except (
+            KeyError,
             ValueError,
-            TypeError,
-            InvalidOperation
+            InvalidOperation,
+            TypeError
         ):
 
-            continue
-
-        # Ignore candles that start before strategy time.
-        if candle_time < start_ts:
-            continue
-
-        # Ignore candles that start after requested end.
-        if candle_time > end_ts:
             continue
 
         if (
             highest is None
             or candle_high > highest
         ):
-
             highest = candle_high
 
         if (
             lowest is None
             or candle_low < lowest
         ):
-
             lowest = candle_low
 
-    return highest, lowest
+    # Add current live price.
+    if highest is None:
+        highest = current_price
+    else:
+        highest = max(
+            highest,
+            current_price
+        )
+
+    if lowest is None:
+        lowest = current_price
+    else:
+        lowest = min(
+            lowest,
+            current_price
+        )
+
+    return (
+        highest,
+        lowest
+    )
 
 
 # ============================================================
 # LEVERAGE
 # ============================================================
 
-def set_leverage(
-    product_id
-):
+def set_leverage(product_id):
 
     try:
 
@@ -623,9 +746,8 @@ def set_leverage(
             "POST",
             f"/v2/products/{product_id}/orders/leverage",
             body={
-                "leverage": str(
-                    LEVERAGE
-                )
+                "leverage":
+                    str(LEVERAGE)
             },
             auth=True
         )
@@ -677,10 +799,7 @@ def calculate_order_size(
     )
 
     if contract_value <= 0:
-
-        contract_value = Decimal(
-            "1"
-        )
+        contract_value = Decimal("1")
 
     raw_size = (
         notional
@@ -703,10 +822,7 @@ def calculate_order_size(
     )
 
     if lot_size <= 0:
-
-        lot_size = Decimal(
-            "1"
-        )
+        lot_size = Decimal("1")
 
     min_size = Decimal(
         str(
@@ -721,14 +837,12 @@ def calculate_order_size(
     )
 
     size_decimal = (
-        raw_size
-        / lot_size
+        raw_size / lot_size
     ).to_integral_value(
         rounding=ROUND_DOWN
     ) * lot_size
 
     if size_decimal < min_size:
-
         size_decimal = min_size
 
     size = int(
@@ -736,13 +850,12 @@ def calculate_order_size(
     )
 
     if size <= 0:
-
         raise RuntimeError(
             "Calculated order size is zero."
         )
 
     logging.info(
-        f"ORDER SIZE | "
+        "ORDER SIZE | "
         f"BALANCE={balance} | "
         f"MARGIN={margin} | "
         f"NOTIONAL={notional} | "
@@ -771,24 +884,23 @@ def execute_bracket_market_order(
         )
 
     body = {
+        "product_id":
+            int(product_id),
 
-        "product_id": int(
-            product_id
-        ),
+        "product_symbol":
+            SYMBOL,
 
-        "product_symbol": SYMBOL,
+        "size":
+            int(abs(size)),
 
-        "size": int(
-            abs(size)
-        ),
+        "side":
+            side,
 
-        "side": side,
+        "order_type":
+            "market_order",
 
-        "order_type": "market_order",
-
-        "bracket_stop_loss_price": str(
-            sl_price
-        ),
+        "bracket_stop_loss_price":
+            str(sl_price),
 
         "bracket_stop_trigger_method":
             "last_traded_price",
@@ -816,13 +928,9 @@ def execute_bracket_market_order(
         {}
     )
 
-    order_id = order.get(
-        "id"
-    )
-
     logging.warning(
-        f"ENTRY ORDER ACCEPTED | "
-        f"ORDER_ID={order_id}"
+        "ENTRY ORDER ACCEPTED | "
+        f"ORDER_ID={order.get('id')}"
     )
 
     return result
@@ -838,7 +946,6 @@ def close_position_market(
 ):
 
     if size == 0:
-
         return None
 
     side = (
@@ -848,22 +955,23 @@ def close_position_market(
     )
 
     body = {
+        "product_id":
+            int(product_id),
 
-        "product_id": int(
-            product_id
-        ),
+        "product_symbol":
+            SYMBOL,
 
-        "product_symbol": SYMBOL,
+        "size":
+            int(abs(size)),
 
-        "size": int(
-            abs(size)
-        ),
+        "side":
+            side,
 
-        "side": side,
+        "order_type":
+            "market_order",
 
-        "order_type": "market_order",
-
-        "reduce_only": True,
+        "reduce_only":
+            True,
 
         "client_order_id":
             f"xexit_{int(time.time() * 1000)}"[-32:]
@@ -884,7 +992,7 @@ def close_position_market(
 
 
 # ============================================================
-# STATE ENGINE
+# TRADING STRATEGY
 # ============================================================
 
 class TradingStrategy:
@@ -907,7 +1015,9 @@ class TradingStrategy:
         self.day_start = None
 
         # ----------------------------------------------------
-        # GLOBAL EXTREMES AFTER 05:45
+        # DAY HIGH / LOW
+        #
+        # These are the actual extremes after 05:45.
         # ----------------------------------------------------
 
         self.running_high = None
@@ -915,18 +1025,25 @@ class TradingStrategy:
 
         # ----------------------------------------------------
         # CURRENT POSITION
+        #
+        # +size = LONG
+        # -size = SHORT
+        #  0 = FLAT
         # ----------------------------------------------------
 
         self.last_position = 0
 
         # ----------------------------------------------------
-        # CURRENT STOP
+        # CURRENT SL
         # ----------------------------------------------------
 
         self.current_sl = None
 
         # ----------------------------------------------------
-        # CURRENT TRADE PEAK / TROUGH
+        # CURRENT TRADE EXTREMES
+        #
+        # LONG  -> trade_high
+        # SHORT -> trade_low
         # ----------------------------------------------------
 
         self.trade_high = None
@@ -939,28 +1056,28 @@ class TradingStrategy:
         self.last_price = None
 
         # ----------------------------------------------------
-        # BASELINE
+        # HAS THE DAY BEEN INITIALIZED?
+        # ----------------------------------------------------
+
+        self.day_reset_done = False
+
+        # ----------------------------------------------------
+        # 05:45 -> history recovery completed
         # ----------------------------------------------------
 
         self.baseline_ready = False
 
         # ----------------------------------------------------
-        # LATE START SYNCHRONIZATION
-        # ----------------------------------------------------
-
-        self.history_loaded = False
-
-        # ----------------------------------------------------
-        # PREVENT DOUBLE ORDERS
+        # Prevent duplicate entries.
         # ----------------------------------------------------
 
         self.order_in_flight = False
 
         # ----------------------------------------------------
-        # DAY RESET
+        # Startup recovery flag.
         # ----------------------------------------------------
 
-        self.day_reset_done = False
+        self.startup_recovery_done = False
 
         self.load_state()
 
@@ -1072,7 +1189,9 @@ class TradingStrategy:
                 f"DAY={self.day_start} | "
                 f"HIGH={self.running_high} | "
                 f"LOW={self.running_low} | "
-                f"SL={self.current_sl}"
+                f"SL={self.current_sl} | "
+                f"BASELINE={self.baseline_ready} | "
+                f"RESET={self.day_reset_done}"
             )
 
         except Exception as exc:
@@ -1089,44 +1208,33 @@ class TradingStrategy:
     def save_state(self):
 
         state = {
-
             "day_start":
                 self.day_start.isoformat()
                 if self.day_start
                 else None,
 
             "running_high":
-                str(
-                    self.running_high
-                )
+                str(self.running_high)
                 if self.running_high is not None
                 else None,
 
             "running_low":
-                str(
-                    self.running_low
-                )
+                str(self.running_low)
                 if self.running_low is not None
                 else None,
 
             "current_sl":
-                str(
-                    self.current_sl
-                )
+                str(self.current_sl)
                 if self.current_sl is not None
                 else None,
 
             "trade_high":
-                str(
-                    self.trade_high
-                )
+                str(self.trade_high)
                 if self.trade_high is not None
                 else None,
 
             "trade_low":
-                str(
-                    self.trade_low
-                )
+                str(self.trade_low)
                 if self.trade_low is not None
                 else None,
 
@@ -1138,8 +1246,7 @@ class TradingStrategy:
         }
 
         temp_file = (
-            STATE_FILE
-            + ".tmp"
+            STATE_FILE + ".tmp"
         )
 
         with open(
@@ -1161,7 +1268,7 @@ class TradingStrategy:
 
 
     # ========================================================
-    # NEW TRADING DAY
+    # NEW DAY
     # ========================================================
 
     def handle_new_day(
@@ -1174,13 +1281,38 @@ class TradingStrategy:
             now
         )
 
+        # ----------------------------------------------------
+        # SAME DAY:
+        #
+        # DO NOT reset anything.
+        #
+        # This is extremely important for a late restart.
+        # ----------------------------------------------------
+
         if self.day_start == new_day:
 
-            return
+            return False
+
+
+        # ----------------------------------------------------
+        # NEW DAY.
+        # ----------------------------------------------------
+
+        logging.warning(
+            "============================================"
+        )
 
         logging.warning(
             "NEW TRADING DAY | "
             f"{new_day}"
+        )
+
+        logging.warning(
+            "OLD DAY LEVELS WILL BE DISCARDED."
+        )
+
+        logging.warning(
+            "============================================"
         )
 
         self.day_start = new_day
@@ -1195,22 +1327,28 @@ class TradingStrategy:
 
         self.baseline_ready = False
 
-        self.history_loaded = False
-
         self.day_reset_done = False
+
+        self.startup_recovery_done = False
+
+        # Do NOT change last_position here.
+        # Exchange will be checked during reset.
 
         if current_position != 0:
 
             logging.warning(
-                "OLD POSITION DETECTED ON NEW DAY. "
-                "WILL CLOSE IT AT 05:45 IST."
+                "POSITION EXISTS FROM PREVIOUS STATE | "
+                f"SIZE={current_position} | "
+                "WILL BE CLOSED AT 05:45."
             )
 
         self.save_state()
 
+        return True
+
 
     # ========================================================
-    # 05:45 RESET
+    # 05:45 DAILY RESET
     # ========================================================
 
     def perform_0545_reset(
@@ -1218,25 +1356,43 @@ class TradingStrategy:
         now
     ):
 
-        if is_weekend_blocked(
-            now
-        ):
-
-            return
+        if self.day_start is None:
+            return False
 
         if now < strategy_start_time(
             self.day_start
         ):
+            return False
 
-            return
+        # ----------------------------------------------------
+        # VERY IMPORTANT:
+        #
+        # If bot was restarted at 09:45 / 16:00 and state
+        # already says today's reset was completed, DO NOT
+        # close today's running position.
+        # ----------------------------------------------------
 
         if self.day_reset_done:
 
-            return
+            return True
+
 
         logging.warning(
-            "===== 05:45 IST NEW STRATEGY SESSION ====="
+            "============================================"
         )
+
+        logging.warning(
+            "05:45 IST DAILY RESET"
+        )
+
+        logging.warning(
+            "OLD POSITION WILL BE CLOSED IF PRESENT."
+        )
+
+        logging.warning(
+            "============================================"
+        )
+
 
         position = get_position(
             self.product_id
@@ -1246,8 +1402,9 @@ class TradingStrategy:
             "size"
         ]
 
+
         # ----------------------------------------------------
-        # CLOSE ANY OLD POSITION
+        # Close previous-day position.
         # ----------------------------------------------------
 
         if current_size != 0:
@@ -1274,8 +1431,8 @@ class TradingStrategy:
                 )
 
                 if check["size"] == 0:
-
                     break
+
 
             final_check = get_position(
                 self.product_id
@@ -1284,14 +1441,15 @@ class TradingStrategy:
             if final_check["size"] != 0:
 
                 logging.error(
-                    "05:45 RESET FAILED: "
+                    "05:45 RESET FAILED | "
                     "OLD POSITION STILL OPEN."
                 )
 
-                return
+                return False
+
 
         # ----------------------------------------------------
-        # FRESH SESSION
+        # Fresh strategy day.
         # ----------------------------------------------------
 
         self.last_position = 0
@@ -1306,147 +1464,115 @@ class TradingStrategy:
 
         self.baseline_ready = False
 
-        self.history_loaded = False
-
         self.day_reset_done = True
 
         self.save_state()
 
         logging.warning(
-            "===== 05:45 RESET COMPLETE ====="
+            "05:45 RESET COMPLETE."
         )
 
-
-    # ========================================================
-    # NORMAL FIRST-TICK BASELINE
-    # ========================================================
-
-    def establish_baseline(
-        self,
-        price
-    ):
-
-        self.running_high = price
-
-        self.running_low = price
-
-        self.baseline_ready = True
-
-        self.history_loaded = True
-
-        self.save_state()
-
-        logging.warning(
-            "05:45 BASELINE CREATED | "
-            f"HIGH={price} | "
-            f"LOW={price}"
-        )
+        return True
 
 
     # ========================================================
-    # LATE START HISTORICAL SYNCHRONIZATION
+    # RECOVER TODAY'S HIGH / LOW
     # ========================================================
 
-    def synchronize_late_start(
+    def recover_today_levels(
         self,
         now,
         current_price
     ):
-        """
-        If the bot starts after 05:45, reconstruct today's
-        HIGH and LOW from 05:45 until now.
 
-        Example:
+        if self.day_start is None:
+            return False
 
-            05:45 = 4410
-            06:20 = 4440
-            08:00 = 4380
-            09:45 = 4420
-
-        The bot starts at 09:45.
-
-        It will load:
-
-            HIGH = 4440
-            LOW  = 4380
-
-        Then:
-
-            current > 4440 -> LONG
-            current < 4380 -> SHORT
-            otherwise      -> wait for future breakout
-        """
-
-        if self.history_loaded:
-
-            return True
-
-        session_start = strategy_start_time(
+        strategy_start = strategy_start_time(
             self.day_start
         )
 
-        if now < session_start:
-
+        if now < strategy_start:
             return False
+
 
         logging.warning(
-            "LATE START DETECTED | "
-            "LOADING TODAY'S 05:45 -> NOW HIGH/LOW..."
+            "============================================"
         )
 
-        try:
+        logging.warning(
+            "RECOVERING TODAY'S MARKET RANGE"
+        )
 
-            historical_high, historical_low = (
-                get_historical_extremes(
-                    session_start,
-                    now
-                )
-            )
+        logging.warning(
+            f"FROM = {strategy_start}"
+        )
 
-        except Exception as exc:
+        logging.warning(
+            f"TO   = {now}"
+        )
+
+        logging.warning(
+            "============================================"
+        )
+
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Always reconstruct from 05:45 on a late startup.
+        #
+        # Do NOT use startup time as baseline.
+        # ----------------------------------------------------
+
+        high, low = reconstruct_day_extremes(
+            self.day_start,
+            now,
+            current_price
+        )
+
+
+        if high is None or low is None:
 
             logging.error(
-                "HISTORICAL HIGH/LOW LOAD FAILED | "
-                f"{exc}"
+                "TODAY'S HIGH/LOW COULD NOT BE RECOVERED."
             )
 
             return False
 
-        # ----------------------------------------------------
-        # Make sure current live price is included.
-        # ----------------------------------------------------
 
-        if historical_high is None:
-
-            historical_high = current_price
-
-        if historical_low is None:
-
-            historical_low = current_price
-
-        if current_price > historical_high:
-
-            historical_high = current_price
-
-        if current_price < historical_low:
-
-            historical_low = current_price
-
-        self.running_high = historical_high
-
-        self.running_low = historical_low
+        self.running_high = high
+        self.running_low = low
 
         self.baseline_ready = True
 
-        self.history_loaded = True
+        self.startup_recovery_done = True
 
         self.save_state()
 
+
         logging.warning(
-            "LATE START RANGE LOADED | "
-            f"05:45->NOW HIGH={self.running_high} | "
-            f"LOW={self.running_low} | "
-            f"CURRENT={current_price}"
+            "============================================"
+        )
+
+        logging.warning(
+            "TODAY'S RANGE RECOVERED"
+        )
+
+        logging.warning(
+            f"DAY HIGH = {self.running_high}"
+        )
+
+        logging.warning(
+            f"DAY LOW  = {self.running_low}"
+        )
+
+        logging.warning(
+            f"CURRENT  = {current_price}"
+        )
+
+        logging.warning(
+            "============================================"
         )
 
         return True
@@ -1473,20 +1599,24 @@ class TradingStrategy:
 
             return False
 
+
         if not is_strategy_active():
 
             return False
 
+
         if sl_price is None:
 
             logging.error(
-                "ENTRY BLOCKED | SL is None."
+                "ENTRY BLOCKED | "
+                "SL is None."
             )
 
             return False
 
+
         # ----------------------------------------------------
-        # LONG SL MUST BE BELOW ENTRY
+        # LONG SL must be below price.
         # ----------------------------------------------------
 
         if direction == "LONG":
@@ -1501,8 +1631,9 @@ class TradingStrategy:
 
                 return False
 
+
         # ----------------------------------------------------
-        # SHORT SL MUST BE ABOVE ENTRY
+        # SHORT SL must be above price.
         # ----------------------------------------------------
 
         elif direction == "SHORT":
@@ -1517,16 +1648,19 @@ class TradingStrategy:
 
                 return False
 
+
         else:
 
             logging.error(
-                f"Unknown direction: {direction}"
+                f"Unknown direction: "
+                f"{direction}"
             )
 
             return False
 
+
         # ----------------------------------------------------
-        # REAL EXCHANGE POSITION CHECK
+        # ALWAYS check actual exchange position.
         # ----------------------------------------------------
 
         existing = get_position(
@@ -1537,8 +1671,8 @@ class TradingStrategy:
 
             logging.warning(
                 "ENTRY BLOCKED | "
-                f"Exchange position already open: "
-                f"{existing['size']}"
+                "EXCHANGE POSITION ALREADY OPEN | "
+                f"SIZE={existing['size']}"
             )
 
             self.last_position = (
@@ -1547,10 +1681,12 @@ class TradingStrategy:
 
             return False
 
+
         size = calculate_order_size(
             self.product,
             price
         )
+
 
         side = (
             "buy"
@@ -1558,7 +1694,9 @@ class TradingStrategy:
             else "sell"
         )
 
+
         self.order_in_flight = True
+
 
         try:
 
@@ -1569,7 +1707,9 @@ class TradingStrategy:
                 sl_price
             )
 
+
             filled_size = 0
+
 
             for _ in range(40):
 
@@ -1581,9 +1721,10 @@ class TradingStrategy:
                     self.product_id
                 )
 
-                position_size = position[
-                    "size"
-                ]
+                position_size = (
+                    position["size"]
+                )
+
 
                 if direction == "LONG":
 
@@ -1605,6 +1746,7 @@ class TradingStrategy:
 
                         break
 
+
             if filled_size == 0:
 
                 raise RuntimeError(
@@ -1612,46 +1754,68 @@ class TradingStrategy:
                     "position fill was not confirmed."
                 )
 
+
             self.last_position = (
                 filled_size
             )
 
-            self.current_sl = Decimal(
-                str(sl_price)
+            self.current_sl = (
+                Decimal(
+                    str(sl_price)
+                )
             )
+
+
+            # ------------------------------------------------
+            # New trade peak/trough.
+            # ------------------------------------------------
 
             if direction == "LONG":
 
                 self.trade_high = price
-
                 self.trade_low = None
 
             else:
 
                 self.trade_low = price
-
                 self.trade_high = None
+
 
             self.save_state()
 
+
             logging.warning(
-                "========================================"
+                "============================================"
             )
 
             logging.warning(
                 f"ENTRY CONFIRMED | "
-                f"{direction} | "
-                f"SIZE={filled_size} | "
-                f"ENTRY≈{price} | "
-                f"SL={sl_price} | "
+                f"{direction}"
+            )
+
+            logging.warning(
+                f"SIZE={filled_size}"
+            )
+
+            logging.warning(
+                f"ENTRY≈{price}"
+            )
+
+            logging.warning(
+                f"SL={sl_price}"
+            )
+
+            logging.warning(
                 f"REASON={reason}"
             )
 
             logging.warning(
-                "========================================"
+                "============================================"
             )
 
+
             return True
+
 
         finally:
 
@@ -1672,30 +1836,34 @@ class TradingStrategy:
             or self.running_high
         )
 
+
         if peak_high is None:
 
             logging.error(
-                "LONG -> SHORT reversal blocked: "
-                "no peak high available."
+                "LONG -> SHORT blocked | "
+                "No peak high available."
             )
 
             return False
 
+
         logging.warning(
             "LONG STOP HIT -> "
-            f"REVERSING SHORT | "
+            "REVERSING SHORT | "
             f"SHORT SL={peak_high}"
         )
+
 
         position = get_position(
             self.product_id
         )
 
+
         if position["size"] != 0:
 
             logging.warning(
                 "Waiting for LONG position "
-                "to become flat before reversal."
+                "to become flat."
             )
 
             for _ in range(30):
@@ -1709,19 +1877,20 @@ class TradingStrategy:
                 )
 
                 if position["size"] == 0:
-
                     break
+
 
         if get_position(
             self.product_id
         )["size"] != 0:
 
             logging.error(
-                "LONG -> SHORT reversal blocked: "
-                "old position still open."
+                "LONG -> SHORT blocked | "
+                "Old position still open."
             )
 
             return False
+
 
         return self.execute_entry(
             "SHORT",
@@ -1745,30 +1914,34 @@ class TradingStrategy:
             or self.running_low
         )
 
+
         if trough_low is None:
 
             logging.error(
-                "SHORT -> LONG reversal blocked: "
-                "no trough low available."
+                "SHORT -> LONG blocked | "
+                "No trough low available."
             )
 
             return False
 
+
         logging.warning(
             "SHORT STOP HIT -> "
-            f"REVERSING LONG | "
+            "REVERSING LONG | "
             f"LONG SL={trough_low}"
         )
+
 
         position = get_position(
             self.product_id
         )
 
+
         if position["size"] != 0:
 
             logging.warning(
                 "Waiting for SHORT position "
-                "to become flat before reversal."
+                "to become flat."
             )
 
             for _ in range(30):
@@ -1782,19 +1955,20 @@ class TradingStrategy:
                 )
 
                 if position["size"] == 0:
-
                     break
+
 
         if get_position(
             self.product_id
         )["size"] != 0:
 
             logging.error(
-                "SHORT -> LONG reversal blocked: "
-                "old position still open."
+                "SHORT -> LONG blocked | "
+                "Old position still open."
             )
 
             return False
+
 
         return self.execute_entry(
             "LONG",
@@ -1816,7 +1990,9 @@ class TradingStrategy:
 
         old_sl = self.current_sl
 
+
         sl_triggered = False
+
 
         if old_sl is not None:
 
@@ -1827,6 +2003,7 @@ class TradingStrategy:
 
                 sl_triggered = True
 
+
             elif (
                 old_size < 0
                 and current_price >= old_sl
@@ -1834,14 +2011,24 @@ class TradingStrategy:
 
                 sl_triggered = True
 
+
         self.current_sl = None
 
         self.last_position = 0
 
+
+        # ----------------------------------------------------
+        # Manual / external closure.
+        # ----------------------------------------------------
+
         if not sl_triggered:
 
             logging.warning(
-                "POSITION CLOSED EXTERNALLY/MANUALLY | "
+                "POSITION CLOSED "
+                "MANUALLY/EXTERNALLY."
+            )
+
+            logging.warning(
                 "NO AUTOMATIC REVERSAL."
             )
 
@@ -1851,6 +2038,11 @@ class TradingStrategy:
             self.save_state()
 
             return
+
+
+        # ----------------------------------------------------
+        # SL reversal.
+        # ----------------------------------------------------
 
         if old_size > 0:
 
@@ -1863,6 +2055,100 @@ class TradingStrategy:
             self.reverse_short_to_long(
                 current_price
             )
+
+
+    # ========================================================
+    # LATE START / RESTART ENTRY CHECK
+    # ========================================================
+
+    def check_startup_breakout(
+        self,
+        current_price
+    ):
+        """
+        Called after historical recovery.
+
+        If bot starts late and current price is already outside
+        the reconstructed 05:45->now range, enter immediately.
+
+        Otherwise wait for the NEXT new high/low.
+        """
+
+        if not self.baseline_ready:
+            return False
+
+        if self.running_high is None:
+            return False
+
+        if self.running_low is None:
+            return False
+
+
+        # ----------------------------------------------------
+        # Current price above recovered HIGH.
+        # ----------------------------------------------------
+
+        if current_price > self.running_high:
+
+            old_high = self.running_high
+            old_low = self.running_low
+
+            logging.warning(
+                "LATE START HIGH BREAKOUT | "
+                f"RECOVERED_HIGH={old_high} | "
+                f"CURRENT={current_price}"
+            )
+
+            entered = self.execute_entry(
+                "LONG",
+                current_price,
+                old_low,
+                "LATE START -> HIGH BREAKOUT"
+            )
+
+            if entered:
+
+                self.trade_high = current_price
+                self.running_high = current_price
+
+                self.save_state()
+
+                return True
+
+
+        # ----------------------------------------------------
+        # Current price below recovered LOW.
+        # ----------------------------------------------------
+
+        if current_price < self.running_low:
+
+            old_high = self.running_high
+            old_low = self.running_low
+
+            logging.warning(
+                "LATE START LOW BREAKDOWN | "
+                f"RECOVERED_LOW={old_low} | "
+                f"CURRENT={current_price}"
+            )
+
+            entered = self.execute_entry(
+                "SHORT",
+                current_price,
+                old_high,
+                "LATE START -> LOW BREAKDOWN"
+            )
+
+            if entered:
+
+                self.trade_low = current_price
+                self.running_low = current_price
+
+                self.save_state()
+
+                return True
+
+
+        return False
 
 
     # ========================================================
@@ -1887,19 +2173,21 @@ class TradingStrategy:
         ):
 
             logging.warning(
-                f"Invalid price received: "
+                f"INVALID PRICE | "
                 f"{price_str}"
             )
 
             return
 
+
         now = now_ist()
 
         self.last_price = current_price
 
-        # ----------------------------------------------------
+
+        # ====================================================
         # SATURDAY SQUARE-OFF
-        # ----------------------------------------------------
+        # ====================================================
 
         if is_saturday_squareoff_time(
             now
@@ -1912,7 +2200,8 @@ class TradingStrategy:
             if position["size"] != 0:
 
                 logging.warning(
-                    "SATURDAY 05:00 SQUARE-OFF | "
+                    "SATURDAY 05:00 "
+                    "SQUARE-OFF | "
                     f"SIZE={position['size']}"
                 )
 
@@ -1921,17 +2210,18 @@ class TradingStrategy:
                     position["size"]
                 )
 
+
             self.last_position = 0
             self.current_sl = None
-
             self.trade_high = None
             self.trade_low = None
 
             return
 
-        # ----------------------------------------------------
+
+        # ====================================================
         # WEEKEND
-        # ----------------------------------------------------
+        # ====================================================
 
         if is_weekend_blocked(
             now
@@ -1939,30 +2229,48 @@ class TradingStrategy:
 
             return
 
-        # ----------------------------------------------------
-        # DAY STATE
-        # ----------------------------------------------------
 
-        current_exchange_position = (
-            get_position(
-                self.product_id
+        # ====================================================
+        # CURRENT EXCHANGE POSITION
+        # ====================================================
+
+        try:
+
+            current_exchange_position = (
+                get_position(
+                    self.product_id
+                )
             )
-        )
 
-        current_exchange_size = (
-            current_exchange_position[
-                "size"
-            ]
-        )
+            current_exchange_size = (
+                current_exchange_position[
+                    "size"
+                ]
+            )
+
+        except Exception as exc:
+
+            logging.error(
+                "POSITION CHECK FAILED | "
+                f"{exc}"
+            )
+
+            return
+
+
+        # ====================================================
+        # DAY TRANSITION
+        # ====================================================
 
         self.handle_new_day(
             now,
             current_exchange_size
         )
 
-        # ----------------------------------------------------
+
+        # ====================================================
         # BEFORE 05:45
-        # ----------------------------------------------------
+        # ====================================================
 
         if now < strategy_start_time(
             self.day_start
@@ -1974,31 +2282,31 @@ class TradingStrategy:
 
             return
 
-        # ----------------------------------------------------
+
+        # ====================================================
         # 05:45 RESET
-        # ----------------------------------------------------
+        # ====================================================
 
-        self.perform_0545_reset(
+        if not self.perform_0545_reset(
             now
-        )
-
-        if not self.day_reset_done:
+        ):
 
             return
 
-        # ----------------------------------------------------
-        # LATE START / NORMAL START
+
+        # ====================================================
+        # LATE START / RESTART RECOVERY
         #
-        # If history is not loaded yet:
+        # If state was already recovered today, keep it.
         #
-        # - Started exactly after 05:45:
-        #   use first live tick as baseline.
-        #
-        # - Started later:
-        #   load complete 05:45 -> now history.
-        # ----------------------------------------------------
+        # If bot starts today with no baseline, reconstruct
+        # 05:45 -> NOW.
+        # ====================================================
 
         if not self.baseline_ready:
+
+            # Make sure no position remains after a fresh-day
+            # reset before establishing the market range.
 
             position = get_position(
                 self.product_id
@@ -2007,204 +2315,47 @@ class TradingStrategy:
             if position["size"] != 0:
 
                 logging.warning(
-                    "Waiting for 05:45 reset "
-                    "to become completely flat."
+                    "WAITING | "
+                    "POSITION STILL OPEN "
+                    "AFTER RESET."
                 )
 
                 return
 
-            session_start = (
-                strategy_start_time(
-                    self.day_start
-                )
-            )
 
-            # ------------------------------------------------
-            # If this is actually a late startup, load history.
-            # ------------------------------------------------
-
-            late_start = (
-                now
-                > session_start
-                + timedelta(
-                    seconds=10
-                )
-            )
-
-            if late_start:
-
-                if not self.synchronize_late_start(
-                    now,
-                    current_price
-                ):
-
-                    return
-
-                # --------------------------------------------
-                # After loading historical extremes, check
-                # whether CURRENT PRICE is already outside
-                # the historical range.
-                # --------------------------------------------
-
-                historical_high = (
-                    self.running_high
-                )
-
-                historical_low = (
-                    self.running_low
-                )
-
-                # IMPORTANT:
-                # We need the historical range BEFORE adding
-                # current price to it.
-                #
-                # synchronize_late_start already includes the
-                # current price, so recover the range again
-                # from history for this one startup decision.
-                # --------------------------------------------
-
-                try:
-
-                    historical_high, historical_low = (
-                        get_historical_extremes(
-                            session_start,
-                            now
-                        )
-                    )
-
-                except Exception as exc:
-
-                    logging.error(
-                        "LATE START ENTRY CHECK FAILED | "
-                        f"{exc}"
-                    )
-
-                    return
-
-                if historical_high is None:
-
-                    historical_high = current_price
-
-                if historical_low is None:
-
-                    historical_low = current_price
-
-                # --------------------------------------------
-                # CURRENT PRICE ALREADY BROKE TODAY'S HIGH
-                # --------------------------------------------
-
-                if current_price > historical_high:
-
-                    logging.warning(
-                        "LATE START HIGH BREAKOUT | "
-                        f"HISTORICAL_HIGH={historical_high} | "
-                        f"CURRENT={current_price} | "
-                        f"SL={historical_low}"
-                    )
-
-                    entered = self.execute_entry(
-                        "LONG",
-                        current_price,
-                        historical_low,
-                        "LATE START -> TODAY HIGH BREAKOUT"
-                    )
-
-                    if entered:
-
-                        self.running_high = current_price
-
-                        self.running_low = historical_low
-
-                        self.trade_high = current_price
-
-                        self.baseline_ready = True
-
-                        self.history_loaded = True
-
-                        self.save_state()
-
-                        return
-
-                # --------------------------------------------
-                # CURRENT PRICE ALREADY BROKE TODAY'S LOW
-                # --------------------------------------------
-
-                if current_price < historical_low:
-
-                    logging.warning(
-                        "LATE START LOW BREAKDOWN | "
-                        f"HISTORICAL_LOW={historical_low} | "
-                        f"CURRENT={current_price} | "
-                        f"SL={historical_high}"
-                    )
-
-                    entered = self.execute_entry(
-                        "SHORT",
-                        current_price,
-                        historical_high,
-                        "LATE START -> TODAY LOW BREAKDOWN"
-                    )
-
-                    if entered:
-
-                        self.running_high = historical_high
-
-                        self.running_low = current_price
-
-                        self.trade_low = current_price
-
-                        self.baseline_ready = True
-
-                        self.history_loaded = True
-
-                        self.save_state()
-
-                        return
-
-                # --------------------------------------------
-                # No historical breakout currently active.
-                #
-                # Keep the complete historical range and wait
-                # for the NEXT live breakout.
-                # --------------------------------------------
-
-                self.running_high = historical_high
-
-                self.running_low = historical_low
-
-                self.baseline_ready = True
-
-                self.history_loaded = True
-
-                self.last_position = 0
-
-                self.save_state()
-
-                logging.warning(
-                    "LATE START READY | "
-                    f"HIGH={historical_high} | "
-                    f"LOW={historical_low} | "
-                    f"CURRENT={current_price} | "
-                    "WAITING FOR NEXT BREAKOUT"
-                )
-
-                return
-
-            # ------------------------------------------------
-            # NORMAL START AROUND 05:45
-            # ------------------------------------------------
-
-            self.establish_baseline(
+            if not self.recover_today_levels(
+                now,
                 current_price
-            )
+            ):
 
-            self.last_position = 0
+                return
 
+
+            # ------------------------------------------------
+            # IMPORTANT:
+            #
+            # We DO check the current price against the
+            # reconstructed range.
+            #
+            # Therefore a late restart can still enter if
+            # current price is outside the full 05:45->NOW
+            # range.
+            # ------------------------------------------------
+
+            if self.check_startup_breakout(
+                current_price
+            ):
+
+                return
+
+
+            # No breakout at startup.
             return
 
-        # ----------------------------------------------------
+
+        # ====================================================
         # REAL EXCHANGE POSITION
-        # ----------------------------------------------------
+        # ====================================================
 
         position = get_position(
             self.product_id
@@ -2214,18 +2365,17 @@ class TradingStrategy:
             "size"
         ]
 
-        # ----------------------------------------------------
-        # POSITION CLOSED
-        # ----------------------------------------------------
+
+        # ====================================================
+        # POSITION CLOSED SINCE LAST TICK
+        # ====================================================
 
         if (
             current_size == 0
             and self.last_position != 0
         ):
 
-            old_size = (
-                self.last_position
-            )
+            old_size = self.last_position
 
             self.handle_position_closed(
                 old_size,
@@ -2234,9 +2384,10 @@ class TradingStrategy:
 
             return
 
-        # ----------------------------------------------------
-        # LONG
-        # ----------------------------------------------------
+
+        # ====================================================
+        # LONG POSITION
+        # ====================================================
 
         if current_size > 0:
 
@@ -2244,10 +2395,14 @@ class TradingStrategy:
                 current_size
             )
 
+
+            # ------------------------------------------------
+            # Track highest peak during LONG.
+            # ------------------------------------------------
+
             if (
                 self.trade_high is None
-                or current_price
-                > self.trade_high
+                or current_price > self.trade_high
             ):
 
                 self.trade_high = (
@@ -2261,10 +2416,16 @@ class TradingStrategy:
                     f"HIGH={self.trade_high}"
                 )
 
+
+            # ------------------------------------------------
+            # Informational SL level.
+            #
+            # Actual protection remains exchange-side.
+            # ------------------------------------------------
+
             if (
                 self.current_sl is not None
-                and current_price
-                <= self.current_sl
+                and current_price <= self.current_sl
             ):
 
                 logging.warning(
@@ -2273,11 +2434,13 @@ class TradingStrategy:
                     f"SL={self.current_sl}"
                 )
 
+
             return
 
-        # ----------------------------------------------------
-        # SHORT
-        # ----------------------------------------------------
+
+        # ====================================================
+        # SHORT POSITION
+        # ====================================================
 
         if current_size < 0:
 
@@ -2285,10 +2448,14 @@ class TradingStrategy:
                 current_size
             )
 
+
+            # ------------------------------------------------
+            # Track lowest trough during SHORT.
+            # ------------------------------------------------
+
             if (
                 self.trade_low is None
-                or current_price
-                < self.trade_low
+                or current_price < self.trade_low
             ):
 
                 self.trade_low = (
@@ -2302,10 +2469,10 @@ class TradingStrategy:
                     f"LOW={self.trade_low}"
                 )
 
+
             if (
                 self.current_sl is not None
-                and current_price
-                >= self.current_sl
+                and current_price >= self.current_sl
             ):
 
                 logging.warning(
@@ -2314,49 +2481,75 @@ class TradingStrategy:
                     f"SL={self.current_sl}"
                 )
 
+
             return
 
-        # ----------------------------------------------------
+
+        # ====================================================
         # FLAT
-        # ----------------------------------------------------
+        # ====================================================
 
         self.last_position = 0
 
         self.current_sl = None
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # Compare against OLD HIGH/LOW FIRST.
-        # Then update the range.
-        # ----------------------------------------------------
-
-        old_high = (
-            self.running_high
-        )
-
-        old_low = (
-            self.running_low
-        )
-
-        # ----------------------------------------------------
-        # NEW HIGH -> LONG
-        # ----------------------------------------------------
 
         if (
-            old_high is not None
-            and current_price > old_high
+            self.running_high is None
+            or self.running_low is None
         ):
+
+            return
+
+
+        # ====================================================
+        # IMPORTANT BREAKOUT ORDER
+        #
+        # FIRST compare against OLD levels.
+        # THEN update levels.
+        #
+        # This prevents a new high/low from becoming its own
+        # baseline before the breakout check.
+        # ====================================================
+
+        old_high = self.running_high
+        old_low = self.running_low
+
+
+        # ====================================================
+        # NEW HIGH -> LONG
+        # ====================================================
+
+        if current_price > old_high:
 
             sl = old_low
 
             if sl is not None:
 
                 logging.warning(
-                    "NEW HIGH BREAKOUT | "
-                    f"OLD_HIGH={old_high} | "
-                    f"PRICE={current_price} | "
-                    f"SL={sl}"
+                    "============================================"
                 )
+
+                logging.warning(
+                    "NEW HIGH BREAKOUT"
+                )
+
+                logging.warning(
+                    f"OLD HIGH = {old_high}"
+                )
+
+                logging.warning(
+                    f"PRICE     = {current_price}"
+                )
+
+                logging.warning(
+                    f"SL        = {sl}"
+                )
+
+                logging.warning(
+                    "============================================"
+                )
+
 
                 entered = self.execute_entry(
                     "LONG",
@@ -2364,6 +2557,7 @@ class TradingStrategy:
                     sl,
                     "NEW HIGH BREAKOUT"
                 )
+
 
                 if entered:
 
@@ -2379,25 +2573,41 @@ class TradingStrategy:
 
                     return
 
-        # ----------------------------------------------------
-        # NEW LOW -> SHORT
-        # ----------------------------------------------------
 
-        if (
-            old_low is not None
-            and current_price < old_low
-        ):
+        # ====================================================
+        # NEW LOW -> SHORT
+        # ====================================================
+
+        if current_price < old_low:
 
             sl = old_high
 
             if sl is not None:
 
                 logging.warning(
-                    "NEW LOW BREAKDOWN | "
-                    f"OLD_LOW={old_low} | "
-                    f"PRICE={current_price} | "
-                    f"SL={sl}"
+                    "============================================"
                 )
+
+                logging.warning(
+                    "NEW LOW BREAKDOWN"
+                )
+
+                logging.warning(
+                    f"OLD LOW  = {old_low}"
+                )
+
+                logging.warning(
+                    f"PRICE     = {current_price}"
+                )
+
+                logging.warning(
+                    f"SL        = {sl}"
+                )
+
+                logging.warning(
+                    "============================================"
+                )
+
 
                 entered = self.execute_entry(
                     "SHORT",
@@ -2405,6 +2615,7 @@ class TradingStrategy:
                     sl,
                     "NEW LOW BREAKDOWN"
                 )
+
 
                 if entered:
 
@@ -2420,16 +2631,18 @@ class TradingStrategy:
 
                     return
 
-        # ----------------------------------------------------
-        # NO ENTRY:
-        # UPDATE EXTREMES
-        # ----------------------------------------------------
+
+        # ====================================================
+        # NO ENTRY
+        #
+        # NOW update running HIGH / LOW.
+        # ====================================================
 
         changed = False
 
+
         if (
-            self.running_high is None
-            or current_price
+            current_price
             > self.running_high
         ):
 
@@ -2439,9 +2652,9 @@ class TradingStrategy:
 
             changed = True
 
+
         if (
-            self.running_low is None
-            or current_price
+            current_price
             < self.running_low
         ):
 
@@ -2450,6 +2663,7 @@ class TradingStrategy:
             )
 
             changed = True
+
 
         if changed:
 
@@ -2461,6 +2675,11 @@ class TradingStrategy:
     # ========================================================
 
     def start_websocket(self):
+
+
+        # ====================================================
+        # MESSAGE
+        # ====================================================
 
         def on_message(
             ws,
@@ -2477,6 +2696,11 @@ class TradingStrategy:
                     "type"
                 )
 
+
+                # ------------------------------------------------
+                # Ignore non-price messages.
+                # ------------------------------------------------
+
                 if msg_type in (
                     "subscriptions",
                     "heartbeat",
@@ -2485,8 +2709,9 @@ class TradingStrategy:
 
                     return
 
+
                 # ------------------------------------------------
-                # Delta public ticker format.
+                # TICKER FORMAT
                 # ------------------------------------------------
 
                 if msg_type == "ticker":
@@ -2494,15 +2719,9 @@ class TradingStrategy:
                     ticker = data
 
                     price = (
-                        ticker.get(
-                            "close"
-                        )
-                        or ticker.get(
-                            "last_price"
-                        )
-                        or ticker.get(
-                            "mark_price"
-                        )
+                        ticker.get("close")
+                        or ticker.get("last_price")
+                        or ticker.get("mark_price")
                     )
 
                     if price is not None:
@@ -2513,8 +2732,9 @@ class TradingStrategy:
 
                     return
 
+
                 # ------------------------------------------------
-                # Wrapped ticker compatibility.
+                # Wrapped ticker.
                 # ------------------------------------------------
 
                 result = data.get(
@@ -2527,21 +2747,13 @@ class TradingStrategy:
                 ):
 
                     price = (
-                        result.get(
-                            "close"
-                        )
-                        or result.get(
-                            "last_price"
-                        )
-                        or result.get(
-                            "mark_price"
-                        )
+                        result.get("close")
+                        or result.get("last_price")
+                        or result.get("mark_price")
                     )
 
                     symbol = (
-                        result.get(
-                            "symbol"
-                        )
+                        result.get("symbol")
                         or result.get(
                             "product_symbol"
                         )
@@ -2561,13 +2773,18 @@ class TradingStrategy:
 
                     return
 
+
             except Exception as exc:
 
                 logging.exception(
-                    "WebSocket message error: "
+                    "WEBSOCKET MESSAGE ERROR | "
                     f"{exc}"
                 )
 
+
+        # ====================================================
+        # ERROR
+        # ====================================================
 
         def on_error(
             ws,
@@ -2575,9 +2792,14 @@ class TradingStrategy:
         ):
 
             logging.error(
-                f"WebSocket error: {error}"
+                f"WEBSOCKET ERROR | "
+                f"{error}"
             )
 
+
+        # ====================================================
+        # CLOSE
+        # ====================================================
 
         def on_close(
             ws,
@@ -2586,40 +2808,41 @@ class TradingStrategy:
         ):
 
             logging.warning(
-                "WebSocket disconnected | "
+                "WEBSOCKET DISCONNECTED | "
                 f"CODE={close_status_code} | "
                 f"MSG={close_msg}"
             )
 
 
-        def on_open(
-            ws
-        ):
+        # ====================================================
+        # OPEN
+        # ====================================================
+
+        def on_open(ws):
 
             logging.warning(
-                "WebSocket connected."
+                "WEBSOCKET CONNECTED"
             )
 
+
+            # ------------------------------------------------
+            # Subscribe to ticker.
+            # ------------------------------------------------
+
             subscribe_payload = {
-
                 "type": "subscribe",
-
                 "payload": {
-
                     "channels": [
-
                         {
                             "name": "ticker",
                             "symbols": [
                                 SYMBOL
                             ]
                         }
-
                     ]
-
                 }
-
             }
+
 
             ws.send(
                 json.dumps(
@@ -2627,11 +2850,16 @@ class TradingStrategy:
                 )
             )
 
+
             logging.warning(
-                "SUBSCRIBED TO TICKER | "
+                f"SUBSCRIBED TO TICKER | "
                 f"{SYMBOL}"
             )
 
+
+        # ====================================================
+        # WEBSOCKET LOOP
+        # ====================================================
 
         def websocket_loop():
 
@@ -2640,9 +2868,10 @@ class TradingStrategy:
                 try:
 
                     logging.warning(
-                        "Connecting WebSocket | "
+                        "CONNECTING WEBSOCKET | "
                         f"{WS_URL}"
                     )
+
 
                     ws_app = websocket.WebSocketApp(
                         WS_URL,
@@ -2652,79 +2881,89 @@ class TradingStrategy:
                         on_close=on_close
                     )
 
+
                     ws_app.run_forever(
                         ping_interval=30,
                         ping_timeout=10
                     )
 
+
                 except Exception as exc:
 
                     logging.exception(
-                        f"WebSocket crashed: {exc}"
+                        "WEBSOCKET CRASHED | "
+                        f"{exc}"
                     )
 
+
                 logging.warning(
-                    "WebSocket reconnecting "
-                    "in 3 seconds..."
+                    "WEBSOCKET RECONNECTING "
+                    "IN 3 SECONDS..."
                 )
 
                 time.sleep(3)
 
 
-        # ========================================================
+        # ====================================================
         # STARTUP
-        # ========================================================
+        # ====================================================
 
         logging.warning(
             "============================================"
         )
 
         logging.warning(
-            "XAUTUSD NEW EXTREME BREAKOUT ENGINE v27.1"
+            "XAUTUSD NEW EXTREME BREAKOUT ENGINE v28.0"
         )
 
         logging.warning(
-            f"SYMBOL       = {SYMBOL}"
+            f"SYMBOL      = {SYMBOL}"
         )
 
         logging.warning(
-            f"LEVERAGE     = {LEVERAGE}x"
+            f"LEVERAGE    = {LEVERAGE}x"
         )
 
         logging.warning(
-            f"BALANCE USE  = "
+            f"BALANCE USE = "
             f"{BALANCE_FRACTION * 100}%"
         )
 
         logging.warning(
-            f"REST API     = {BASE_URL}"
+            f"REST API    = {BASE_URL}"
         )
 
         logging.warning(
-            f"WEBSOCKET    = {WS_URL}"
+            f"WEBSOCKET   = {WS_URL}"
         )
 
         logging.warning(
-            "STRATEGY     = "
-            "05:45 NEW HIGH / NEW LOW"
+            "STRATEGY    = "
+            "05:45 -> NEW HIGH / NEW LOW"
         )
 
         logging.warning(
-            "LATE START   = "
-            "HISTORICAL HIGH/LOW ENABLED"
+            "LATE START  = "
+            "RECOVER 05:45 -> CURRENT TIME"
         )
 
         logging.warning(
             "============================================"
         )
+
+
+        # ====================================================
+        # LEVERAGE
+        # ====================================================
 
         set_leverage(
             self.product_id
         )
 
-        # --------------------------------------------------------
-        # Startup position sync.
-        # --------------------------------------------------------
+
+        # ====================================================
+        # STARTUP POSITION SYNC
+        # ====================================================
 
         try:
 
@@ -2736,6 +2975,7 @@ class TradingStrategy:
                 position["size"]
             )
 
+
             if position["size"] != 0:
 
                 logging.warning(
@@ -2744,22 +2984,56 @@ class TradingStrategy:
                     f"ENTRY={position['entry_price']}"
                 )
 
+
+                # ------------------------------------------------
+                # If state already has today's position details,
+                # preserve them.
+                #
+                # We do NOT close a same-day position merely
+                # because bot restarted.
+                # ------------------------------------------------
+
+                current_day = trading_day_start(
+                    now_ist()
+                )
+
+                if (
+                    self.day_start
+                    == current_day
+                    and self.day_reset_done
+                ):
+
+                    logging.warning(
+                        "SAME-DAY RESTART | "
+                        "PRESERVING CURRENT POSITION STATE."
+                    )
+
+                else:
+
+                    logging.warning(
+                        "POSITION MAY BELONG TO "
+                        "PREVIOUS TRADING DAY."
+                    )
+
+
             else:
 
                 logging.info(
                     "STARTUP POSITION = FLAT"
                 )
 
+
         except Exception as exc:
 
             logging.error(
-                "Startup position check failed: "
+                "STARTUP POSITION CHECK FAILED | "
                 f"{exc}"
             )
 
-        # --------------------------------------------------------
-        # WebSocket thread.
-        # --------------------------------------------------------
+
+        # ====================================================
+        # START WEBSOCKET THREAD
+        # ====================================================
 
         ws_thread = threading.Thread(
             target=websocket_loop,
@@ -2768,9 +3042,10 @@ class TradingStrategy:
 
         ws_thread.start()
 
-        # --------------------------------------------------------
-        # Watchdog.
-        # --------------------------------------------------------
+
+        # ====================================================
+        # WATCHDOG
+        # ====================================================
 
         last_position_check = 0
 
@@ -2780,11 +3055,13 @@ class TradingStrategy:
 
                 now = time.time()
 
+
                 if (
                     now
                     - last_position_check
                     >= POSITION_CHECK_SECONDS
                 ):
+
 
                     position = get_position(
                         self.product_id
@@ -2794,15 +3071,26 @@ class TradingStrategy:
                         position["size"]
                     )
 
+
+                    # ------------------------------------------------
+                    # Exchange flat while local position exists.
+                    # ------------------------------------------------
+
                     if (
                         exchange_size == 0
                         and self.last_position != 0
                     ):
 
                         logging.warning(
-                            "WATCHDOG: Exchange is FLAT "
-                            "while local position exists."
+                            "WATCHDOG | "
+                            "EXCHANGE FLAT WHILE "
+                            "LOCAL POSITION EXISTS."
                         )
+
+
+                    # ------------------------------------------------
+                    # Exchange has position while local says flat.
+                    # ------------------------------------------------
 
                     elif (
                         exchange_size != 0
@@ -2810,19 +3098,23 @@ class TradingStrategy:
                     ):
 
                         logging.warning(
-                            "WATCHDOG: Exchange position "
-                            "detected."
+                            "WATCHDOG | "
+                            "EXCHANGE POSITION DETECTED | "
+                            f"SIZE={exchange_size}"
                         )
 
                         self.last_position = (
                             exchange_size
                         )
 
+
                     last_position_check = now
+
 
                 time.sleep(
                     POLL_SECONDS
                 )
+
 
             except KeyboardInterrupt:
 
@@ -2832,10 +3124,11 @@ class TradingStrategy:
 
                 break
 
+
             except Exception as exc:
 
                 logging.exception(
-                    "MAIN WATCHDOG ERROR: "
+                    "MAIN WATCHDOG ERROR | "
                     f"{exc}"
                 )
 
@@ -2856,16 +3149,19 @@ if __name__ == "__main__":
             product_info
         ).start_websocket()
 
+
     except KeyboardInterrupt:
 
         logging.warning(
             "BOT STOPPED BY USER."
         )
 
+
     except Exception as exc:
 
         logging.exception(
-            f"FATAL STARTUP ERROR: {exc}"
+            "FATAL STARTUP ERROR | "
+            f"{exc}"
         )
 
         raise
