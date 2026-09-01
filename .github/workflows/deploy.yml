@@ -16,9 +16,17 @@ jobs:
 
     steps:
 
+      # =====================================================
+      # CHECKOUT
+      # =====================================================
+
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # =====================================================
+      # PREPARE SSH
+      # =====================================================
 
       - name: Prepare SSH
         env:
@@ -32,10 +40,17 @@ jobs:
 
           chmod 600 ~/.ssh/oracle.key
 
-          ssh-keygen -y -f ~/.ssh/oracle.key > /dev/null
+          ssh-keygen \
+            -y \
+            -f ~/.ssh/oracle.key \
+            > /dev/null
 
           echo "SSH KEY OK"
 
+
+      # =====================================================
+      # CHECK BOT SYNTAX
+      # =====================================================
 
       - name: Check bot.py Syntax
         run: |
@@ -45,6 +60,31 @@ jobs:
 
           echo "BOT_PY_SYNTAX_OK"
 
+
+      # =====================================================
+      # TEST ORACLE PORT 22
+      # =====================================================
+
+      - name: Test Oracle Port 22
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "TESTING ORACLE PORT 22"
+          echo "========================================"
+
+          timeout 20 bash -c \
+            "cat < /dev/null > /dev/tcp/$ORACLE_HOST/22"
+
+          echo
+          echo "ORACLE_PORT_22_REACHABLE"
+
+
+      # =====================================================
+      # TEST ORACLE SSH
+      # =====================================================
 
       - name: Test Oracle SSH
         env:
@@ -56,8 +96,6 @@ jobs:
           echo "========================================"
           echo "TESTING ORACLE SSH"
           echo "========================================"
-
-          echo "Oracle host configured."
 
           SUCCESS=0
 
@@ -77,6 +115,7 @@ jobs:
               -o ServerAliveInterval=5 \
               -o ServerAliveCountMax=2 \
               -o TCPKeepAlive=yes \
+              -o IPQoS=throughput \
               -o GSSAPIAuthentication=no \
               -o PreferredAuthentications=publickey \
               -o PubkeyAuthentication=yes \
@@ -99,11 +138,14 @@ jobs:
           done
 
           if [ "$SUCCESS" -ne 1 ]; then
+
             echo
             echo "========================================"
             echo "ORACLE SSH FAILED"
             echo "========================================"
+
             exit 1
+
           fi
 
           echo
@@ -111,6 +153,10 @@ jobs:
           echo "ORACLE_SSH_OK"
           echo "========================================"
 
+
+      # =====================================================
+      # PREPARE ORACLE DEPLOYMENT DIRECTORY
+      # =====================================================
 
       - name: Prepare Oracle Deployment Directory
         env:
@@ -130,6 +176,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -140,6 +187,10 @@ jobs:
 
           echo "ORACLE_DEPLOY_DIRECTORY_OK"
 
+
+      # =====================================================
+      # UPLOAD FILES
+      # =====================================================
 
       - name: Upload Bot And Dashboard
         env:
@@ -159,6 +210,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -172,6 +224,10 @@ jobs:
 
           echo "UPLOAD_OK"
 
+
+      # =====================================================
+      # VERIFY UPLOADED FILES
+      # =====================================================
 
       - name: Verify Uploaded Files
         env:
@@ -191,6 +247,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -216,6 +273,10 @@ jobs:
           EOF
 
 
+      # =====================================================
+      # INSTALL FILES
+      # =====================================================
+
       - name: Install New Files
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
@@ -234,6 +295,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -260,6 +322,10 @@ jobs:
           EOF
 
 
+      # =====================================================
+      # RESTART BOT
+      # =====================================================
+
       - name: Restart XAUTUSD Bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
@@ -278,6 +344,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -291,13 +358,29 @@ jobs:
 
           sleep 10
 
-          sudo systemctl is-active --quiet \
-            xautusd-bot.service
+          if sudo systemctl is-active --quiet xautusd-bot.service; then
+            echo "XAUTUSD_BOT_ACTIVE"
+          else
+            echo "XAUTUSD_BOT_FAILED"
 
-          echo "XAUTUSD_BOT_ACTIVE"
+            sudo systemctl --no-pager status \
+              xautusd-bot.service \
+              || true
+
+            sudo journalctl \
+              -u xautusd-bot.service \
+              -n 100 \
+              --no-pager
+
+            exit 1
+          fi
 
           EOF
 
+
+      # =====================================================
+      # VERIFY DASHBOARD
+      # =====================================================
 
       - name: Verify Dashboard
         env:
@@ -317,6 +400,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -327,6 +411,8 @@ jobs:
           set -e
 
           ss -lnt | grep -q ':8000'
+
+          echo "DASHBOARD_PORT_8000_OK"
 
           curl \
             --max-time 20 \
@@ -353,6 +439,10 @@ jobs:
           EOF
 
 
+      # =====================================================
+      # INSTALL PERSISTENT CLOUDFLARE TUNNEL
+      # =====================================================
+
       - name: Install Persistent Cloudflare Tunnel
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
@@ -371,6 +461,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -392,6 +483,11 @@ jobs:
             echo "ERROR: cloudflared not installed"
             exit 1
           fi
+
+          sudo systemctl stop \
+            xautusd-cloudflared.service \
+            2>/dev/null \
+            || true
 
           sudo tee "$SERVICE_FILE" > /dev/null << SERVICE
 
@@ -463,6 +559,10 @@ jobs:
           EOF
 
 
+      # =====================================================
+      # FINAL VERIFICATION
+      # =====================================================
+
       - name: Final Verification
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
@@ -481,6 +581,7 @@ jobs:
             -o ServerAliveInterval=5 \
             -o ServerAliveCountMax=2 \
             -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
