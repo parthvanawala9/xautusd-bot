@@ -19,26 +19,11 @@ from dotenv import load_dotenv
 # ============================================================
 # XAUTUSD MULTI ACCOUNT BOT
 #
-# COMPATIBLE WITH ROOT app.js
+# DASHBOARD + BOT IN SAME PROCESS
 #
-# DASHBOARD EXPECTS:
-#   /api/dashboard
-#       -> {
-#            accounts: [...]
-#          }
-#
-# ACCOUNT ACTIONS:
-#   POST /api/bot/start
-#   POST /api/bot/stop
-#
-# CLIENT MANAGEMENT:
-#   POST /api/client/add
-#   POST /api/client/subscription
-#   POST /api/client/delete
-#
-# TRADING STRATEGY:
+# STRATEGY:
 #   Session day starts = 05:30 IST
-#   Trading starts = 05:45 IST
+#   Trading starts      = 05:45 IST
 #
 #   FLAT:
 #       price > HIGH -> LONG
@@ -56,7 +41,7 @@ from dotenv import load_dotenv
 #   SHORT SL:
 #       session HIGH at entry
 #
-#   SL closes:
+#   SL:
 #       LONG -> SHORT
 #       SHORT -> LONG
 #
@@ -81,10 +66,6 @@ from dotenv import load_dotenv
 #   STOP BOT:
 #       disable new entries
 #       close existing position
-#       save MANUAL_STOP history
-#
-# HISTORY:
-#   Each account has its own permanent history file.
 #
 # FILES:
 #   bot.py
@@ -103,7 +84,9 @@ load_dotenv()
 # GLOBAL CONFIG
 # ============================================================
 
-IST = ZoneInfo("Asia/Kolkata")
+IST = ZoneInfo(
+    "Asia/Kolkata"
+)
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
@@ -157,7 +140,14 @@ POSITION_CACHE_SECONDS = float(
 BALANCE_CACHE_SECONDS = float(
     os.getenv(
         "BALANCE_CACHE_SECONDS",
-        "3.0"
+        "5.0"
+    )
+)
+
+PRICE_FALLBACK_SECONDS = float(
+    os.getenv(
+        "PRICE_FALLBACK_SECONDS",
+        "10.0"
     )
 )
 
@@ -216,7 +206,11 @@ PRIMARY_API_SECRET = os.getenv(
 ).strip()
 
 
-if not PRIMARY_API_KEY or not PRIMARY_API_SECRET:
+if (
+    not PRIMARY_API_KEY
+    or
+    not PRIMARY_API_SECRET
+):
 
     raise SystemExit(
         "Missing DELTA_API_KEY or DELTA_API_SECRET."
@@ -319,7 +313,6 @@ def saturday_squareoff(
     return (
         dt.weekday() == 5
         and dt.hour == 5
-        and dt.minute >= 0
     )
 
 
@@ -408,7 +401,9 @@ def atomic_write_json(
 # ACCOUNTS FILE
 # ============================================================
 
-accounts_file_lock = threading.RLock()
+accounts_file_lock = (
+    threading.RLock()
+)
 
 
 def load_client_accounts():
@@ -545,7 +540,10 @@ class DeltaClient:
                 signature,
 
             "timestamp":
-                timestamp
+                timestamp,
+
+            "User-Agent":
+                "XAUTUSD-Multi-Account-Bot/1.0"
         }
 
 
@@ -593,24 +591,71 @@ class DeltaClient:
                 body_text
             )
 
-        response = (
-            self.session.request(
-                method.upper(),
-                BASE_URL + path,
-                params=params,
-                data=(
-                    body_text
-                    if body is not None
-                    else None
-                ),
-                headers=headers,
-                timeout=(5, 15)
+
+        try:
+
+            response = (
+                self.session.request(
+                    method.upper(),
+                    BASE_URL + path,
+                    params=params,
+                    data=(
+                        body_text
+                        if body is not None
+                        else None
+                    ),
+                    headers=headers,
+                    timeout=(5, 15)
+                )
             )
-        )
 
-        response.raise_for_status()
+        except requests.RequestException as e:
 
-        data = response.json()
+            raise RuntimeError(
+                f"Delta connection error: {e}"
+            ) from e
+
+
+        try:
+
+            response.raise_for_status()
+
+        except requests.HTTPError as e:
+
+            try:
+
+                error_body = (
+                    response.json()
+                )
+
+                raise RuntimeError(
+                    f"Delta HTTP {response.status_code}: "
+                    f"{error_body}"
+                ) from e
+
+            except ValueError:
+
+                text = (
+                    response.text
+                    or ""
+                ).strip()
+
+                raise RuntimeError(
+                    f"Delta HTTP {response.status_code}: "
+                    f"{text[:300]}"
+                ) from e
+
+
+        try:
+
+            data = response.json()
+
+        except ValueError as e:
+
+            raise RuntimeError(
+                "Delta returned invalid JSON."
+            ) from e
+
 
         if data.get(
             "success"
@@ -629,10 +674,25 @@ class DeltaClient:
 
     def product(self):
 
-        return self.api(
+        data = self.api(
             "GET",
             f"/v2/products/{SYMBOL}"
-        )["result"]
+        )
+
+        result = data.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            dict
+        ):
+
+            raise RuntimeError(
+                f"Invalid product response: {data}"
+            )
+
+        return result
 
 
     # ========================================================
@@ -686,6 +746,7 @@ class DeltaClient:
                         "size",
                         0
                     )
+                    or 0
                 ),
 
             "entry":
@@ -718,10 +779,28 @@ class DeltaClient:
             auth=True
         )
 
-        for wallet in data.get(
+        result = data.get(
             "result",
             []
+        )
+
+        if isinstance(
+            result,
+            dict
         ):
+
+            result = [
+                result
+            ]
+
+        for wallet in result:
+
+            if not isinstance(
+                wallet,
+                dict
+            ):
+
+                continue
 
             asset = str(
                 wallet.get(
@@ -863,6 +942,12 @@ class DeltaClient:
                 or increment
             )
         )
+
+        if increment <= 0:
+
+            increment = Decimal(
+                "1"
+            )
 
         size_decimal = (
             raw / increment
@@ -1722,24 +1807,11 @@ class AccountBot:
             # Verify exchange position.
             # ------------------------------------------------
 
-            try:
-
-                pos = (
-                    self.refresh_position(
-                        force=True
-                    )
+            pos = (
+                self.refresh_position(
+                    force=True
                 )
-
-            except Exception:
-
-                return {
-
-                    "success":
-                        False,
-
-                    "message":
-                        "Could not verify exchange position."
-                }
+            )
 
             size = int(
                 pos.get(
@@ -2158,10 +2230,6 @@ class AccountBot:
                 )
             )
 
-            # ------------------------------------------------
-            # Already flat.
-            # ------------------------------------------------
-
             if size == 0:
 
                 self.last_position = 0
@@ -2206,10 +2274,6 @@ class AccountBot:
                         "Bot stopped. No open position."
                 }
 
-            # ------------------------------------------------
-            # Close live position.
-            # ------------------------------------------------
-
             try:
 
                 self.client.close_position(
@@ -2241,10 +2305,6 @@ class AccountBot:
                             "the position failed."
                         )
                 }
-
-            # ------------------------------------------------
-            # Verify.
-            # ------------------------------------------------
 
             closed = False
 
@@ -2318,10 +2378,6 @@ class AccountBot:
                             "could not be confirmed closed."
                         )
                 }
-
-            # ------------------------------------------------
-            # Record trade.
-            # ------------------------------------------------
 
             exit_price = (
                 self.last_price
@@ -2415,10 +2471,6 @@ class AccountBot:
 
         self.ready = False
 
-        # ----------------------------------------------------
-        # Never blindly erase a live position.
-        # ----------------------------------------------------
-
         live_size = (
             self.last_position
         )
@@ -2487,10 +2539,6 @@ class AccountBot:
 
             return True
 
-        # ----------------------------------------------------
-        # Recover current position.
-        # ----------------------------------------------------
-
         try:
 
             pos = (
@@ -2519,10 +2567,6 @@ class AccountBot:
                 0
             )
         )
-
-        # ----------------------------------------------------
-        # Historical session range.
-        # ----------------------------------------------------
 
         if now > (
             start
@@ -2558,10 +2602,6 @@ class AccountBot:
                 )
 
                 return True
-
-        # ----------------------------------------------------
-        # Fallback.
-        # ----------------------------------------------------
 
         self.high = price
 
@@ -2993,6 +3033,10 @@ class AccountBot:
 
                         self.sl = None
 
+                        self.trade_high = None
+
+                        self.trade_low = None
+
                         self.cached_position = {
 
                             "size":
@@ -3086,10 +3130,6 @@ class AccountBot:
                     self.last_position
                 )
 
-                # ------------------------------------------------
-                # STOP LOSS -> REVERSE
-                # ------------------------------------------------
-
                 sl_hit = (
                     self.sl is not None
                     and (
@@ -3160,10 +3200,6 @@ class AccountBot:
 
                     return
 
-                # ------------------------------------------------
-                # External close.
-                # ------------------------------------------------
-
                 self.finish_active_trade(
                     price,
                     "EXTERNAL_CLOSE"
@@ -3172,6 +3208,10 @@ class AccountBot:
                 self.last_position = 0
 
                 self.sl = None
+
+                self.trade_high = None
+
+                self.trade_low = None
 
                 self.cached_position = {
 
@@ -3335,7 +3375,9 @@ class AccountBot:
 
 BOT_ACCOUNTS = {}
 
-ACCOUNTS_LOCK = threading.RLock()
+ACCOUNTS_LOCK = (
+    threading.RLock()
+)
 
 
 def create_primary_account():
@@ -3412,10 +3454,6 @@ def load_all_accounts():
 
         BOT_ACCOUNTS.clear()
 
-        # ----------------------------------------------------
-        # Primary.
-        # ----------------------------------------------------
-
         try:
 
             primary = (
@@ -3442,10 +3480,6 @@ def load_all_accounts():
             )
 
             raise
-
-        # ----------------------------------------------------
-        # Clients.
-        # ----------------------------------------------------
 
         clients = (
             load_client_accounts()
@@ -3837,9 +3871,6 @@ def account_dashboard(
 
             direction = "FLAT"
 
-        # ----------------------------------------------------
-        # Unrealized PnL.
-        # ----------------------------------------------------
 
         unrealized = (
             live_position.get(
@@ -3905,6 +3936,7 @@ def account_dashboard(
                     "0"
                 )
 
+
         history = (
             load_trade_history(
                 bot.account_id
@@ -3923,11 +3955,13 @@ def account_dashboard(
             )
         )
 
+
         online = (
             bot.websocket_connected
             or
             bot.last_price is not None
         )
+
 
         return {
 
@@ -3944,7 +3978,7 @@ def account_dashboard(
                 online,
 
             "bot_running":
-                True,
+                bot.bot_enabled,
 
             "server_online":
                 True,
@@ -4092,16 +4126,36 @@ def dashboard_data():
             for bot in BOT_ACCOUNTS.values()
         ]
 
+
+    any_bot_running = any(
+        bot.bot_enabled
+        for bot in BOT_ACCOUNTS.values()
+    )
+
+
+    any_online = any(
+        (
+            bot.websocket_connected
+            or
+            bot.last_price is not None
+        )
+        for bot in BOT_ACCOUNTS.values()
+    )
+
+
     return {
 
         "success":
             True,
 
         "online":
+            any_online,
+
+        "server_online":
             True,
 
         "bot_running":
-            True,
+            any_bot_running,
 
         "accounts":
             accounts
@@ -4164,11 +4218,6 @@ def verify_admin_pin(
     handler
 ):
 
-    # --------------------------------------------------------
-    # If ADMIN_PIN is not configured, preserve compatibility
-    # with the existing dashboard.
-    # --------------------------------------------------------
-
     if not ADMIN_PIN:
 
         return True
@@ -4213,10 +4262,6 @@ class DashboardHandler(
 
     def do_GET(self):
 
-        # ----------------------------------------------------
-        # Health.
-        # ----------------------------------------------------
-
         if self.path == "/api/health":
 
             self.send_json({
@@ -4227,8 +4272,15 @@ class DashboardHandler(
                 "online":
                     True,
 
-                "bot_running":
+                "server_online":
                     True,
+
+                "bot_running":
+                    any(
+                        bot.bot_enabled
+                        for bot
+                        in BOT_ACCOUNTS.values()
+                    ),
 
                 "accounts":
                     len(
@@ -4241,9 +4293,6 @@ class DashboardHandler(
 
             return
 
-        # ----------------------------------------------------
-        # Dashboard.
-        # ----------------------------------------------------
 
         if self.path == "/api/dashboard":
 
@@ -4265,14 +4314,11 @@ class DashboardHandler(
                         False,
 
                     "message":
-                        "Dashboard data error."
+                        f"Dashboard data error: {e}"
                 }, status=500)
 
             return
 
-        # ----------------------------------------------------
-        # Root.
-        # ----------------------------------------------------
 
         if self.path == "/":
 
@@ -4302,11 +4348,13 @@ class DashboardHandler(
 
             return
 
+
         body = (
             read_json_body(
                 self
             )
         )
+
 
         # ====================================================
         # START BOT
@@ -4366,10 +4414,11 @@ class DashboardHandler(
                         False,
 
                     "message":
-                        "Failed to start bot."
+                        f"Failed to start bot: {e}"
                 }, status=500)
 
             return
+
 
         # ====================================================
         # STOP BOT
@@ -4429,10 +4478,11 @@ class DashboardHandler(
                         False,
 
                     "message":
-                        "Failed to stop bot."
+                        f"Failed to stop bot: {e}"
                 }, status=500)
 
             return
+
 
         # ====================================================
         # ADD CLIENT
@@ -4480,6 +4530,7 @@ class DashboardHandler(
                 )
             )
 
+
             if not name:
 
                 self.send_json({
@@ -4493,7 +4544,12 @@ class DashboardHandler(
 
                 return
 
-            if not api_key or not api_secret:
+
+            if (
+                not api_key
+                or
+                not api_secret
+            ):
 
                 self.send_json({
 
@@ -4505,6 +4561,7 @@ class DashboardHandler(
                 }, status=400)
 
                 return
+
 
             if (
                 not subscription_start
@@ -4523,14 +4580,12 @@ class DashboardHandler(
 
                 return
 
-            # ------------------------------------------------
-            # Generate account ID.
-            # ------------------------------------------------
 
             account_id = (
                 f"client_"
                 f"{int(time.time()*1000)}"
             )
+
 
             client_record = {
 
@@ -4559,11 +4614,8 @@ class DashboardHandler(
                     )
             }
 
-            try:
 
-                # ------------------------------------------------
-                # Verify credentials by loading product.
-                # ------------------------------------------------
+            try:
 
                 test_client = DeltaClient(
                     api_key,
@@ -4583,9 +4635,6 @@ class DashboardHandler(
                     product_id
                 )
 
-                # ------------------------------------------------
-                # Save account.
-                # ------------------------------------------------
 
                 clients = (
                     load_client_accounts()
@@ -4599,9 +4648,6 @@ class DashboardHandler(
                     clients
                 )
 
-                # ------------------------------------------------
-                # Create running account instance.
-                # ------------------------------------------------
 
                 bot = AccountBot(
 
@@ -4636,9 +4682,11 @@ class DashboardHandler(
                     }
                 )
 
+
                 bot.client.set_leverage(
                     bot.product_id
                 )
+
 
                 with ACCOUNTS_LOCK:
 
@@ -4646,11 +4694,13 @@ class DashboardHandler(
                         account_id
                     ] = bot
 
+
                 logging.warning(
                     f"CLIENT ADDED | "
                     f"{name} | "
                     f"{account_id}"
                 )
+
 
                 self.send_json({
 
@@ -4663,6 +4713,7 @@ class DashboardHandler(
                     "message":
                         "Client account added successfully."
                 })
+
 
             except Exception as e:
 
@@ -4683,6 +4734,7 @@ class DashboardHandler(
                 }, status=500)
 
             return
+
 
         # ====================================================
         # UPDATE SUBSCRIPTION
@@ -4714,6 +4766,7 @@ class DashboardHandler(
 
                 return
 
+
             if (
                 bot.account_type
                 == "primary"
@@ -4730,6 +4783,7 @@ class DashboardHandler(
 
                 return
 
+
             start = body.get(
                 "subscription_start"
             )
@@ -4742,6 +4796,7 @@ class DashboardHandler(
                 "subscription_fee",
                 0
             )
+
 
             try:
 
@@ -4777,6 +4832,7 @@ class DashboardHandler(
 
                         break
 
+
                 if not found:
 
                     self.send_json({
@@ -4790,9 +4846,11 @@ class DashboardHandler(
 
                     return
 
+
                 save_client_accounts(
                     clients
                 )
+
 
                 bot.subscription = {
 
@@ -4808,11 +4866,6 @@ class DashboardHandler(
                         )
                 }
 
-                # ------------------------------------------------
-                # If expired after update, don't automatically
-                # start. If currently running and now expired,
-                # stop new trading.
-                # ------------------------------------------------
 
                 if not bot.subscription_active():
 
@@ -4824,6 +4877,7 @@ class DashboardHandler(
 
                     bot.save()
 
+
                 self.send_json({
 
                     "success":
@@ -4832,6 +4886,7 @@ class DashboardHandler(
                     "message":
                         "Subscription updated successfully."
                 })
+
 
             except Exception as e:
 
@@ -4845,10 +4900,11 @@ class DashboardHandler(
                         False,
 
                     "message":
-                        "Failed to update subscription."
+                        f"Failed to update subscription: {e}"
                 }, status=500)
 
             return
+
 
         # ====================================================
         # DELETE CLIENT
@@ -4880,6 +4936,7 @@ class DashboardHandler(
 
                 return
 
+
             if (
                 bot.account_type
                 == "primary"
@@ -4896,11 +4953,8 @@ class DashboardHandler(
 
                 return
 
-            try:
 
-                # ------------------------------------------------
-                # If position exists, close it first.
-                # ------------------------------------------------
+            try:
 
                 pos = (
                     bot.refresh_position(
@@ -4957,9 +5011,6 @@ class DashboardHandler(
 
                             pass
 
-                # ------------------------------------------------
-                # Remove from accounts.json.
-                # ------------------------------------------------
 
                 clients = (
                     load_client_accounts()
@@ -4978,13 +5029,11 @@ class DashboardHandler(
                     ) != account_id
                 ]
 
+
                 save_client_accounts(
                     clients
                 )
 
-                # ------------------------------------------------
-                # Remove active instance.
-                # ------------------------------------------------
 
                 with ACCOUNTS_LOCK:
 
@@ -4993,10 +5042,12 @@ class DashboardHandler(
                         None
                     )
 
+
                 logging.warning(
                     f"CLIENT DELETED | "
                     f"{account_id}"
                 )
+
 
                 self.send_json({
 
@@ -5006,6 +5057,7 @@ class DashboardHandler(
                     "message":
                         "Client account deleted successfully."
                 })
+
 
             except Exception as e:
 
@@ -5026,6 +5078,7 @@ class DashboardHandler(
                 }, status=500)
 
             return
+
 
         # ====================================================
         # UNKNOWN
@@ -5082,6 +5135,11 @@ class DashboardHandler(
         self.send_header(
             "Pragma",
             "no-cache"
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Origin",
+            "*"
         )
 
         self.end_headers()
@@ -5187,6 +5245,7 @@ def run_websocket():
                 f"CONNECTING WS | {WS_URL}"
             )
 
+
             def on_open(
                 ws
             ):
@@ -5200,6 +5259,7 @@ def run_websocket():
                         bot.websocket_connected = (
                             True
                         )
+
 
                 payload = {
 
@@ -5223,11 +5283,13 @@ def run_websocket():
                     }
                 }
 
+
                 ws.send(
                     json.dumps(
                         payload
                     )
                 )
+
 
                 logging.warning(
                     f"TRADES SUBSCRIBED | {SYMBOL}"
@@ -5249,6 +5311,7 @@ def run_websocket():
                         message
                     )
 
+
                     with ACCOUNTS_LOCK:
 
                         for bot in (
@@ -5259,11 +5322,13 @@ def run_websocket():
                                 current_time
                             )
 
+
                     if data.get(
                         "type"
                     ) != "trades":
 
                         return
+
 
                     symbol = (
                         data.get(
@@ -5275,9 +5340,52 @@ def run_websocket():
                         )
                     )
 
+
                     price_value = data.get(
                         "p"
                     )
+
+
+                    # ------------------------------------------------
+                    # Some Delta responses can use a nested data object.
+                    # ------------------------------------------------
+
+                    if (
+                        price_value is None
+                        and isinstance(
+                            data.get(
+                                "data"
+                            ),
+                            dict
+                        )
+                    ):
+
+                        trade_data = data.get(
+                            "data"
+                        )
+
+                        price_value = (
+                            trade_data.get(
+                                "p"
+                            )
+                            or
+                            trade_data.get(
+                                "price"
+                            )
+                        )
+
+                        if symbol is None:
+
+                            symbol = (
+                                trade_data.get(
+                                    "sy"
+                                )
+                                or
+                                trade_data.get(
+                                    "symbol"
+                                )
+                            )
+
 
                     if (
                         symbol != SYMBOL
@@ -5286,6 +5394,7 @@ def run_websocket():
                     ):
 
                         return
+
 
                     try:
 
@@ -5299,11 +5408,13 @@ def run_websocket():
 
                         return
 
+
                     with ACCOUNTS_LOCK:
 
                         bots = list(
                             BOT_ACCOUNTS.values()
                         )
+
 
                     for bot in bots:
 
@@ -5319,6 +5430,7 @@ def run_websocket():
                                 f"{bot.account_name} | "
                                 f"PRICE TICK ERROR | {e}"
                             )
+
 
                 except Exception as e:
 
@@ -5385,16 +5497,19 @@ def run_websocket():
                     on_close
             )
 
+
             ws.run_forever(
                 ping_interval=30,
                 ping_timeout=10
             )
+
 
         except Exception as e:
 
             logging.exception(
                 f"WS CRASH | {e}"
             )
+
 
         logging.warning(
             f"RECONNECTING IN "
@@ -5478,6 +5593,8 @@ if __name__ == "__main__":
 
     logging.warning(
         "============================================"
+
+
     )
 
     try:
