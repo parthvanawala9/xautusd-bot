@@ -5,8 +5,8 @@ import hmac
 import hashlib
 import logging
 import threading
-from decimal import Decimal, ROUND_DOWN, InvalidOperation
-from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_DOWN
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 
@@ -16,73 +16,48 @@ from dotenv import load_dotenv
 
 
 # ============================================================
-# XAUTUSD BREAKOUT + REVERSAL BOT
-# VERSION 30.0
+# XAUTUSD SIMPLE NEW HIGH / NEW LOW BOT
 #
-# IMPORTANT ARCHITECTURE
+# RULES
 # ------------------------------------------------------------
-# 1. REAL-TIME MARKET PRICE:
-#       Delta PUBLIC "trades" websocket channel
+# 05:45 IST = NEW TRADING SESSION
 #
-# 2. START OF STRATEGY:
-#       05:45 IST
+# After 05:45:
 #
-# 3. DAY RANGE:
-#       Starts fresh at 05:45.
+# FLAT:
+#   price > HIGH  -> LONG
+#   price < LOW   -> SHORT
 #
-# 4. FIRST LIVE PRICE:
-#       Establishes initial HIGH and LOW.
+# LONG:
+#   new HIGH -> only update HIGH
+#   no second LONG
 #
-# 5. FLAT:
-#       price > running_high  -> LONG
-#       price < running_low   -> SHORT
+# SHORT:
+#   new LOW -> only update LOW
+#   no second SHORT
 #
-# 6. LONG:
-#       SL = LOW existing at LONG entry.
-#       Track highest price during LONG.
+# SL:
+#   LONG  SL = LOW at the time LONG was entered
+#   SHORT SL = HIGH at the time SHORT was entered
 #
-# 7. SHORT:
-#       SL = HIGH existing at SHORT entry.
-#       Track lowest price during SHORT.
+# If SL closes the position:
+#   LONG -> SHORT
+#   SHORT -> LONG
 #
-# 8. SL:
-#       Exchange bracket SL.
-#       When position disappears after SL,
-#       immediately reverse.
+# One position at a time.
 #
-# 9. RESTART RECOVERY:
-#       If bot starts after 05:45,
-#       historical 1-minute candles are loaded from
-#       05:45 until current time.
+# Restart after 05:45:
+#   Load today's historical 1-minute HIGH/LOW
+#   so restart price is NOT treated as baseline.
 #
-#       This reconstructs the day's HIGH/LOW instead
-#       of incorrectly using the restart price as baseline.
-#
-# 10. IMPORTANT:
-#       Restart recovery DOES NOT blindly enter a missed
-#       historical trade. It reconstructs the range and
-#       waits for the next live breakout.
-#
-# 11. Saturday:
-#       Square-off at 05:00 IST.
-#
-# 12. Sunday:
-#       No trading.
-#
-# 13. Friday position:
-#       Closed Saturday at 05:00.
+# Saturday 05:00:
+#   Close position.
 # ============================================================
 
 
 load_dotenv()
 
 IST = ZoneInfo("Asia/Kolkata")
-UTC = timezone.utc
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 BASE_URL = os.getenv(
     "DELTA_BASE_URL",
@@ -122,20 +97,11 @@ STATE_FILE = os.getenv(
     "xautusd_state.json"
 )
 
-POSITION_CHECK_SECONDS = float(
-    os.getenv("POSITION_CHECK_SECONDS", "1.0")
-)
-
-RECONNECT_SECONDS = float(
-    os.getenv("RECONNECT_SECONDS", "3")
-)
-
-HISTORICAL_RESOLUTION = "1m"
-
+RECONNECT_SECONDS = 3
 
 if not API_KEY or not API_SECRET:
     raise SystemExit(
-        "Missing DELTA_API_KEY or DELTA_API_SECRET in environment."
+        "Missing DELTA_API_KEY or DELTA_API_SECRET."
     )
 
 
@@ -150,7 +116,7 @@ logging.basicConfig(
 
 
 # ============================================================
-# HTTP
+# HTTP SESSION
 # ============================================================
 
 session = requests.Session()
@@ -158,7 +124,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Breakout-Reversal-30.0"
+    "User-Agent": "XAUTUSD-Simple-Bot/1.0"
 })
 
 
@@ -171,11 +137,6 @@ def now_ist():
 
 
 def trading_day_start(dt=None):
-    """
-    Trading date boundary = 05:30 IST.
-
-    Strategy itself starts at 05:45 IST.
-    """
 
     dt = dt or now_ist()
 
@@ -192,55 +153,49 @@ def trading_day_start(dt=None):
     return boundary
 
 
-def strategy_start_time(day_start):
-    return day_start + timedelta(minutes=15)
+def strategy_start(day_start):
+
+    return day_start.replace(
+        hour=5,
+        minute=45,
+        second=0,
+        microsecond=0
+    )
 
 
-def is_weekend_blocked(dt=None):
+def weekend(dt=None):
+
     dt = dt or now_ist()
 
-    weekday = dt.weekday()
-
-    # Saturday after 05:00
-    if weekday == 5:
+    # Saturday from 05:00
+    if dt.weekday() == 5:
         return dt.hour >= 5
 
     # Sunday
-    if weekday == 6:
+    if dt.weekday() == 6:
         return True
-
-    # Monday before 05:30
-    if weekday == 0:
-        boundary = dt.replace(
-            hour=5,
-            minute=30,
-            second=0,
-            microsecond=0
-        )
-
-        return dt < boundary
 
     return False
 
 
-def is_saturday_squareoff_time(dt=None):
+def saturday_squareoff(dt=None):
+
     dt = dt or now_ist()
 
     return (
         dt.weekday() == 5
         and dt.hour == 5
-        and dt.minute < 30
     )
 
 
 # ============================================================
-# DELTA AUTH
+# AUTH
 # ============================================================
 
-def sign_request(
+def sign(
     method,
     path,
-    query_string="",
+    query="",
     body=""
 ):
 
@@ -252,7 +207,7 @@ def sign_request(
         method.upper()
         + timestamp
         + path
-        + query_string
+        + query
         + body
     )
 
@@ -270,10 +225,10 @@ def sign_request(
 
 
 # ============================================================
-# REST API
+# REST
 # ============================================================
 
-def api_call(
+def api(
     method,
     path,
     params=None,
@@ -283,32 +238,32 @@ def api_call(
 
     params = params or {}
 
-    body_text = (
-        json.dumps(
-            body,
-            separators=(",", ":"),
-            ensure_ascii=False
-        )
-        if body is not None
-        else ""
-    )
+    body_text = ""
 
-    query_string = (
-        "?" + urlencode(
+    if body is not None:
+
+        body_text = json.dumps(
+            body,
+            separators=(",", ":")
+        )
+
+    query = ""
+
+    if params:
+
+        query = "?" + urlencode(
             params,
             doseq=True
         )
-        if params
-        else ""
-    )
 
     headers = {}
 
     if auth:
-        headers = sign_request(
+
+        headers = sign(
             method,
             path,
-            query_string,
+            query,
             body_text
         )
 
@@ -332,7 +287,7 @@ def api_call(
     if data.get("success") is False:
 
         raise RuntimeError(
-            f"Delta API Error: {data}"
+            f"Delta error: {data}"
         )
 
     return data
@@ -342,23 +297,21 @@ def api_call(
 # PRODUCT
 # ============================================================
 
-def get_product():
+def product():
 
-    data = api_call(
+    return api(
         "GET",
         f"/v2/products/{SYMBOL}"
-    )
-
-    return data["result"]
+    )["result"]
 
 
 # ============================================================
 # POSITION
 # ============================================================
 
-def get_position(product_id):
+def position(product_id):
 
-    data = api_call(
+    data = api(
         "GET",
         "/v2/positions",
         params={
@@ -367,31 +320,22 @@ def get_position(product_id):
         auth=True
     )
 
-    result = data.get(
-        "result"
-    )
+    result = data.get("result")
 
-    if not isinstance(
-        result,
-        dict
-    ):
+    if not isinstance(result, dict):
 
         return {
             "size": 0,
-            "entry_price": None
+            "entry": None
         }
 
     return {
         "size": int(
-            result.get(
-                "size",
-                0
-            )
+            result.get("size", 0)
         ),
-        "entry_price":
-            result.get(
-                "entry_price"
-            )
+        "entry": result.get(
+            "entry_price"
+        )
     }
 
 
@@ -399,9 +343,9 @@ def get_position(product_id):
 # BALANCE
 # ============================================================
 
-def get_balance():
+def balance():
 
-    data = api_call(
+    data = api(
         "GET",
         "/v2/wallet/balances",
         auth=True
@@ -419,10 +363,7 @@ def get_balance():
             )
         ).upper()
 
-        if asset in (
-            "USD",
-            "USDT"
-        ):
+        if asset in ("USD", "USDT"):
 
             value = (
                 wallet.get(
@@ -440,7 +381,7 @@ def get_balance():
                 )
 
     raise RuntimeError(
-        "Could not retrieve USD/USDT wallet balance."
+        "USD/USDT balance not found."
     )
 
 
@@ -452,7 +393,7 @@ def set_leverage(product_id):
 
     try:
 
-        api_call(
+        api(
             "POST",
             f"/v2/products/{product_id}/orders/leverage",
             body={
@@ -464,13 +405,13 @@ def set_leverage(product_id):
         )
 
         logging.info(
-            f"LEVERAGE SET = {LEVERAGE}x"
+            f"LEVERAGE = {LEVERAGE}x"
         )
 
-    except Exception as exc:
+    except Exception as e:
 
         logging.warning(
-            f"Leverage setting failed: {exc}"
+            f"Could not set leverage: {e}"
         )
 
 
@@ -478,15 +419,15 @@ def set_leverage(product_id):
 # ORDER SIZE
 # ============================================================
 
-def calculate_order_size(
-    product,
+def order_size(
+    product_info,
     price
 ):
 
-    balance = get_balance()
+    bal = balance()
 
     margin = (
-        balance
+        bal
         * BALANCE_FRACTION
     )
 
@@ -497,10 +438,10 @@ def calculate_order_size(
 
     contract_value = Decimal(
         str(
-            product.get(
+            product_info.get(
                 "contract_value"
             )
-            or product.get(
+            or product_info.get(
                 "contract_value_usd"
             )
             or "1"
@@ -510,50 +451,45 @@ def calculate_order_size(
     if contract_value <= 0:
         contract_value = Decimal("1")
 
-    raw_size = (
+    raw = (
         notional
-        / (
-            price
-            * contract_value
-        )
+        / price
+        / contract_value
     )
 
-    lot_size = Decimal(
+    increment = Decimal(
         str(
-            product.get(
+            product_info.get(
                 "lot_size"
             )
-            or product.get(
+            or product_info.get(
                 "order_size_increment"
             )
             or "1"
         )
     )
 
-    if lot_size <= 0:
-        lot_size = Decimal("1")
-
-    min_size = Decimal(
+    minimum = Decimal(
         str(
-            product.get(
+            product_info.get(
                 "min_order_size"
             )
-            or product.get(
+            or product_info.get(
                 "minimum_order_size"
             )
-            or lot_size
+            or increment
         )
     )
 
     size_decimal = (
-        raw_size
-        / lot_size
+        raw / increment
     ).to_integral_value(
         rounding=ROUND_DOWN
-    ) * lot_size
+    ) * increment
 
-    if size_decimal < min_size:
-        size_decimal = min_size
+    if size_decimal < minimum:
+
+        size_decimal = minimum
 
     size = int(
         size_decimal
@@ -562,38 +498,31 @@ def calculate_order_size(
     if size <= 0:
 
         raise RuntimeError(
-            "Calculated order size is zero."
+            "Order size calculated as zero."
         )
 
     logging.info(
-        "ORDER SIZE | "
-        f"BALANCE={balance} | "
-        f"MARGIN={margin} | "
-        f"NOTIONAL={notional} | "
-        f"SIZE={size}"
+        f"SIZE | Balance={bal} "
+        f"| Margin={margin} "
+        f"| Size={size}"
     )
 
     return size
 
 
 # ============================================================
-# MARKET ENTRY
+# ENTRY
 # ============================================================
 
-def execute_market_entry(
+def market_entry(
     product_id,
     side,
     size,
-    sl_price
+    sl
 ):
 
-    if sl_price is None:
-
-        raise RuntimeError(
-            "SL price is None."
-        )
-
     body = {
+
         "product_id":
             int(product_id),
 
@@ -610,13 +539,13 @@ def execute_market_entry(
             "market_order",
 
         "bracket_stop_loss_price":
-            str(sl_price),
+            str(sl),
 
         "bracket_stop_trigger_method":
             "last_traded_price",
 
         "client_order_id":
-            f"xbrk_{int(time.time() * 1000)}"[-32:]
+            f"simple_{int(time.time()*1000)}"[-32:]
     }
 
     logging.warning(
@@ -624,30 +553,22 @@ def execute_market_entry(
     )
 
     logging.warning(
-        "LIVE ENTRY ORDER"
+        f"ENTRY {side.upper()}"
     )
 
     logging.warning(
-        f"SIDE       = {side.upper()}"
+        f"SIZE = {size}"
     )
 
     logging.warning(
-        f"SIZE       = {abs(size)}"
-    )
-
-    logging.warning(
-        f"SL         = {sl_price}"
-    )
-
-    logging.warning(
-        f"SYMBOL     = {SYMBOL}"
+        f"SL   = {sl}"
     )
 
     logging.warning(
         "========================================"
     )
 
-    return api_call(
+    return api(
         "POST",
         "/v2/orders",
         body=body,
@@ -656,16 +577,16 @@ def execute_market_entry(
 
 
 # ============================================================
-# CLOSE POSITION
+# CLOSE
 # ============================================================
 
-def close_position_market(
+def close_position(
     product_id,
     size
 ):
 
     if size == 0:
-        return None
+        return
 
     side = (
         "sell"
@@ -674,6 +595,7 @@ def close_position_market(
     )
 
     body = {
+
         "product_id":
             int(product_id),
 
@@ -681,7 +603,7 @@ def close_position_market(
             SYMBOL,
 
         "size":
-            int(abs(size)),
+            abs(int(size)),
 
         "side":
             side,
@@ -693,16 +615,14 @@ def close_position_market(
             True,
 
         "client_order_id":
-            f"xclose_{int(time.time() * 1000)}"[-32:]
+            f"close_{int(time.time()*1000)}"[-32:]
     }
 
     logging.warning(
-        "CLOSE POSITION | "
-        f"SIDE={side.upper()} | "
-        f"SIZE={abs(size)}"
+        f"CLOSING POSITION | SIZE={size}"
     )
 
-    return api_call(
+    api(
         "POST",
         "/v2/orders",
         body=body,
@@ -711,71 +631,29 @@ def close_position_market(
 
 
 # ============================================================
-# HISTORICAL RANGE RECOVERY
+# HISTORICAL HIGH / LOW
 # ============================================================
 
-def get_historical_range(
-    start_dt,
-    end_dt
+def historical_high_low(
+    start,
+    end
 ):
 
-    start_ts = int(
-        start_dt.timestamp()
-    )
+    try:
 
-    end_ts = int(
-        end_dt.timestamp()
-    )
-
-    if end_ts <= start_ts:
-
-        return None, None, 0
-
-    logging.warning(
-        "RECOVERY | Loading historical "
-        f"{HISTORICAL_RESOLUTION} candles"
-    )
-
-    logging.warning(
-        "RECOVERY | "
-        f"FROM={start_dt.strftime('%Y-%m-%d %H:%M:%S')} "
-        f"IST"
-    )
-
-    logging.warning(
-        "RECOVERY | "
-        f"TO={end_dt.strftime('%Y-%m-%d %H:%M:%S')} "
-        f"IST"
-    )
-
-    all_candles = []
-
-    # --------------------------------------------------------
-    # API allows maximum 2000 candles.
-    # 1m candles for one trading day are comfortably below this.
-    # --------------------------------------------------------
-
-    cursor_start = start_ts
-
-    while cursor_start < end_ts:
-
-        data = api_call(
+        data = api(
             "GET",
             "/v2/history/candles",
             params={
-                "resolution":
-                    HISTORICAL_RESOLUTION,
-
-                "symbol":
-                    SYMBOL,
-
-                "start":
-                    cursor_start,
-
-                "end":
-                    end_ts
-            },
-            auth=False
+                "resolution": "1m",
+                "symbol": SYMBOL,
+                "start": int(
+                    start.timestamp()
+                ),
+                "end": int(
+                    end.timestamp()
+                )
+            }
         )
 
         candles = data.get(
@@ -783,213 +661,73 @@ def get_historical_range(
             []
         )
 
-        if not candles:
-            break
-
-        all_candles.extend(
-            candles
-        )
-
-        # Find latest candle time.
-        times = []
+        high = None
+        low = None
 
         for candle in candles:
 
             try:
 
-                times.append(
-                    int(
-                        candle["time"]
-                    )
+                h = Decimal(
+                    str(candle["high"])
                 )
+
+                l = Decimal(
+                    str(candle["low"])
+                )
+
+                if high is None or h > high:
+                    high = h
+
+                if low is None or l < low:
+                    low = l
 
             except Exception:
-                pass
+                continue
 
-        if not times:
-            break
+        return high, low
 
-        latest_time = max(times)
-
-        if latest_time <= cursor_start:
-            break
-
-        # Move forward by one minute.
-        cursor_start = (
-            latest_time + 60
-        )
-
-        if len(candles) < 2000:
-            break
-
-    if not all_candles:
+    except Exception as e:
 
         logging.warning(
-            "RECOVERY | No historical candles returned."
+            f"HISTORY ERROR | {e}"
         )
 
-        return None, None, 0
-
-    high = None
-    low = None
-
-    valid_count = 0
-
-    for candle in all_candles:
-
-        try:
-
-            candle_time = int(
-                candle["time"]
-            )
-
-            candle_high = Decimal(
-                str(
-                    candle["high"]
-                )
-            )
-
-            candle_low = Decimal(
-                str(
-                    candle["low"]
-                )
-            )
-
-        except Exception:
-
-            continue
-
-        # ----------------------------------------------------
-        # Keep only candles that overlap our strategy window.
-        # ----------------------------------------------------
-
-        if (
-            candle_time < start_ts
-            or candle_time > end_ts
-        ):
-            continue
-
-        if high is None or candle_high > high:
-            high = candle_high
-
-        if low is None or candle_low < low:
-            low = candle_low
-
-        valid_count += 1
-
-    if high is None or low is None:
-
-        return None, None, 0
-
-    logging.warning(
-        "========================================"
-    )
-
-    logging.warning(
-        "RECOVERY RANGE READY"
-    )
-
-    logging.warning(
-        f"HIGH = {high}"
-    )
-
-    logging.warning(
-        f"LOW  = {low}"
-    )
-
-    logging.warning(
-        f"CANDLES USED = {valid_count}"
-    )
-
-    logging.warning(
-        "========================================"
-    )
-
-    return high, low, valid_count
+        return None, None
 
 
 # ============================================================
-# STRATEGY
+# SIMPLE BOT
 # ============================================================
 
-class TradingStrategy:
+class Bot:
 
     def __init__(
         self,
-        product
+        product_info
     ):
 
-        self.product = product
+        self.product = product_info
 
         self.product_id = int(
-            product["id"]
+            product_info["id"]
         )
 
-        # ----------------------------------------------------
-        # DAY
-        # ----------------------------------------------------
+        self.day = None
 
-        self.day_start = None
+        self.high = None
+        self.low = None
 
-        # ----------------------------------------------------
-        # GLOBAL RANGE
-        # ----------------------------------------------------
-
-        self.running_high = None
-        self.running_low = None
-
-        # ----------------------------------------------------
-        # POSITION
-        # ----------------------------------------------------
+        self.sl = None
 
         self.last_position = 0
-
-        # ----------------------------------------------------
-        # ACTIVE SL
-        # ----------------------------------------------------
-
-        self.current_sl = None
-
-        # ----------------------------------------------------
-        # CURRENT TRADE EXTREMES
-        # ----------------------------------------------------
 
         self.trade_high = None
         self.trade_low = None
 
-        # ----------------------------------------------------
-        # LAST PRICE
-        # ----------------------------------------------------
-
         self.last_price = None
 
-        # ----------------------------------------------------
-        # SESSION
-        # ----------------------------------------------------
-
-        self.session_ready = False
-
-        # ----------------------------------------------------
-        # ORDER LOCK
-        # ----------------------------------------------------
-
-        self.order_in_flight = False
-
-        # ----------------------------------------------------
-        # HISTORICAL RECOVERY DONE
-        # ----------------------------------------------------
-
-        self.recovery_done = False
-
-        # ----------------------------------------------------
-        # PREVENT DUPLICATE 05:45 RESET
-        # ----------------------------------------------------
-
-        self.day_reset_done = False
-
-        # ----------------------------------------------------
-        # THREAD LOCK
-        # ----------------------------------------------------
+        self.ready = False
 
         self.lock = threading.RLock()
 
@@ -997,7 +735,7 @@ class TradingStrategy:
 
 
     # ========================================================
-    # STATE LOAD
+    # STATE
     # ========================================================
 
     def load_state(self):
@@ -1006,209 +744,128 @@ class TradingStrategy:
             STATE_FILE
         ):
 
-            logging.info(
-                "STATE | No state file found."
-            )
-
             return
 
         try:
 
             with open(
                 STATE_FILE,
-                "r",
-                encoding="utf-8"
-            ) as file:
+                "r"
+            ) as f:
 
-                state = json.load(
-                    file
+                s = json.load(f)
+
+            if s.get("day"):
+
+                self.day = datetime.fromisoformat(
+                    s["day"]
                 )
 
-            if state.get(
-                "day_start"
-            ):
+            if s.get("high") is not None:
 
-                self.day_start = (
-                    datetime.fromisoformat(
-                        state["day_start"]
-                    )
+                self.high = Decimal(
+                    str(s["high"])
                 )
 
-            if state.get(
-                "running_high"
-            ) is not None:
+            if s.get("low") is not None:
 
-                self.running_high = Decimal(
-                    str(
-                        state[
-                            "running_high"
-                        ]
-                    )
+                self.low = Decimal(
+                    str(s["low"])
                 )
 
-            if state.get(
-                "running_low"
-            ) is not None:
+            if s.get("sl") is not None:
 
-                self.running_low = Decimal(
-                    str(
-                        state[
-                            "running_low"
-                        ]
-                    )
+                self.sl = Decimal(
+                    str(s["sl"])
                 )
 
-            if state.get(
-                "current_sl"
-            ) is not None:
-
-                self.current_sl = Decimal(
-                    str(
-                        state[
-                            "current_sl"
-                        ]
-                    )
-                )
-
-            if state.get(
-                "trade_high"
-            ) is not None:
+            if s.get("trade_high") is not None:
 
                 self.trade_high = Decimal(
-                    str(
-                        state[
-                            "trade_high"
-                        ]
-                    )
+                    str(s["trade_high"])
                 )
 
-            if state.get(
-                "trade_low"
-            ) is not None:
+            if s.get("trade_low") is not None:
 
                 self.trade_low = Decimal(
-                    str(
-                        state[
-                            "trade_low"
-                        ]
-                    )
+                    str(s["trade_low"])
                 )
-
-            self.session_ready = bool(
-                state.get(
-                    "session_ready",
-                    False
-                )
-            )
-
-            self.day_reset_done = bool(
-                state.get(
-                    "day_reset_done",
-                    False
-                )
-            )
 
             logging.info(
-                "STATE LOADED | "
-                f"DAY={self.day_start} | "
-                f"HIGH={self.running_high} | "
-                f"LOW={self.running_low} | "
-                f"SL={self.current_sl}"
+                f"STATE | HIGH={self.high} "
+                f"| LOW={self.low} "
+                f"| SL={self.sl}"
             )
 
-        except Exception as exc:
+        except Exception as e:
 
-            logging.error(
-                f"STATE LOAD ERROR | {exc}"
+            logging.warning(
+                f"STATE LOAD ERROR | {e}"
             )
 
 
-    # ========================================================
-    # SAVE STATE
-    # ========================================================
+    def save(self):
 
-    def save_state(self):
+        data = {
 
-        state = {
-
-            "day_start":
+            "day":
                 (
-                    self.day_start.isoformat()
-                    if self.day_start
+                    self.day.isoformat()
+                    if self.day
                     else None
                 ),
 
-            "running_high":
+            "high":
                 (
-                    str(
-                        self.running_high
-                    )
-                    if self.running_high is not None
+                    str(self.high)
+                    if self.high is not None
                     else None
                 ),
 
-            "running_low":
+            "low":
                 (
-                    str(
-                        self.running_low
-                    )
-                    if self.running_low is not None
+                    str(self.low)
+                    if self.low is not None
                     else None
                 ),
 
-            "current_sl":
+            "sl":
                 (
-                    str(
-                        self.current_sl
-                    )
-                    if self.current_sl is not None
+                    str(self.sl)
+                    if self.sl is not None
                     else None
                 ),
 
             "trade_high":
                 (
-                    str(
-                        self.trade_high
-                    )
+                    str(self.trade_high)
                     if self.trade_high is not None
                     else None
                 ),
 
             "trade_low":
                 (
-                    str(
-                        self.trade_low
-                    )
+                    str(self.trade_low)
                     if self.trade_low is not None
                     else None
-                ),
-
-            "session_ready":
-                self.session_ready,
-
-            "day_reset_done":
-                self.day_reset_done
+                )
         }
 
-        temp_file = (
-            STATE_FILE
-            + ".tmp"
-        )
+        tmp = STATE_FILE + ".tmp"
 
         with open(
-            temp_file,
-            "w",
-            encoding="utf-8"
-        ) as file:
+            tmp,
+            "w"
+        ) as f:
 
             json.dump(
-                state,
-                file,
+                data,
+                f,
                 indent=2
             )
 
         os.replace(
-            temp_file,
+            tmp,
             STATE_FILE
         )
 
@@ -1217,20 +874,13 @@ class TradingStrategy:
     # NEW DAY
     # ========================================================
 
-    def handle_new_day(
-        self,
-        now
-    ):
+    def new_day(self, now):
 
-        new_day = trading_day_start(
+        day = trading_day_start(
             now
         )
 
-        if (
-            self.day_start
-            == new_day
-        ):
-
+        if self.day == day:
             return
 
         logging.warning(
@@ -1238,778 +888,277 @@ class TradingStrategy:
         )
 
         logging.warning(
-            "NEW TRADING DATE"
-        )
-
-        logging.warning(
-            f"DAY START = {new_day}"
+            f"NEW DAY | {day}"
         )
 
         logging.warning(
             "========================================"
         )
 
-        self.day_start = new_day
+        self.day = day
 
-        self.running_high = None
-        self.running_low = None
-
-        self.current_sl = None
+        self.high = None
+        self.low = None
+        self.sl = None
 
         self.trade_high = None
         self.trade_low = None
 
-        self.session_ready = False
-        self.recovery_done = False
+        self.ready = False
 
-        self.day_reset_done = False
-
-        self.save_state()
+        self.save()
 
 
     # ========================================================
-    # 05:45 SESSION START
+    # PREPARE
     # ========================================================
 
-    def perform_0545_reset(
-        self,
-        now
-    ):
+    def prepare(self, now, price):
 
-        if is_weekend_blocked(
-            now
-        ):
-            return False
-
-        start_time = strategy_start_time(
-            self.day_start
+        start = strategy_start(
+            self.day
         )
 
-        if now < start_time:
+        if now < start:
             return False
 
-        if self.day_reset_done:
+        if self.ready:
             return True
 
-        logging.warning(
-            "========================================"
-        )
+        # ----------------------------------------------------
+        # Get current exchange position.
+        # ----------------------------------------------------
 
-        logging.warning(
-            "05:45 IST SESSION RESET"
-        )
-
-        logging.warning(
-            "OLD DAY RANGE WILL NOT BE USED."
-        )
-
-        logging.warning(
-            "========================================"
-        )
-
-        position = get_position(
+        pos = position(
             self.product_id
         )
 
-        current_size = position[
+        self.last_position = pos[
             "size"
         ]
 
-        if current_size != 0:
+        # ----------------------------------------------------
+        # If state already has today's range,
+        # use it.
+        # ----------------------------------------------------
 
-            logging.warning(
-                "05:45 | OLD POSITION FOUND | "
-                f"SIZE={current_size}"
+        if (
+            self.high is not None
+            and self.low is not None
+        ):
+
+            self.ready = True
+
+            return True
+
+        # ----------------------------------------------------
+        # Restart after 05:45:
+        # recover today's range.
+        # ----------------------------------------------------
+
+        if now > start + timedelta(seconds=5):
+
+            high, low = historical_high_low(
+                start,
+                now
             )
 
-            close_position_market(
-                self.product_id,
-                current_size
-            )
+            if high is not None and low is not None:
 
-            for _ in range(40):
+                self.high = high
+                self.low = low
 
-                time.sleep(
-                    0.25
+                logging.warning(
+                    "RECOVERED TODAY RANGE"
                 )
 
-                check = get_position(
-                    self.product_id
+                logging.warning(
+                    f"HIGH = {self.high}"
                 )
 
-                if check[
-                    "size"
-                ] == 0:
+                logging.warning(
+                    f"LOW  = {self.low}"
+                )
 
-                    break
+                self.ready = True
 
-            final_check = get_position(
-                self.product_id
-            )
+                self.save()
 
-            if final_check[
+                return True
+
+        # ----------------------------------------------------
+        # If no history available, first live price becomes
+        # initial reference.
+        # ----------------------------------------------------
+
+        self.high = price
+        self.low = price
+
+        self.ready = True
+
+        logging.warning(
+            f"INITIAL RANGE | "
+            f"HIGH={price} LOW={price}"
+        )
+
+        self.save()
+
+        return True
+
+
+    # ========================================================
+    # ENTER
+    # ========================================================
+
+    def enter(
+        self,
+        direction,
+        price,
+        sl
+    ):
+
+        if self.last_position != 0:
+
+            return False
+
+        # Safety check.
+        pos = position(
+            self.product_id
+        )
+
+        if pos["size"] != 0:
+
+            self.last_position = pos[
                 "size"
-            ] != 0:
+            ]
+
+            return False
+
+        if direction == "LONG":
+
+            if sl >= price:
 
                 logging.error(
-                    "05:45 RESET FAILED | "
-                    "OLD POSITION STILL OPEN"
+                    f"LONG BLOCKED | "
+                    f"PRICE={price} SL={sl}"
                 )
 
                 return False
 
-        self.last_position = 0
+            side = "buy"
 
-        self.running_high = None
-        self.running_low = None
+        else:
 
-        self.current_sl = None
+            if sl <= price:
 
-        self.trade_high = None
-        self.trade_low = None
+                logging.error(
+                    f"SHORT BLOCKED | "
+                    f"PRICE={price} SL={sl}"
+                )
 
-        self.session_ready = False
+                return False
 
-        self.recovery_done = False
+            side = "sell"
 
-        self.day_reset_done = True
+        size = order_size(
+            self.product,
+            price
+        )
 
-        self.save_state()
+        market_entry(
+            self.product_id,
+            side,
+            size,
+            sl
+        )
+
+        # Wait for position.
+        for _ in range(50):
+
+            time.sleep(
+                0.2
+            )
+
+            pos = position(
+                self.product_id
+            )
+
+            if direction == "LONG":
+
+                if pos["size"] > 0:
+
+                    self.last_position = pos[
+                        "size"
+                    ]
+
+                    break
+
+            else:
+
+                if pos["size"] < 0:
+
+                    self.last_position = pos[
+                        "size"
+                    ]
+
+                    break
+
+        if self.last_position == 0:
+
+            logging.error(
+                "ENTRY NOT CONFIRMED"
+            )
+
+            return False
+
+        self.sl = Decimal(
+            str(sl)
+        )
+
+        if direction == "LONG":
+
+            self.trade_high = price
+            self.trade_low = None
+
+        else:
+
+            self.trade_low = price
+            self.trade_high = None
+
+        self.save()
 
         logging.warning(
-            "05:45 RESET COMPLETE"
+            f"TRADE LIVE | "
+            f"{direction} | "
+            f"ENTRY≈{price} | "
+            f"SL={sl}"
         )
 
         return True
 
 
     # ========================================================
-    # START / RECOVER SESSION
+    # PRICE
     # ========================================================
 
-    def prepare_session(
+    def price_tick(
         self,
-        now,
-        current_price=None
-    ):
-
-        start_time = strategy_start_time(
-            self.day_start
-        )
-
-        # ----------------------------------------------------
-        # Before 05:45
-        # ----------------------------------------------------
-
-        if now < start_time:
-
-            return False
-
-        # ----------------------------------------------------
-        # If already prepared
-        # ----------------------------------------------------
-
-        if self.session_ready:
-
-            return True
-
-        # ----------------------------------------------------
-        # Make sure 05:45 reset occurred.
-        # ----------------------------------------------------
-
-        if not self.perform_0545_reset(
-            now
-        ):
-
-            return False
-
-        # ----------------------------------------------------
-        # If bot is starting/restarting AFTER 05:45,
-        # recover complete range from historical 1m candles.
-        #
-        # If we're exactly at session start and no historical
-        # candles exist yet, first live trade establishes range.
-        # ----------------------------------------------------
-
-        if now > (
-            start_time
-            + timedelta(seconds=10)
-        ):
-
-            try:
-
-                high, low, count = (
-                    get_historical_range(
-                        start_time,
-                        now
-                    )
-                )
-
-                if (
-                    high is not None
-                    and low is not None
-                    and count > 0
-                ):
-
-                    self.running_high = high
-                    self.running_low = low
-
-                    self.recovery_done = True
-
-                    self.session_ready = True
-
-                    self.save_state()
-
-                    logging.warning(
-                        "SESSION RECOVERED FROM HISTORY | "
-                        f"HIGH={high} | "
-                        f"LOW={low}"
-                    )
-
-                    logging.warning(
-                        "IMPORTANT | "
-                        "Bot will now wait for the NEXT "
-                        "LIVE breakout."
-                    )
-
-                    return True
-
-            except Exception as exc:
-
-                logging.exception(
-                    "HISTORICAL RECOVERY FAILED | "
-                    f"{exc}"
-                )
-
-        # ----------------------------------------------------
-        # If historical recovery wasn't possible,
-        # use current live price as first baseline.
-        # ----------------------------------------------------
-
-        if (
-            self.running_high is None
-            and current_price is not None
-        ):
-
-            self.running_high = current_price
-            self.running_low = current_price
-
-            logging.warning(
-                "FIRST LIVE SESSION BASELINE | "
-                f"HIGH={current_price} | "
-                f"LOW={current_price}"
-            )
-
-        if (
-            self.running_high is not None
-            and self.running_low is not None
-        ):
-
-            self.session_ready = True
-
-            self.save_state()
-
-            return True
-
-        return False
-
-
-    # ========================================================
-    # ENTRY
-    # ========================================================
-
-    def execute_entry(
-        self,
-        direction,
-        price,
-        sl_price,
-        reason
-    ):
-
-        with self.lock:
-
-            if self.order_in_flight:
-
-                logging.warning(
-                    "ENTRY BLOCKED | "
-                    "ORDER ALREADY IN FLIGHT"
-                )
-
-                return False
-
-            now = now_ist()
-
-            if is_weekend_blocked(
-                now
-            ):
-
-                return False
-
-            if now < strategy_start_time(
-                self.day_start
-            ):
-
-                return False
-
-            if sl_price is None:
-
-                logging.error(
-                    "ENTRY BLOCKED | SL NONE"
-                )
-
-                return False
-
-            # ------------------------------------------------
-            # Direction validation
-            # ------------------------------------------------
-
-            if direction == "LONG":
-
-                if sl_price >= price:
-
-                    logging.error(
-                        "LONG ENTRY BLOCKED | "
-                        f"PRICE={price} | "
-                        f"SL={sl_price}"
-                    )
-
-                    return False
-
-            elif direction == "SHORT":
-
-                if sl_price <= price:
-
-                    logging.error(
-                        "SHORT ENTRY BLOCKED | "
-                        f"PRICE={price} | "
-                        f"SL={sl_price}"
-                    )
-
-                    return False
-
-            else:
-
-                logging.error(
-                    f"UNKNOWN DIRECTION={direction}"
-                )
-
-                return False
-
-            # ------------------------------------------------
-            # Exchange position check
-            # ------------------------------------------------
-
-            existing = get_position(
-                self.product_id
-            )
-
-            if existing[
-                "size"
-            ] != 0:
-
-                logging.warning(
-                    "ENTRY BLOCKED | "
-                    "EXCHANGE POSITION EXISTS | "
-                    f"SIZE={existing['size']}"
-                )
-
-                self.last_position = (
-                    existing["size"]
-                )
-
-                return False
-
-            # ------------------------------------------------
-            # Calculate size
-            # ------------------------------------------------
-
-            size = calculate_order_size(
-                self.product,
-                price
-            )
-
-            side = (
-                "buy"
-                if direction == "LONG"
-                else "sell"
-            )
-
-            self.order_in_flight = True
-
-            try:
-
-                result = execute_market_entry(
-                    self.product_id,
-                    side,
-                    size,
-                    sl_price
-                )
-
-                logging.warning(
-                    "ENTRY REQUEST ACCEPTED BY DELTA"
-                )
-
-                logging.warning(
-                    f"ORDER RESPONSE = {result}"
-                )
-
-                # ------------------------------------------------
-                # Wait for actual position.
-                # ------------------------------------------------
-
-                filled_size = 0
-
-                for _ in range(50):
-
-                    time.sleep(
-                        0.20
-                    )
-
-                    position = get_position(
-                        self.product_id
-                    )
-
-                    position_size = (
-                        position["size"]
-                    )
-
-                    if direction == "LONG":
-
-                        if position_size > 0:
-
-                            filled_size = (
-                                position_size
-                            )
-
-                            break
-
-                    else:
-
-                        if position_size < 0:
-
-                            filled_size = (
-                                position_size
-                            )
-
-                            break
-
-                if filled_size == 0:
-
-                    raise RuntimeError(
-                        "ENTRY ORDER SENT BUT "
-                        "POSITION FILL NOT CONFIRMED."
-                    )
-
-                self.last_position = (
-                    filled_size
-                )
-
-                self.current_sl = Decimal(
-                    str(sl_price)
-                )
-
-                if direction == "LONG":
-
-                    self.trade_high = price
-                    self.trade_low = None
-
-                else:
-
-                    self.trade_low = price
-                    self.trade_high = None
-
-                self.save_state()
-
-                logging.warning(
-                    "========================================"
-                )
-
-                logging.warning(
-                    "ENTRY CONFIRMED"
-                )
-
-                logging.warning(
-                    f"DIRECTION = {direction}"
-                )
-
-                logging.warning(
-                    f"SIZE      = {filled_size}"
-                )
-
-                logging.warning(
-                    f"ENTRY     ≈ {price}"
-                )
-
-                logging.warning(
-                    f"SL        = {sl_price}"
-                )
-
-                logging.warning(
-                    f"REASON    = {reason}"
-                )
-
-                logging.warning(
-                    "========================================"
-                )
-
-                return True
-
-            finally:
-
-                self.order_in_flight = False
-
-
-    # ========================================================
-    # LONG -> SHORT
-    # ========================================================
-
-    def reverse_long_to_short(
-        self,
-        price
-    ):
-
-        peak = (
-            self.trade_high
-            if self.trade_high is not None
-            else self.running_high
-        )
-
-        if peak is None:
-
-            logging.error(
-                "REVERSAL BLOCKED | "
-                "NO LONG PEAK"
-            )
-
-            return False
-
-        logging.warning(
-            "LONG SL HIT -> "
-            f"REVERSE SHORT | SL={peak}"
-        )
-
-        position = get_position(
-            self.product_id
-        )
-
-        if position[
-            "size"
-        ] != 0:
-
-            logging.warning(
-                "Waiting for exchange "
-                "to become FLAT..."
-            )
-
-            for _ in range(40):
-
-                time.sleep(
-                    0.25
-                )
-
-                position = get_position(
-                    self.product_id
-                )
-
-                if position[
-                    "size"
-                ] == 0:
-
-                    break
-
-        if get_position(
-            self.product_id
-        )["size"] != 0:
-
-            logging.error(
-                "REVERSAL BLOCKED | "
-                "OLD LONG STILL OPEN"
-            )
-
-            return False
-
-        return self.execute_entry(
-            "SHORT",
-            price,
-            peak,
-            "LONG SL HIT -> REVERSE SHORT"
-        )
-
-
-    # ========================================================
-    # SHORT -> LONG
-    # ========================================================
-
-    def reverse_short_to_long(
-        self,
-        price
-    ):
-
-        trough = (
-            self.trade_low
-            if self.trade_low is not None
-            else self.running_low
-        )
-
-        if trough is None:
-
-            logging.error(
-                "REVERSAL BLOCKED | "
-                "NO SHORT TROUGH"
-            )
-
-            return False
-
-        logging.warning(
-            "SHORT SL HIT -> "
-            f"REVERSE LONG | SL={trough}"
-        )
-
-        position = get_position(
-            self.product_id
-        )
-
-        if position[
-            "size"
-        ] != 0:
-
-            logging.warning(
-                "Waiting for exchange "
-                "to become FLAT..."
-            )
-
-            for _ in range(40):
-
-                time.sleep(
-                    0.25
-                )
-
-                position = get_position(
-                    self.product_id
-                )
-
-                if position[
-                    "size"
-                ] == 0:
-
-                    break
-
-        if get_position(
-            self.product_id
-        )["size"] != 0:
-
-            logging.error(
-                "REVERSAL BLOCKED | "
-                "OLD SHORT STILL OPEN"
-            )
-
-            return False
-
-        return self.execute_entry(
-            "LONG",
-            price,
-            trough,
-            "SHORT SL HIT -> REVERSE LONG"
-        )
-
-
-    # ========================================================
-    # POSITION CLOSED
-    # ========================================================
-
-    def handle_position_closed(
-        self,
-        old_size,
-        current_price
-    ):
-
-        old_sl = self.current_sl
-
-        sl_triggered = False
-
-        if old_sl is not None:
-
-            if (
-                old_size > 0
-                and current_price <= old_sl
-            ):
-
-                sl_triggered = True
-
-            elif (
-                old_size < 0
-                and current_price >= old_sl
-            ):
-
-                sl_triggered = True
-
-        self.current_sl = None
-
-        self.last_position = 0
-
-        if not sl_triggered:
-
-            logging.warning(
-                "POSITION CLOSED WITHOUT "
-                "LOCAL SL CONFIRMATION"
-            )
-
-            logging.warning(
-                "NO AUTOMATIC REVERSAL"
-            )
-
-            self.trade_high = None
-            self.trade_low = None
-
-            self.save_state()
-
-            return
-
-        if old_size > 0:
-
-            self.reverse_long_to_short(
-                current_price
-            )
-
-        else:
-
-            self.reverse_short_to_long(
-                current_price
-            )
-
-
-    # ========================================================
-    # PRICE ENGINE
-    # ========================================================
-
-    def on_price(
-        self,
-        price_str
+        price_text
     ):
 
         try:
 
-            current_price = Decimal(
-                str(price_str)
+            price = Decimal(
+                str(price_text)
             )
 
-        except (
-            InvalidOperation,
-            ValueError,
-            TypeError
-        ):
-
-            logging.warning(
-                f"INVALID PRICE | {price_str}"
-            )
+        except Exception:
 
             return
 
         with self.lock:
 
-            self.last_price = (
-                current_price
-            )
+            self.last_price = price
 
             now = now_ist()
 
@@ -2017,30 +1166,18 @@ class TradingStrategy:
             # Saturday square-off
             # ------------------------------------------------
 
-            if is_saturday_squareoff_time(
-                now
-            ):
+            if saturday_squareoff(now):
 
-                position = get_position(
+                pos = position(
                     self.product_id
                 )
 
-                if position[
-                    "size"
-                ] != 0:
+                if pos["size"] != 0:
 
-                    logging.warning(
-                        "SATURDAY 05:00 SQUARE-OFF | "
-                        f"SIZE={position['size']}"
-                    )
-
-                    close_position_market(
+                    close_position(
                         self.product_id,
-                        position["size"]
+                        pos["size"]
                     )
-
-                self.last_position = 0
-                self.current_sl = None
 
                 return
 
@@ -2048,9 +1185,7 @@ class TradingStrategy:
             # Weekend
             # ------------------------------------------------
 
-            if is_weekend_blocked(
-                now
-            ):
+            if weekend(now):
 
                 return
 
@@ -2058,60 +1193,111 @@ class TradingStrategy:
             # Day
             # ------------------------------------------------
 
-            self.handle_new_day(
-                now
-            )
+            self.new_day(now)
 
             # ------------------------------------------------
             # Before 05:45
             # ------------------------------------------------
 
-            if now < strategy_start_time(
-                self.day_start
+            if now < strategy_start(
+                self.day
             ):
 
                 return
 
             # ------------------------------------------------
-            # Session preparation
+            # Prepare
             # ------------------------------------------------
 
-            if not self.prepare_session(
+            if not self.prepare(
                 now,
-                current_price
+                price
             ):
 
                 return
 
             # ------------------------------------------------
-            # Exchange position
+            # Current exchange position
             # ------------------------------------------------
 
-            position = get_position(
+            pos = position(
                 self.product_id
             )
 
-            current_size = (
-                position["size"]
-            )
+            size = pos["size"]
 
             # ------------------------------------------------
-            # Position disappeared
+            # POSITION CLOSED
             # ------------------------------------------------
 
             if (
-                current_size == 0
+                size == 0
                 and self.last_position != 0
             ):
 
-                old_size = (
-                    self.last_position
-                )
+                old = self.last_position
 
-                self.handle_position_closed(
-                    old_size,
-                    current_price
-                )
+                # If SL was hit, reverse.
+                if (
+                    self.sl is not None
+                    and (
+                        (
+                            old > 0
+                            and price <= self.sl
+                        )
+                        or
+                        (
+                            old < 0
+                            and price >= self.sl
+                        )
+                    )
+                ):
+
+                    if old > 0:
+
+                        peak = (
+                            self.trade_high
+                            or self.high
+                        )
+
+                        logging.warning(
+                            "LONG SL -> SHORT"
+                        )
+
+                        self.last_position = 0
+                        self.sl = None
+
+                        self.enter(
+                            "SHORT",
+                            price,
+                            peak
+                        )
+
+                    else:
+
+                        trough = (
+                            self.trade_low
+                            or self.low
+                        )
+
+                        logging.warning(
+                            "SHORT SL -> LONG"
+                        )
+
+                        self.last_position = 0
+                        self.sl = None
+
+                        self.enter(
+                            "LONG",
+                            price,
+                            trough
+                        )
+
+                    return
+
+                # Manual/external close.
+                self.last_position = 0
+                self.sl = None
 
                 return
 
@@ -2119,28 +1305,23 @@ class TradingStrategy:
             # LONG
             # ------------------------------------------------
 
-            if current_size > 0:
+            if size > 0:
 
-                self.last_position = (
-                    current_size
-                )
+                self.last_position = size
 
                 if (
                     self.trade_high is None
-                    or current_price
-                    > self.trade_high
+                    or price > self.trade_high
                 ):
 
-                    self.trade_high = (
-                        current_price
+                    self.trade_high = price
+
+                    self.high = max(
+                        self.high,
+                        price
                     )
 
-                    logging.info(
-                        "LONG PEAK | "
-                        f"{self.trade_high}"
-                    )
-
-                    self.save_state()
+                    self.save()
 
                 return
 
@@ -2148,28 +1329,23 @@ class TradingStrategy:
             # SHORT
             # ------------------------------------------------
 
-            if current_size < 0:
+            if size < 0:
 
-                self.last_position = (
-                    current_size
-                )
+                self.last_position = size
 
                 if (
                     self.trade_low is None
-                    or current_price
-                    < self.trade_low
+                    or price < self.trade_low
                 ):
 
-                    self.trade_low = (
-                        current_price
+                    self.trade_low = price
+
+                    self.low = min(
+                        self.low,
+                        price
                     )
 
-                    logging.info(
-                        "SHORT TROUGH | "
-                        f"{self.trade_low}"
-                    )
-
-                    self.save_state()
+                    self.save()
 
                 return
 
@@ -2178,897 +1354,184 @@ class TradingStrategy:
             # ------------------------------------------------
 
             self.last_position = 0
-            self.current_sl = None
 
-            old_high = (
-                self.running_high
-            )
+            # ------------------------------------------------
+            # NEW HIGH
+            # ------------------------------------------------
 
-            old_low = (
-                self.running_low
-            )
+            if price > self.high:
 
-            if (
-                old_high is None
-                or old_low is None
-            ):
-
-                self.running_high = (
-                    current_price
-                )
-
-                self.running_low = (
-                    current_price
-                )
-
-                self.save_state()
+                old_high = self.high
+                sl = self.low
 
                 logging.warning(
-                    "BASELINE CREATED | "
-                    f"HIGH={current_price} | "
-                    f"LOW={current_price}"
+                    f"NEW HIGH | "
+                    f"{old_high} -> {price}"
                 )
+
+                if self.enter(
+                    "LONG",
+                    price,
+                    sl
+                ):
+
+                    self.high = price
+
+                    self.save()
 
                 return
 
-            # =================================================
-            # NEW HIGH -> LONG
-            # =================================================
+            # ------------------------------------------------
+            # NEW LOW
+            # ------------------------------------------------
 
-            if current_price > old_high:
+            if price < self.low:
 
-                sl = old_low
-
-                logging.warning(
-                    "========================================"
-                )
+                old_low = self.low
+                sl = self.high
 
                 logging.warning(
-                    "NEW HIGH BREAKOUT DETECTED"
+                    f"NEW LOW | "
+                    f"{old_low} -> {price}"
                 )
 
-                logging.warning(
-                    f"OLD HIGH = {old_high}"
-                )
-
-                logging.warning(
-                    f"PRICE    = {current_price}"
-                )
-
-                logging.warning(
-                    f"SL       = {sl}"
-                )
-
-                logging.warning(
-                    "SIGNAL   = LONG"
-                )
-
-                logging.warning(
-                    "========================================"
-                )
-
-                entered = self.execute_entry(
-                    "LONG",
-                    current_price,
-                    sl,
-                    "NEW HIGH BREAKOUT"
-                )
-
-                if entered:
-
-                    self.running_high = (
-                        current_price
-                    )
-
-                    self.trade_high = (
-                        current_price
-                    )
-
-                    self.save_state()
-
-                    return
-
-            # =================================================
-            # NEW LOW -> SHORT
-            # =================================================
-
-            if current_price < old_low:
-
-                sl = old_high
-
-                logging.warning(
-                    "========================================"
-                )
-
-                logging.warning(
-                    "NEW LOW BREAKDOWN DETECTED"
-                )
-
-                logging.warning(
-                    f"OLD LOW  = {old_low}"
-                )
-
-                logging.warning(
-                    f"PRICE    = {current_price}"
-                )
-
-                logging.warning(
-                    f"SL       = {sl}"
-                )
-
-                logging.warning(
-                    "SIGNAL   = SHORT"
-                )
-
-                logging.warning(
-                    "========================================"
-                )
-
-                entered = self.execute_entry(
+                if self.enter(
                     "SHORT",
-                    current_price,
-                    sl,
-                    "NEW LOW BREAKDOWN"
-                )
-
-                if entered:
-
-                    self.running_low = (
-                        current_price
-                    )
-
-                    self.trade_low = (
-                        current_price
-                    )
-
-                    self.save_state()
-
-                    return
-
-            # =================================================
-            # UPDATE RANGE
-            # =================================================
-
-            changed = False
-
-            if (
-                current_price
-                > self.running_high
-            ):
-
-                self.running_high = (
-                    current_price
-                )
-
-                changed = True
-
-            if (
-                current_price
-                < self.running_low
-            ):
-
-                self.running_low = (
-                    current_price
-                )
-
-                changed = True
-
-            if changed:
-
-                self.save_state()
-
-
-    # ========================================================
-    # PUBLIC WEBSOCKET
-    # ========================================================
-
-    def start_public_websocket(
-        self
-    ):
-
-        def subscribe(
-            ws,
-            channel,
-            symbols
-        ):
-
-            payload = {
-                "type": "subscribe",
-                "payload": {
-                    "channels": [
-                        {
-                            "name":
-                                channel,
-
-                            "symbols":
-                                symbols
-                        }
-                    ]
-                }
-            }
-
-            ws.send(
-                json.dumps(
-                    payload
-                )
-            )
-
-            logging.warning(
-                f"SUBSCRIBE SENT | "
-                f"{channel} | "
-                f"{symbols}"
-            )
-
-
-        def on_open(
-            ws
-        ):
-
-            logging.warning(
-                "========================================"
-            )
-
-            logging.warning(
-                "PUBLIC WEBSOCKET CONNECTED"
-            )
-
-            logging.warning(
-                f"URL = {WS_URL}"
-            )
-
-            logging.warning(
-                "========================================"
-            )
-
-            # ------------------------------------------------
-            # REAL-TIME TRADES
-            # ------------------------------------------------
-
-            subscribe(
-                ws,
-                "trades",
-                [SYMBOL]
-            )
-
-
-        def on_message(
-            ws,
-            message
-        ):
-
-            try:
-
-                data = json.loads(
-                    message
-                )
-
-                msg_type = data.get(
-                    "type"
-                )
-
-                # ------------------------------------------------
-                # Subscription confirmation
-                # ------------------------------------------------
-
-                if msg_type == "subscriptions":
-
-                    logging.warning(
-                        f"SUBSCRIPTION RESPONSE | {data}"
-                    )
-
-                    return
-
-                # ------------------------------------------------
-                # Heartbeat / pong
-                # ------------------------------------------------
-
-                if msg_type in (
-                    "heartbeat",
-                    "pong"
+                    price,
+                    sl
                 ):
 
-                    return
+                    self.low = price
 
-                # ------------------------------------------------
-                # REAL-TIME TRADES
-                #
-                # Current Delta format:
-                #
-                # {
-                #   "p": "72141.5",
-                #   "sy": "BTCUSD",
-                #   "type": "trades"
-                # }
-                # ------------------------------------------------
+                    self.save()
 
-                if msg_type == "trades":
+                return
 
-                    symbol = (
-                        data.get(
-                            "sy"
-                        )
-                        or data.get(
-                            "symbol"
-                        )
-                    )
 
-                    price = data.get(
-                        "p"
-                    )
+# ============================================================
+# WEBSOCKET
+# ============================================================
 
-                    if (
-                        symbol == SYMBOL
-                        and price is not None
-                    ):
+def run_websocket(bot):
 
-                        self.on_price(
-                            str(price)
-                        )
-
-                    return
-
-                # ------------------------------------------------
-                # Error messages
-                # ------------------------------------------------
-
-                if (
-                    data.get(
-                        "success"
-                    ) is False
-                ):
-
-                    logging.error(
-                        f"WEBSOCKET ERROR RESPONSE | "
-                        f"{data}"
-                    )
-
-                    return
-
-                # ------------------------------------------------
-                # Log unexpected messages.
-                # ------------------------------------------------
-
-                if msg_type:
-
-                    logging.info(
-                        f"WS MESSAGE | {data}"
-                    )
-
-            except Exception as exc:
-
-                logging.exception(
-                    f"WS MESSAGE ERROR | {exc}"
-                )
-
-
-        def on_error(
-            ws,
-            error
-        ):
-
-            logging.error(
-                f"PUBLIC WS ERROR | {error}"
-            )
-
-
-        def on_close(
-            ws,
-            close_status_code,
-            close_msg
-        ):
-
-            logging.warning(
-                "PUBLIC WS CLOSED | "
-                f"CODE={close_status_code} | "
-                f"MSG={close_msg}"
-            )
-
-
-        while True:
-
-            try:
-
-                logging.warning(
-                    "CONNECTING PUBLIC WEBSOCKET..."
-                )
-
-                ws_app = websocket.WebSocketApp(
-                    WS_URL,
-                    on_open=on_open,
-                    on_message=on_message,
-                    on_error=on_error,
-                    on_close=on_close
-                )
-
-                ws_app.run_forever(
-                    ping_interval=30,
-                    ping_timeout=10
-                )
-
-            except Exception as exc:
-
-                logging.exception(
-                    f"PUBLIC WS CRASH | {exc}"
-                )
-
-            logging.warning(
-                f"WS RECONNECTING IN "
-                f"{RECONNECT_SECONDS} SECONDS..."
-            )
-
-            time.sleep(
-                RECONNECT_SECONDS
-            )
-
-
-    # ========================================================
-    # PRIVATE WEBSOCKET
-    #
-    # Used only for visibility of orders/positions.
-    # Trading itself does NOT depend on this socket.
-    # ========================================================
-
-    def start_private_websocket(
-        self
-    ):
-
-        private_url = os.getenv(
-            "DELTA_PRIVATE_WS_URL",
-            "wss://socket.india.delta.exchange"
-        )
-
-        def generate_ws_signature():
-
-            timestamp = str(
-                int(time.time())
-            )
-
-            message = (
-                "GET"
-                + timestamp
-                + "/live"
-            )
-
-            signature = hmac.new(
-                API_SECRET.encode(),
-                message.encode(),
-                hashlib.sha256
-            ).hexdigest()
-
-            return (
-                timestamp,
-                signature
-            )
-
-
-        def subscribe(
-            ws,
-            channel
-        ):
-
-            payload = {
-                "type": "subscribe",
-                "payload": {
-                    "channels": [
-                        {
-                            "name":
-                                channel,
-
-                            "symbols":
-                                [SYMBOL]
-                        }
-                    ]
-                }
-            }
-
-            ws.send(
-                json.dumps(
-                    payload
-                )
-            )
-
-
-        def on_open(
-            ws
-        ):
-
-            logging.warning(
-                "PRIVATE WEBSOCKET CONNECTED"
-            )
-
-            timestamp, signature = (
-                generate_ws_signature()
-            )
-
-            auth_message = {
-                "type":
-                    "key-auth",
-
-                "payload": {
-                    "api-key":
-                        API_KEY,
-
-                    "signature":
-                        signature,
-
-                    "timestamp":
-                        timestamp
-                }
-            }
-
-            ws.send(
-                json.dumps(
-                    auth_message
-                )
-            )
-
-
-        def on_message(
-            ws,
-            message
-        ):
-
-            try:
-
-                data = json.loads(
-                    message
-                )
-
-                msg_type = data.get(
-                    "type"
-                )
-
-                if msg_type == "key-auth":
-
-                    if data.get(
-                        "success"
-                    ):
-
-                        logging.warning(
-                            "PRIVATE WS AUTHENTICATED"
-                        )
-
-                        subscribe(
-                            ws,
-                            "orders"
-                        )
-
-                        subscribe(
-                            ws,
-                            "positions"
-                        )
-
-                    else:
-
-                        logging.error(
-                            "PRIVATE WS AUTH FAILED | "
-                            f"{data}"
-                        )
-
-                    return
-
-                if msg_type in (
-                    "orders",
-                    "positions",
-                    "v2/user_trades"
-                ):
-
-                    logging.warning(
-                        f"PRIVATE EVENT | {data}"
-                    )
-
-            except Exception as exc:
-
-                logging.exception(
-                    f"PRIVATE WS ERROR | {exc}"
-                )
-
-
-        def on_error(
-            ws,
-            error
-        ):
-
-            logging.error(
-                f"PRIVATE WS ERROR | {error}"
-            )
-
-
-        def on_close(
-            ws,
-            code,
-            msg
-        ):
-
-            logging.warning(
-                "PRIVATE WS CLOSED | "
-                f"CODE={code} | MSG={msg}"
-            )
-
-
-        while True:
-
-            try:
-
-                ws_app = websocket.WebSocketApp(
-                    private_url,
-                    on_open=on_open,
-                    on_message=on_message,
-                    on_error=on_error,
-                    on_close=on_close
-                )
-
-                ws_app.run_forever(
-                    ping_interval=30,
-                    ping_timeout=10
-                )
-
-            except Exception as exc:
-
-                logging.exception(
-                    f"PRIVATE WS CRASH | {exc}"
-                )
-
-            time.sleep(
-                RECONNECT_SECONDS
-            )
-
-
-    # ========================================================
-    # WATCHDOG
-    # ========================================================
-
-    def watchdog(
-        self
-    ):
-
-        last_position_check = 0
-
-        while True:
-
-            try:
-
-                now = time.time()
-
-                if (
-                    now
-                    - last_position_check
-                    >= POSITION_CHECK_SECONDS
-                ):
-
-                    position = get_position(
-                        self.product_id
-                    )
-
-                    exchange_size = (
-                        position["size"]
-                    )
-
-                    with self.lock:
-
-                        if (
-                            exchange_size !=
-                            self.last_position
-                        ):
-
-                            logging.warning(
-                                "POSITION CHANGE | "
-                                f"LOCAL={self.last_position} | "
-                                f"EXCHANGE={exchange_size}"
-                            )
-
-                        # ------------------------------------------------
-                        # If exchange has position, synchronize.
-                        # ------------------------------------------------
-
-                        if exchange_size != 0:
-
-                            self.last_position = (
-                                exchange_size
-                            )
-
-                        # ------------------------------------------------
-                        # If exchange flattened a position,
-                        # don't reverse here because the price
-                        # engine needs current price to determine
-                        # whether the SL was hit.
-                        # ------------------------------------------------
-
-                        elif (
-                            exchange_size == 0
-                            and self.last_position != 0
-                        ):
-
-                            logging.warning(
-                                "WATCHDOG | "
-                                "EXCHANGE FLAT BUT LOCAL "
-                                "POSITION EXISTS."
-                            )
-
-                            if (
-                                self.last_price
-                                is not None
-                            ):
-
-                                old_size = (
-                                    self.last_position
-                                )
-
-                                self.handle_position_closed(
-                                    old_size,
-                                    self.last_price
-                                )
-
-                    last_position_check = (
-                        now
-                    )
-
-                time.sleep(
-                    0.25
-                )
-
-            except Exception as exc:
-
-                logging.exception(
-                    f"WATCHDOG ERROR | {exc}"
-                )
-
-                time.sleep(2)
-
-
-    # ========================================================
-    # START
-    # ========================================================
-
-    def start(
-        self
-    ):
-
-        logging.warning(
-            "============================================"
-        )
-
-        logging.warning(
-            "XAUTUSD BREAKOUT + REVERSAL BOT v30.0"
-        )
-
-        logging.warning(
-            f"SYMBOL       = {SYMBOL}"
-        )
-
-        logging.warning(
-            f"LEVERAGE     = {LEVERAGE}x"
-        )
-
-        logging.warning(
-            f"BALANCE USE  = {BALANCE_FRACTION * 100}%"
-        )
-
-        logging.warning(
-            f"REST API     = {BASE_URL}"
-        )
-
-        logging.warning(
-            f"PUBLIC WS    = {WS_URL}"
-        )
-
-        logging.warning(
-            "PRICE FEED   = REAL-TIME TRADES"
-        )
-
-        logging.warning(
-            "START TIME   = 05:45 IST"
-        )
-
-        logging.warning(
-            "RECOVERY     = 1-MINUTE HISTORY"
-        )
-
-        logging.warning(
-            "============================================"
-        )
-
-        # --------------------------------------------------------
-        # Leverage
-        # --------------------------------------------------------
-
-        set_leverage(
-            self.product_id
-        )
-
-        # --------------------------------------------------------
-        # Startup position
-        # --------------------------------------------------------
+    while True:
 
         try:
 
-            position = get_position(
-                self.product_id
+            logging.warning(
+                f"CONNECTING WS | {WS_URL}"
             )
 
-            self.last_position = (
-                position["size"]
-            )
+            def on_open(ws):
 
-            if position[
-                "size"
-            ] != 0:
+                payload = {
+                    "type": "subscribe",
+                    "payload": {
+                        "channels": [
+                            {
+                                "name": "trades",
+                                "symbols": [
+                                    SYMBOL
+                                ]
+                            }
+                        ]
+                    }
+                }
+
+                ws.send(
+                    json.dumps(payload)
+                )
 
                 logging.warning(
-                    "STARTUP POSITION | "
-                    f"SIZE={position['size']} | "
-                    f"ENTRY={position['entry_price']}"
+                    f"TRADES SUBSCRIBED | {SYMBOL}"
                 )
 
-            else:
 
-                logging.info(
-                    "STARTUP POSITION = FLAT"
+            def on_message(
+                ws,
+                message
+            ):
+
+                try:
+
+                    data = json.loads(
+                        message
+                    )
+
+                    if data.get(
+                        "type"
+                    ) == "trades":
+
+                        symbol = (
+                            data.get("sy")
+                            or data.get("symbol")
+                        )
+
+                        price = data.get("p")
+
+                        if (
+                            symbol == SYMBOL
+                            and price is not None
+                        ):
+
+                            bot.price_tick(
+                                price
+                            )
+
+                except Exception as e:
+
+                    logging.error(
+                        f"WS MESSAGE ERROR | {e}"
+                    )
+
+
+            def on_error(
+                ws,
+                error
+            ):
+
+                logging.error(
+                    f"WS ERROR | {error}"
                 )
 
-        except Exception as exc:
 
-            logging.error(
-                "STARTUP POSITION CHECK FAILED | "
-                f"{exc}"
-            )
-
-        # --------------------------------------------------------
-        # Start public market feed
-        # --------------------------------------------------------
-
-        public_thread = threading.Thread(
-            target=self.start_public_websocket,
-            daemon=True
-        )
-
-        public_thread.start()
-
-        # --------------------------------------------------------
-        # Start private visibility feed
-        # --------------------------------------------------------
-
-        private_thread = threading.Thread(
-            target=self.start_private_websocket,
-            daemon=True
-        )
-
-        private_thread.start()
-
-        # --------------------------------------------------------
-        # Start watchdog
-        # --------------------------------------------------------
-
-        watchdog_thread = threading.Thread(
-            target=self.watchdog,
-            daemon=True
-        )
-
-        watchdog_thread.start()
-
-        # --------------------------------------------------------
-        # Main keep-alive
-        # --------------------------------------------------------
-
-        while True:
-
-            try:
-
-                time.sleep(10)
-
-            except KeyboardInterrupt:
+            def on_close(
+                ws,
+                code,
+                msg
+            ):
 
                 logging.warning(
-                    "BOT STOPPED BY USER."
+                    f"WS CLOSED | {code} | {msg}"
                 )
 
-                break
 
-            except Exception as exc:
+            ws = websocket.WebSocketApp(
+                WS_URL,
+                on_open=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close
+            )
 
-                logging.exception(
-                    f"MAIN LOOP ERROR | {exc}"
-                )
+            ws.run_forever(
+                ping_interval=30,
+                ping_timeout=10
+            )
+
+        except Exception as e:
+
+            logging.exception(
+                f"WS CRASH | {e}"
+            )
+
+        logging.warning(
+            f"RECONNECTING IN {RECONNECT_SECONDS}s"
+        )
+
+        time.sleep(
+            RECONNECT_SECONDS
+        )
 
 
 # ============================================================
@@ -3077,26 +1540,62 @@ class TradingStrategy:
 
 if __name__ == "__main__":
 
+    logging.warning(
+        "============================================"
+    )
+
+    logging.warning(
+        "XAUTUSD SIMPLE NEW HIGH / NEW LOW BOT"
+    )
+
+    logging.warning(
+        f"SYMBOL = {SYMBOL}"
+    )
+
+    logging.warning(
+        f"LEVERAGE = {LEVERAGE}x"
+    )
+
+    logging.warning(
+        f"BALANCE = {BALANCE_FRACTION * 100}%"
+    )
+
+    logging.warning(
+        "START = 05:45 IST"
+    )
+
+    logging.warning(
+        "FEED = TRADES WEBSOCKET"
+    )
+
+    logging.warning(
+        "============================================"
+    )
+
     try:
 
-        product_info = get_product()
+        product_info = product()
 
-        bot = TradingStrategy(
+        set_leverage(
+            int(product_info["id"])
+        )
+
+        bot = Bot(
             product_info
         )
 
-        bot.start()
+        run_websocket(
+            bot
+        )
 
     except KeyboardInterrupt:
 
         logging.warning(
-            "BOT STOPPED BY USER."
+            "BOT STOPPED"
         )
 
-    except Exception as exc:
+    except Exception as e:
 
         logging.exception(
-            f"FATAL STARTUP ERROR | {exc}"
+            f"FATAL ERROR | {e}"
         )
-
-        raise
