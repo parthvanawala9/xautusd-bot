@@ -37,6 +37,8 @@ jobs:
 
         run: |
 
+          set -e
+
           mkdir -p ~/.ssh
 
           printf '%s\n' "$ORACLE_PRIVATE_KEY" \
@@ -44,68 +46,180 @@ jobs:
 
           chmod 600 ~/.ssh/oracle.key
 
+          ssh-keygen \
+            -y \
+            -f ~/.ssh/oracle.key \
+            > /dev/null
+
+          echo "SSH KEY OK"
+
 
       # =====================================================
-      # TEST ORACLE SSH
+      # CHECK PYTHON SYNTAX BEFORE TOUCHING ORACLE
       # =====================================================
 
-      - name: Test Oracle SSH
+      - name: Check bot.py Syntax
+        run: |
+
+          set -e
+
+          python3 -m py_compile bot.py
+
+          echo "BOT_PY_SYNTAX_OK"
+
+
+      # =====================================================
+      # COPY FILES TO ORACLE
+      #
+      # Files are first copied to a temporary directory.
+      # Existing running bot is NOT touched during upload.
+      # =====================================================
+
+      - name: Upload Bot And Dashboard
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
 
         run: |
 
+          set -e
+
+          echo "========================================"
+          echo "CONNECTING TO ORACLE"
+          echo "========================================"
+
+          SSH_OPTIONS="
+            -i ~/.ssh/oracle.key
+            -o StrictHostKeyChecking=no
+            -o UserKnownHostsFile=/dev/null
+            -o ConnectTimeout=60
+            -o ConnectionAttempts=5
+            -o ServerAliveInterval=15
+            -o ServerAliveCountMax=4
+          "
+
+          echo "Testing SSH connection..."
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            -o ConnectionAttempts=2 \
-            -o ServerAliveInterval=10 \
-            -o ServerAliveCountMax=3 \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "echo ORACLE_SSH_OK"
 
 
+          echo
+          echo "Creating temporary deployment directory..."
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot/.deploy_tmp"
+
+
+          echo
+          echo "Uploading files..."
+
+
+          scp \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            bot.py \
+            index.html \
+            app.js \
+            style.css \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/.deploy_tmp/"
+
+
+          echo
+          echo "UPLOAD_OK"
+
+
       # =====================================================
-      # COPY BOT + DASHBOARD FILES
+      # INSTALL NEW FILES
       #
-      # ALL FILES ARE IN ROOT FOLDER
-      #
-      # bot.py itself starts the dashboard.
+      # Existing accounts.json and state/history directories
+      # are NOT touched.
       # =====================================================
 
-      - name: Copy Bot And Dashboard
+      - name: Install New Files
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
 
         run: |
 
+          set -e
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "mkdir -p /home/opc/xautusd-bot"
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          scp \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            bot.py \
-            index.html \
-            app.js \
-            style.css \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/"
+          set -e
+
+          BOT_DIR="/home/opc/xautusd-bot"
+          TMP_DIR="$BOT_DIR/.deploy_tmp"
+
+          echo "========================================"
+          echo "INSTALLING NEW BOT + DASHBOARD FILES"
+          echo "========================================"
+
+          test -f "$TMP_DIR/bot.py"
+          test -f "$TMP_DIR/index.html"
+          test -f "$TMP_DIR/app.js"
+          test -f "$TMP_DIR/style.css"
+
+          echo "All uploaded files found."
+
+          echo
+          echo "Checking Python syntax on Oracle..."
+
+          python3 -m py_compile "$TMP_DIR/bot.py"
+
+          echo "ORACLE_BOT_SYNTAX_OK"
+
+          echo
+          echo "Replacing application files..."
+
+          cp "$TMP_DIR/bot.py" \
+             "$BOT_DIR/bot.py"
+
+          cp "$TMP_DIR/index.html" \
+             "$BOT_DIR/index.html"
+
+          cp "$TMP_DIR/app.js" \
+             "$BOT_DIR/app.js"
+
+          cp "$TMP_DIR/style.css" \
+             "$BOT_DIR/style.css"
+
+          rm -rf "$TMP_DIR"
+
+          echo
+          echo "FILES_INSTALLED_OK"
+
+          EOF
 
 
       # =====================================================
-      # RESTART EXISTING BOT
-      #
-      # bot.py now starts BOTH:
-      # 1. XAUTUSD trading bot
-      # 2. Dashboard on 127.0.0.1:8000
+      # RESTART BOT + DASHBOARD
       # =====================================================
 
       - name: Restart XAUTUSD Bot
@@ -115,10 +229,16 @@ jobs:
 
         run: |
 
+          set -e
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
           echo "========================================"
@@ -127,10 +247,13 @@ jobs:
 
           sudo systemctl restart xautusd-bot.service
 
-          sleep 8
+          echo
+          echo "Waiting for service startup..."
+
+          sleep 10
 
           echo
-          echo "===== BOT SERVICE STATUS ====="
+          echo "===== SERVICE STATUS ====="
 
           sudo systemctl --no-pager status \
             xautusd-bot.service || true
@@ -149,15 +272,22 @@ jobs:
 
         run: |
 
+          set -e
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
           echo "========================================"
           echo "BOT VERIFICATION"
           echo "========================================"
+
 
           if sudo systemctl is-active --quiet \
             xautusd-bot.service; then
@@ -168,8 +298,19 @@ jobs:
 
             echo "XAUTUSD_BOT_FAILED"
 
+            echo
+            echo "===== SERVICE STATUS ====="
+
             sudo systemctl --no-pager status \
               xautusd-bot.service || true
+
+            echo
+            echo "===== RECENT LOGS ====="
+
+            sudo journalctl \
+              -u xautusd-bot.service \
+              -n 80 \
+              --no-pager
 
             exit 1
 
@@ -188,7 +329,7 @@ jobs:
 
           sudo journalctl \
             -u xautusd-bot.service \
-            -n 30 \
+            -n 40 \
             --no-pager
 
           EOF
@@ -196,8 +337,6 @@ jobs:
 
       # =====================================================
       # VERIFY DASHBOARD
-      #
-      # Dashboard is running INSIDE bot.py
       # =====================================================
 
       - name: Verify Dashboard
@@ -207,10 +346,16 @@ jobs:
 
         run: |
 
+          set -e
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
           echo "========================================"
@@ -234,7 +379,7 @@ jobs:
 
             sudo journalctl \
               -u xautusd-bot.service \
-              -n 50 \
+              -n 80 \
               --no-pager
 
             exit 1
@@ -246,7 +391,7 @@ jobs:
           echo "===== HEALTH ====="
 
           curl \
-            --max-time 15 \
+            --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/health
 
@@ -257,7 +402,7 @@ jobs:
           echo "===== DASHBOARD DATA ====="
 
           curl \
-            --max-time 15 \
+            --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/dashboard
 
@@ -268,7 +413,7 @@ jobs:
           echo "===== DASHBOARD PAGE ====="
 
           curl \
-            --max-time 15 \
+            --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/ \
             > /dev/null
@@ -289,11 +434,24 @@ jobs:
 
         run: |
 
+          set -e
+
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          set -e
+
+          echo "========================================"
+          echo "START CLOUDFLARE QUICK TUNNEL"
+          echo "========================================"
+
 
           CLOUDFLARED=$(command -v cloudflared || true)
 
@@ -317,7 +475,9 @@ jobs:
           mkdir -p "$BOT_DIR"
 
 
-          # Stop previous Quick Tunnel if running.
+          echo
+          echo "Stopping previous Quick Tunnel..."
+
 
           if [ -f "$PID_FILE" ]; then
 
@@ -328,11 +488,18 @@ jobs:
 
               kill "$OLD_PID" 2>/dev/null || true
 
-              sleep 2
+              sleep 3
 
             fi
 
           fi
+
+
+          # Also clean up any orphaned quick tunnels.
+
+          pkill -f \
+            "cloudflared.*127.0.0.1:8000" \
+            2>/dev/null || true
 
 
           rm -f "$PID_FILE"
@@ -340,8 +507,9 @@ jobs:
           : > "$LOG_FILE"
 
 
-          # Start tunnel to dashboard
-          # running inside bot.py.
+          echo
+          echo "Starting new Quick Tunnel..."
+
 
           nohup "$CLOUDFLARED" tunnel \
             --url http://127.0.0.1:8000 \
@@ -360,7 +528,7 @@ jobs:
           URL=""
 
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 40); do
 
             sleep 2
 
@@ -382,6 +550,9 @@ jobs:
 
             echo "ERROR: Cloudflare URL not found"
 
+            echo
+            echo "===== CLOUDFLARE LOG ====="
+
             cat "$LOG_FILE" || true
 
             exit 1
@@ -400,7 +571,7 @@ jobs:
           echo "===== REMOTE HEALTH ====="
 
           curl \
-            --max-time 20 \
+            --max-time 30 \
             -fsS \
             "$URL/api/health"
 
@@ -411,7 +582,7 @@ jobs:
           echo "===== REMOTE DASHBOARD ====="
 
           curl \
-            --max-time 20 \
+            --max-time 30 \
             -fsS \
             "$URL/api/dashboard"
 
