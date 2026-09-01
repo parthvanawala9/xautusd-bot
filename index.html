@@ -9,7 +9,10 @@
 
   <title>XAUTUSD Live Dashboard</title>
 
-  <link rel="stylesheet" href="./style.css" />
+  <link
+    rel="stylesheet"
+    href="./style.css"
+  />
 </head>
 
 <body>
@@ -19,100 +22,96 @@
     <header class="header">
 
       <div>
-        <h1>XAUTUSD</h1>
-        <p>Simple New High / New Low Bot</p>
+        <h1>XAUTUSD Live Dashboard</h1>
+        <p id="last-update">
+          Connecting...
+        </p>
       </div>
 
-      <div id="bot-status" class="status offline">
+      <span
+        id="bot-status"
+        class="status offline"
+      >
         CONNECTING
-      </div>
+      </span>
 
     </header>
 
 
-    <section class="cards">
+    <section class="grid">
 
       <div class="card">
-        <span>Current Price</span>
-        <strong id="current-price">--</strong>
+        <h3>Current Price</h3>
+        <p id="current-price">
+          --
+        </p>
       </div>
 
       <div class="card">
-        <span>Wallet Balance</span>
-        <strong id="wallet-balance">--</strong>
+        <h3>Today's HIGH</h3>
+        <p id="today-high">
+          --
+        </p>
       </div>
 
       <div class="card">
-        <span>Today's HIGH</span>
-        <strong id="day-high">--</strong>
+        <h3>Today's LOW</h3>
+        <p id="today-low">
+          --
+        </p>
       </div>
 
       <div class="card">
-        <span>Today's LOW</span>
-        <strong id="day-low">--</strong>
+        <h3>Wallet Balance</h3>
+        <p id="wallet-balance">
+          --
+        </p>
       </div>
 
     </section>
 
 
-    <section class="position card">
+    <section class="card position-card">
 
-      <div class="section-title">
-        <h2>Active Position</h2>
-
-        <span id="position-direction"
-              class="position-flat">
-          FLAT
-        </span>
-      </div>
+      <h2>Active Position</h2>
 
       <div class="position-grid">
 
         <div>
+          <span>Direction</span>
+          <strong id="pos-direction">
+            FLAT
+          </strong>
+        </div>
+
+        <div>
           <span>Size</span>
-          <strong id="pos-size">0</strong>
+          <strong id="pos-size">
+            0
+          </strong>
         </div>
 
         <div>
           <span>Entry Price</span>
-          <strong id="pos-entry">--</strong>
+          <strong id="pos-entry">
+            --
+          </strong>
         </div>
 
         <div>
           <span>Stop Loss</span>
-          <strong id="pos-sl">--</strong>
+          <strong id="pos-sl">
+            --
+          </strong>
         </div>
 
         <div>
-          <span>Unrealized P&L</span>
-          <strong id="pos-pnl">--</strong>
+          <span>Unrealized PnL</span>
+          <strong id="pos-pnl">
+            --
+          </strong>
         </div>
 
-      </div>
-
-    </section>
-
-
-    <section class="cards">
-
-      <div class="card">
-        <span>Total Closed Trades</span>
-        <strong id="total-trades">0</strong>
-      </div>
-
-      <div class="card">
-        <span>Winning Trades</span>
-        <strong id="winning-trades">0</strong>
-      </div>
-
-      <div class="card">
-        <span>Losing Trades</span>
-        <strong id="losing-trades">0</strong>
-      </div>
-
-      <div class="card">
-        <span>Win Rate</span>
-        <strong id="win-rate">0%</strong>
       </div>
 
     </section>
@@ -120,40 +119,41 @@
 
     <section class="card">
 
-      <div class="section-title">
-
-        <h2>Bot Information</h2>
-
-        <span id="last-update">
-          --
-        </span>
-
-      </div>
+      <h2>Bot Information</h2>
 
       <div class="info-grid">
 
         <div>
           <span>Symbol</span>
-          <strong id="symbol">XAUTUSD</strong>
-        </div>
-
-        <div>
-          <span>WebSocket</span>
-          <strong id="websocket-status">
-            --
+          <strong id="symbol">
+            XAUTUSD
           </strong>
         </div>
 
         <div>
-          <span>Session Start</span>
-          <strong id="session-start">
-            --
+          <span>Leverage</span>
+          <strong>
+            50x
           </strong>
         </div>
 
         <div>
-          <span>Total P&L</span>
-          <strong id="total-pnl">
+          <span>Balance Used</span>
+          <strong>
+            10%
+          </strong>
+        </div>
+
+        <div>
+          <span>Strategy Start</span>
+          <strong>
+            05:45 IST
+          </strong>
+        </div>
+
+        <div>
+          <span>Session Ready</span>
+          <strong id="session-ready">
             --
           </strong>
         </div>
@@ -161,57 +161,6 @@
       </div>
 
     </section>
-
-
-    <section class="card">
-
-      <div class="section-title">
-        <h2>Recent Trades</h2>
-      </div>
-
-      <div class="table-wrap">
-
-        <table>
-
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Side</th>
-              <th>Entry</th>
-              <th>Exit</th>
-              <th>Size</th>
-              <th>P&L</th>
-            </tr>
-          </thead>
-
-          <tbody id="trade-history">
-
-            <tr>
-              <td colspan="6">
-                No closed trades yet
-              </td>
-            </tr>
-
-          </tbody>
-
-        </table>
-
-      </div>
-
-    </section>
-
-
-    <footer>
-
-      <span>
-        Auto refresh: 3 seconds
-      </span>
-
-      <span id="connection-text">
-        Connecting...
-      </span>
-
-    </footer>
 
   </div>
 
