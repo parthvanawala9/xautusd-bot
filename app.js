@@ -53,41 +53,6 @@ function escapeHtml(value) {
 
 
 // ============================================================
-// DATE
-// ============================================================
-
-function formatDate(
-  value
-) {
-
-  if (!value) {
-    return "--";
-  }
-
-  try {
-
-    const date =
-      new Date(value);
-
-    if (
-      Number.isNaN(
-        date.getTime()
-      )
-    ) {
-
-      return String(value);
-    }
-
-    return date.toLocaleString();
-
-  } catch {
-
-    return String(value);
-  }
-}
-
-
-// ============================================================
 // API
 // ============================================================
 
@@ -126,15 +91,12 @@ async function apiFetch(
     );
   }
 
-
   const contentType =
     response.headers.get(
       "content-type"
     ) || "";
 
-
   let data = null;
-
 
   if (
     contentType
@@ -166,13 +128,11 @@ async function apiFetch(
       text = "";
     }
 
-
     const cleanText =
       text
         .replace(/<[^>]*>/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-
 
     throw new Error(
       cleanText
@@ -180,7 +140,6 @@ async function apiFetch(
         : `Server returned a non-JSON response (HTTP ${response.status}).`
     );
   }
-
 
   if (
     !response.ok ||
@@ -192,7 +151,6 @@ async function apiFetch(
       `Request failed (HTTP ${response.status}).`
     );
   }
-
 
   return data;
 }
@@ -209,7 +167,6 @@ function requestPin() {
       "xaut_admin_pin"
     );
 
-
   if (saved !== null) {
 
     adminPin = saved;
@@ -217,12 +174,10 @@ function requestPin() {
     return;
   }
 
-
   adminPin =
     window.prompt(
       "Enter dashboard admin PIN:"
     ) || "";
-
 
   localStorage.setItem(
     "xaut_admin_pin",
@@ -253,7 +208,6 @@ async function startBot(
       }
     );
 
-
     await loadDashboard(
       true
     );
@@ -276,10 +230,8 @@ async function stopBot(
       "STOP BOT will close the open position on this account. Continue?"
     )
   ) {
-
     return;
   }
-
 
   try {
 
@@ -294,7 +246,6 @@ async function stopBot(
         })
       }
     );
-
 
     await loadDashboard(
       true
@@ -318,11 +269,9 @@ function openClientForm() {
   const form =
     $("client-form");
 
-
   if (!form) {
     return;
   }
-
 
   form.style.display =
     form.style.display === "none"
@@ -362,10 +311,7 @@ async function addClient() {
   }
 
 
-  if (
-    !apiKey ||
-    !apiSecret
-  ) {
+  if (!apiKey || !apiSecret) {
 
     alert(
       "Enter Delta API key and API secret."
@@ -375,10 +321,7 @@ async function addClient() {
   }
 
 
-  if (
-    !start ||
-    !expiry
-  ) {
+  if (!start || !expiry) {
 
     alert(
       "Enter subscription start and expiry."
@@ -425,7 +368,6 @@ async function addClient() {
 
     const form =
       $("client-form");
-
 
     if (form) {
 
@@ -507,22 +449,18 @@ async function updateSubscription(
       "Subscription start date/time (local):"
     );
 
-
   if (!start) {
     return;
   }
-
 
   const expiry =
     prompt(
       "Subscription expiry date/time (local):"
     );
 
-
   if (!expiry) {
     return;
   }
-
 
   const fee =
     prompt(
@@ -586,7 +524,6 @@ async function deleteClient(
       "Remove this client account? If a position exists, the system will try to close it first."
     )
   ) {
-
     return;
   }
 
@@ -621,537 +558,6 @@ async function deleteClient(
 
 
 // ============================================================
-// RUNNING TRADE
-// ============================================================
-
-function renderRunningTrade(
-  account
-) {
-
-  const position =
-    account.position || {};
-
-
-  const size =
-    Number(
-      position.size || 0
-    );
-
-
-  if (
-    size === 0 ||
-    !position.direction ||
-    position.direction === "FLAT"
-  ) {
-
-    return `
-
-      <div class="running-trade-card">
-
-        <div class="running-trade-header">
-
-          <div>
-            <h3>Running Trade</h3>
-
-            <span class="running-trade-status">
-              NO OPEN TRADE
-            </span>
-          </div>
-
-        </div>
-
-        <div class="running-trade-empty">
-          No trade is currently running on this account.
-        </div>
-
-      </div>
-
-    `;
-  }
-
-
-  const direction =
-    String(
-      position.direction
-    ).toUpperCase();
-
-
-  const directionClass =
-    direction === "LONG"
-      ? "running-long"
-      : "running-short";
-
-
-  return `
-
-    <div class="running-trade-card">
-
-      <div class="running-trade-header">
-
-        <div>
-
-          <div class="running-trade-label">
-            RUNNING TRADE
-          </div>
-
-          <h3>
-            ${escapeHtml(
-              direction
-            )}
-          </h3>
-
-        </div>
-
-
-        <div class="running-trade-live">
-          ● LIVE
-        </div>
-
-      </div>
-
-
-      <div class="running-trade-grid">
-
-        <div>
-          <span>Direction</span>
-          <strong class="${directionClass}">
-            ${escapeHtml(
-              direction
-            )}
-          </strong>
-        </div>
-
-
-        <div>
-          <span>Size</span>
-          <strong>
-            ${number(
-              size,
-              0
-            )}
-          </strong>
-        </div>
-
-
-        <div>
-          <span>Entry Price</span>
-          <strong>
-            ${number(
-              position.entry_price
-            )}
-          </strong>
-        </div>
-
-
-        <div>
-          <span>Current Price</span>
-          <strong>
-            ${number(
-              account.current_price
-            )}
-          </strong>
-        </div>
-
-
-        <div>
-          <span>Stop Loss</span>
-          <strong>
-            ${number(
-              position.stop_loss
-            )}
-          </strong>
-        </div>
-
-
-        <div>
-          <span>Unrealized P&amp;L</span>
-          <strong>
-            ${money(
-              position.unrealized_pnl
-            )}
-          </strong>
-        </div>
-
-      </div>
-
-    </div>
-
-  `;
-}
-
-
-// ============================================================
-// PERFORMANCE
-// ============================================================
-
-function renderPerformance(
-  account
-) {
-
-  const statistics =
-    account.statistics || {};
-
-
-  const today =
-    statistics.today || {};
-
-
-  const allTime =
-    statistics.all_time || {};
-
-
-  return `
-
-    <div class="performance-section">
-
-      <h3>
-        Trading Performance
-      </h3>
-
-
-      <div class="performance-grid">
-
-
-        <div class="performance-card">
-
-          <h4>Today</h4>
-
-
-          <div class="performance-stats">
-
-            <div>
-              <span>Total Trades</span>
-              <strong>
-                ${today.total_trades ?? 0}
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Winning Trades</span>
-              <strong>
-                ${today.winning_trades ?? 0}
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Losing Trades</span>
-              <strong>
-                ${today.losing_trades ?? 0}
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Win Rate</span>
-              <strong>
-                ${number(
-                  today.win_rate,
-                  1
-                )}%
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Today P&amp;L</span>
-              <strong>
-                ${money(
-                  today.pnl
-                )}
-              </strong>
-            </div>
-
-          </div>
-
-        </div>
-
-
-        <div class="performance-card">
-
-          <h4>All Time</h4>
-
-
-          <div class="performance-stats">
-
-            <div>
-              <span>Total Trades</span>
-              <strong>
-                ${allTime.total_trades ?? 0}
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Winning Trades</span>
-              <strong>
-                ${allTime.winning_trades ?? 0}
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Losing Trades</span>
-              <strong>
-                ${allTime.losing_trades ?? 0}
-              </strong>
-            </div>
-
-
-            <div>
-              <span>Win Rate</span>
-              <strong>
-                ${number(
-                  allTime.win_rate,
-                  1
-                )}%
-              </strong>
-            </div>
-
-
-            <div>
-              <span>All-Time P&amp;L</span>
-              <strong>
-                ${money(
-                  allTime.pnl
-                )}
-              </strong>
-            </div>
-
-          </div>
-
-        </div>
-
-      </div>
-
-    </div>
-
-  `;
-}
-
-
-// ============================================================
-// TRADE HISTORY
-// ============================================================
-
-function renderTradeHistory(
-  account
-) {
-
-  const history =
-    Array.isArray(
-      account.trade_history
-    )
-      ? account.trade_history
-      : [];
-
-
-  const position =
-    account.position || {};
-
-
-  const hasRunningTrade =
-    Number(
-      position.size || 0
-    ) !== 0;
-
-
-  let rows = "";
-
-
-  if (history.length > 0) {
-
-    rows =
-      history
-        .map(
-          (trade) => {
-
-            const pnl =
-              Number(
-                trade.pnl || 0
-              );
-
-
-            const pnlClass =
-              pnl > 0
-                ? "trade-profit"
-                : pnl < 0
-                  ? "trade-loss"
-                  : "trade-flat";
-
-
-            return `
-
-              <div class="trade-history-row">
-
-                <div>
-                  <span>Date</span>
-                  <strong>
-                    ${escapeHtml(
-                      trade.date || "--"
-                    )}
-                  </strong>
-                </div>
-
-
-                <div>
-                  <span>Direction</span>
-                  <strong>
-                    ${escapeHtml(
-                      trade.direction || "--"
-                    )}
-                  </strong>
-                </div>
-
-
-                <div>
-                  <span>Entry</span>
-                  <strong>
-                    ${number(
-                      trade.entry_price
-                    )}
-                  </strong>
-                </div>
-
-
-                <div>
-                  <span>Exit</span>
-                  <strong>
-                    ${number(
-                      trade.exit_price
-                    )}
-                  </strong>
-                </div>
-
-
-                <div>
-                  <span>Size</span>
-                  <strong>
-                    ${trade.size ?? 0}
-                  </strong>
-                </div>
-
-
-                <div>
-                  <span>Reason</span>
-                  <strong>
-                    ${escapeHtml(
-                      trade.reason || "--"
-                    )}
-                  </strong>
-                </div>
-
-
-                <div>
-                  <span>P&amp;L</span>
-                  <strong class="${pnlClass}">
-                    ${money(
-                      pnl
-                    )}
-                  </strong>
-                </div>
-
-              </div>
-
-            `;
-          }
-        )
-        .join("");
-
-  } else {
-
-    rows = `
-
-      <div class="trade-history-empty">
-
-        No closed trades yet.
-
-      </div>
-
-    `;
-  }
-
-
-  return `
-
-    <div class="trade-history-section">
-
-      <div class="trade-history-title">
-
-        <h3>
-          Trade History
-        </h3>
-
-        <span>
-          ${history.length} closed trade${
-            history.length === 1
-              ? ""
-              : "s"
-          }
-        </span>
-
-      </div>
-
-
-      ${
-        hasRunningTrade
-          ? `
-
-            <div class="running-history-banner">
-
-              <strong>
-                ● RUNNING TRADE
-              </strong>
-
-              <span>
-                ${
-                  escapeHtml(
-                    position.direction ||
-                    "POSITION"
-                  )
-                }
-                •
-                Entry
-                ${
-                  number(
-                    position.entry_price
-                  )
-                }
-                •
-                Size
-                ${
-                  position.size ?? 0
-                }
-                •
-                Unrealized
-                ${
-                  money(
-                    position.unrealized_pnl
-                  )
-                }
-              </span>
-
-            </div>
-
-          `
-          : ""
-      }
-
-
-      <div class="trade-history-list">
-
-        ${rows}
-
-      </div>
-
-    </div>
-
-  `;
-}
-
-
-// ============================================================
 // ACCOUNT CARD
 // ============================================================
 
@@ -1162,14 +568,11 @@ function renderAccount(
   const running =
     account.bot_enabled === true;
 
-
   const primary =
     account.account_type === "primary";
 
-
   const subscription =
     account.subscription || {};
-
 
   const position =
     account.position || {};
@@ -1181,9 +584,7 @@ function renderAccount(
 
   if (!primary) {
 
-    if (
-      subscription.expired
-    ) {
+    if (subscription.expired) {
 
       subscriptionText =
         "SUBSCRIPTION EXPIRED";
@@ -1210,28 +611,23 @@ function renderAccount(
 
     <section class="card account-card">
 
-
       <div class="account-header">
 
         <div>
 
           <div class="account-type">
-
             ${
               primary
                 ? "PRIMARY ACCOUNT"
                 : "CLIENT ACCOUNT"
             }
-
           </div>
-
 
           <h2>
             ${escapeHtml(
               account.account_name
             )}
           </h2>
-
 
           <p>
             ${escapeHtml(
@@ -1267,21 +663,16 @@ function renderAccount(
           )}
         </span>
 
-
         ${
           !primary &&
           subscription.fee !== undefined
-
             ? `
-
               <strong>
                 Fee: $${number(
                   subscription.fee
                 )}
               </strong>
-
             `
-
             : ""
         }
 
@@ -1290,52 +681,36 @@ function renderAccount(
 
       <div class="account-stats">
 
-
         <div>
-
-          <span>
-            Balance
-          </span>
+          <span>Balance</span>
 
           <strong>
-
             ${
               account.balance === null ||
               account.balance === undefined
-
                 ? "--"
-
                 : "$" +
                   number(
                     account.balance
                   )
             }
-
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            Price
-          </span>
+          <span>Price</span>
 
           <strong>
             ${number(
               account.current_price
             )}
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            Position
-          </span>
+          <span>Position</span>
 
           <strong>
             ${escapeHtml(
@@ -1343,73 +718,53 @@ function renderAccount(
               "FLAT"
             )}
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            Size
-          </span>
+          <span>Size</span>
 
           <strong>
             ${position.size ?? 0}
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            Entry
-          </span>
+          <span>Entry</span>
 
           <strong>
             ${number(
               position.entry_price
             )}
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            Stop Loss
-          </span>
+          <span>Stop Loss</span>
 
           <strong>
             ${number(
               position.stop_loss
             )}
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            Unrealized P&amp;L
-          </span>
+          <span>Unrealized P&L</span>
 
           <strong>
             ${money(
               position.unrealized_pnl
             )}
           </strong>
-
         </div>
 
 
         <div>
-
-          <span>
-            All-Time P&amp;L
-          </span>
+          <span>All-Time P&L</span>
 
           <strong>
             ${money(
@@ -1418,27 +773,12 @@ function renderAccount(
                 ?.pnl
             )}
           </strong>
-
         </div>
 
       </div>
 
 
-      <!-- ====================================================
-           RUNNING TRADE
-           ==================================================== -->
-
-      ${renderRunningTrade(
-        account
-      )}
-
-
-      <!-- ====================================================
-           BOT ACTIONS
-           ==================================================== -->
-
       <div class="account-actions">
-
 
         ${
           running
@@ -1510,12 +850,9 @@ function renderAccount(
 
             <div class="subscription-details">
 
-
               <div>
 
-                <span>
-                  Start
-                </span>
+                <span>Start</span>
 
                 <strong>
                   ${
@@ -1530,9 +867,7 @@ function renderAccount(
 
               <div>
 
-                <span>
-                  Expiry
-                </span>
+                <span>Expiry</span>
 
                 <strong>
                   ${
@@ -1544,7 +879,6 @@ function renderAccount(
 
               </div>
 
-
             </div>
 
           `
@@ -1552,28 +886,44 @@ function renderAccount(
           : ""
       }
 
-
-      <!-- ====================================================
-           PERFORMANCE
-           ==================================================== -->
-
-      ${renderPerformance(
-        account
-      )}
-
-
-      <!-- ====================================================
-           TRADE HISTORY
-           ==================================================== -->
-
-      ${renderTradeHistory(
-        account
-      )}
-
-
     </section>
 
   `;
+}
+
+
+// ============================================================
+// DATE
+// ============================================================
+
+function formatDate(
+  value
+) {
+
+  if (!value) {
+    return "--";
+  }
+
+  try {
+
+    const date =
+      new Date(value);
+
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
+
+      return String(value);
+    }
+
+    return date.toLocaleString();
+
+  } catch {
+
+    return String(value);
+  }
 }
 
 
@@ -1630,7 +980,6 @@ async function loadDashboard(
 
 
     if (!container) {
-
       return;
     }
 
@@ -1711,9 +1060,7 @@ requestPin();
 
 loadDashboard();
 
-
 setInterval(
-  () =>
-    loadDashboard(),
+  () => loadDashboard(),
   3000
 );
