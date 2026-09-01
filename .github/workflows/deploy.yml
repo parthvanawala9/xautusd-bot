@@ -272,6 +272,9 @@ jobs:
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
 
+          set -e
+
+
           echo "========================================"
 
           echo "RESTART XAUTUSD BOT + DASHBOARD"
@@ -421,6 +424,9 @@ jobs:
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
 
+          set -e
+
+
           echo "========================================"
 
           echo "DASHBOARD VERIFICATION"
@@ -511,17 +517,28 @@ jobs:
       # =====================================================
       # CLOUDFLARE QUICK TUNNEL
       #
-      # IMPORTANT:
-      # We do NOT curl the trycloudflare URL from Oracle.
+      # FIX:
       #
-      # The previous workflow failed here because Oracle
-      # could not resolve the temporary Cloudflare hostname.
+      # The old workflow used:
       #
-      # We only verify that the tunnel started and obtain
-      # its public URL.
+      #   nohup cloudflared tunnel ...
+      #
+      # That process could disappear after the GitHub SSH
+      # session ended.
+      #
+      # We now install a SYSTEMD service for cloudflared.
+      #
+      # systemd will:
+      #
+      # 1. Keep tunnel alive
+      # 2. Restart tunnel if it crashes
+      # 3. Start tunnel after Oracle reboot
+      # 4. Keep tunnel independent from GitHub Actions
+      #
+      # The existing bot service is NOT replaced.
       # =====================================================
 
-      - name: Start Cloudflare Quick Tunnel
+      - name: Install Persistent Cloudflare Tunnel
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -529,6 +546,7 @@ jobs:
         run: |
 
           set -e
+
 
           ssh \
             -i ~/.ssh/oracle.key \
@@ -544,9 +562,18 @@ jobs:
           set -e
 
 
+          BOT_DIR="/home/opc/xautusd-bot"
+
+          SERVICE_FILE="/etc/systemd/system/xautusd-cloudflared.service"
+
+          URL_FILE="$BOT_DIR/dashboard-url.txt"
+
+          LOG_FILE="$BOT_DIR/cloudflared.log"
+
+
           echo "========================================"
 
-          echo "START CLOUDFLARE QUICK TUNNEL"
+          echo "CONFIGURING CLOUDFLARE TUNNEL"
 
           echo "========================================"
 
@@ -556,34 +583,26 @@ jobs:
 
           if [ -z "$CLOUDFLARED" ]; then
 
-
-            echo "ERROR: cloudflared not installed"
-
+            echo "ERROR: cloudflared is not installed."
 
             exit 1
-
 
           fi
 
 
-          BOT_DIR="/home/opc/xautusd-bot"
+          echo
 
+          echo "cloudflared path: $CLOUDFLARED"
+
+
+          # -------------------------------------------------
+          # Stop old manual Quick Tunnel if one exists.
+          # -------------------------------------------------
 
           PID_FILE="$BOT_DIR/quick-tunnel.pid"
 
-          LOG_FILE="$BOT_DIR/quick-tunnel.log"
-
-
-          mkdir -p "$BOT_DIR"
-
-
-          echo
-
-          echo "Stopping previous Quick Tunnel..."
-
 
           if [ -f "$PID_FILE" ]; then
-
 
             OLD_PID=$(cat \
               "$PID_FILE" \
@@ -594,17 +613,15 @@ jobs:
             if [ -n "$OLD_PID" ] && \
                kill -0 "$OLD_PID" 2>/dev/null; then
 
+              echo "Stopping old Quick Tunnel PID $OLD_PID"
 
               kill "$OLD_PID" \
                 2>/dev/null \
                 || true
 
-
               sleep 3
 
-
             fi
-
 
           fi
 
@@ -612,34 +629,100 @@ jobs:
           rm -f "$PID_FILE"
 
 
-          : > "$LOG_FILE"
+          # -------------------------------------------------
+          # Stop any old cloudflared process that is NOT
+          # managed by our new systemd service.
+          # -------------------------------------------------
+
+          sudo systemctl stop \
+            xautusd-cloudflared.service \
+            2>/dev/null \
+            || true
+
+
+          # -------------------------------------------------
+          # Create persistent systemd service.
+          # -------------------------------------------------
+
+          echo
+
+          echo "Creating systemd Cloudflare service..."
+
+
+          sudo tee "$SERVICE_FILE" > /dev/null << EOF_SERVICE
+
+          [Unit]
+
+          Description=XAUTUSD Dashboard Cloudflare Quick Tunnel
+
+          After=network-online.target xautusd-bot.service
+
+          Wants=network-online.target
+
+
+          [Service]
+
+          Type=simple
+
+          User=opc
+
+          WorkingDirectory=$BOT_DIR
+
+          ExecStart=$CLOUDFLARED tunnel --no-autoupdate --url http://127.0.0.1:8000 --logfile $LOG_FILE
+
+          Restart=always
+
+          RestartSec=5
+
+          KillMode=mixed
+
+          TimeoutStopSec=20
+
+
+          [Install]
+
+          WantedBy=multi-user.target
+
+          EOF_SERVICE
 
 
           echo
 
-          echo "Starting new Quick Tunnel..."
+          echo "SYSTEMD_SERVICE_CREATED"
 
 
-          nohup "$CLOUDFLARED" tunnel \
-            --url http://127.0.0.1:8000 \
-            > "$LOG_FILE" 2>&1 &
+          # -------------------------------------------------
+          # Reload systemd.
+          # -------------------------------------------------
+
+          sudo systemctl daemon-reload
 
 
-          TUNNEL_PID=$!
+          # -------------------------------------------------
+          # Enable tunnel on Oracle boot.
+          # -------------------------------------------------
+
+          sudo systemctl enable \
+            xautusd-cloudflared.service
 
 
-          echo "$TUNNEL_PID" \
-            > "$PID_FILE"
+          # -------------------------------------------------
+          # Start persistent tunnel.
+          # -------------------------------------------------
+
+          sudo systemctl restart \
+            xautusd-cloudflared.service
 
 
-          echo "Tunnel PID: $TUNNEL_PID"
+          echo
+
+          echo "Waiting for Cloudflare tunnel..."
 
 
           URL=""
 
 
-          for i in $(seq 1 40); do
-
+          for i in $(seq 1 45); do
 
             sleep 2
 
@@ -657,36 +740,86 @@ jobs:
 
             fi
 
-
           done
 
 
-          if [ -z "$URL" ]; then
+          # -------------------------------------------------
+          # Verify systemd service.
+          # -------------------------------------------------
+
+          echo
+
+          echo "===== CLOUDFLARE SERVICE STATUS ====="
 
 
-            echo "ERROR: Cloudflare URL not found"
+          if sudo systemctl is-active --quiet \
+            xautusd-cloudflared.service; then
 
+            echo "CLOUDFLARE_TUNNEL_ACTIVE"
+
+          else
+
+            echo "CLOUDFLARE_TUNNEL_FAILED"
 
             echo
 
-            echo "===== CLOUDFLARE LOG ====="
-
-
-            cat "$LOG_FILE" \
+            sudo systemctl --no-pager status \
+              xautusd-cloudflared.service \
               || true
 
+            echo
+
+            echo "===== CLOUDFLARED LOG ====="
+
+            tail -n 100 \
+              "$LOG_FILE" \
+              || true
 
             exit 1
 
+          fi
+
+
+          # -------------------------------------------------
+          # Verify URL.
+          # -------------------------------------------------
+
+          if [ -z "$URL" ]; then
+
+            echo
+
+            echo "ERROR: Cloudflare URL was not found."
+
+            echo
+
+            echo "===== CLOUDFLARED LOG ====="
+
+            tail -n 100 \
+              "$LOG_FILE" \
+              || true
+
+            exit 1
 
           fi
+
+
+          # -------------------------------------------------
+          # Save URL.
+          # -------------------------------------------------
+
+          printf '%s\n' "$URL" \
+            > "$URL_FILE"
+
+
+          chmod 600 \
+            "$URL_FILE"
 
 
           echo
 
           echo "========================================"
 
-          echo "CLOUDFLARE TUNNEL STARTED"
+          echo "CLOUDFLARE TUNNEL ACTIVE"
 
           echo "========================================"
 
@@ -700,9 +833,118 @@ jobs:
 
           echo
 
-          echo "TUNNEL PID"
+          echo "URL SAVED TO"
 
-          echo "$TUNNEL_PID"
+          echo "$URL_FILE"
+
+
+          echo
+
+          echo "TUNNEL SERVICE"
+
+          echo "xautusd-cloudflared.service"
+
+
+          echo
+
+          echo "========================================"
+
+          echo "PERSISTENT TUNNEL CONFIGURED"
+
+          echo "========================================"
+
+
+          EOF
+
+
+      # =====================================================
+      # FINAL CLOUDFLARE VERIFICATION
+      #
+      # This verifies the service itself, not just the URL.
+      # =====================================================
+
+      - name: Verify Cloudflare Tunnel
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          set -e
+
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+
+          set -e
+
+
+          BOT_DIR="/home/opc/xautusd-bot"
+
+          URL_FILE="$BOT_DIR/dashboard-url.txt"
+
+
+          echo "========================================"
+
+          echo "FINAL CLOUDFLARE VERIFICATION"
+
+          echo "========================================"
+
+
+          echo
+
+          echo "===== SERVICE ====="
+
+
+          sudo systemctl is-active \
+            xautusd-cloudflared.service
+
+
+          echo
+
+          echo "===== ENABLED ====="
+
+
+          sudo systemctl is-enabled \
+            xautusd-cloudflared.service
+
+
+          echo
+
+          echo "===== DASHBOARD URL ====="
+
+
+          if [ -f "$URL_FILE" ]; then
+
+            cat "$URL_FILE"
+
+          else
+
+            echo "URL FILE NOT FOUND"
+
+            exit 1
+
+          fi
+
+
+          echo
+
+          echo
+
+          echo "===== CLOUDFLARE SERVICE STATUS ====="
+
+
+          sudo systemctl --no-pager status \
+            xautusd-cloudflared.service \
+            || true
 
 
           echo
