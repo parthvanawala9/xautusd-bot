@@ -7,26 +7,21 @@ import logging
 import threading
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 import requests
 import websocket
 from dotenv import load_dotenv
 
-from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
-from urllib.parse import urlparse
-
 
 # ============================================================
 # XAUTUSD SIMPLE NEW HIGH / NEW LOW BOT
 #
-# DASHBOARD IS BUILT INTO THIS SAME PROCESS.
-#
-# Trading logic:
-#
-# 05:45 IST = new session
+# TRADING RULES
+# ------------------------------------------------------------
+# 05:45 IST = NEW TRADING SESSION
 #
 # FLAT:
 #   price > HIGH -> LONG
@@ -34,25 +29,31 @@ from urllib.parse import urlparse
 #
 # LONG:
 #   new HIGH -> update HIGH only
+#   no second LONG
 #
 # SHORT:
 #   new LOW -> update LOW only
+#   no second SHORT
 #
-# LONG SL = LOW at entry
-# SHORT SL = HIGH at entry
+# SL:
+#   LONG  SL = LOW at entry
+#   SHORT SL = HIGH at entry
 #
-# SL hit:
-#   LONG  -> SHORT
+# If SL closes position:
+#   LONG -> SHORT
 #   SHORT -> LONG
 #
 # One position at a time.
 #
-# Dashboard:
-#   http://SERVER:8000
+# Restart after 05:45:
+#   Recover today's historical 1-minute HIGH/LOW.
 #
-# API:
-#   /api/health
-#   /api/dashboard
+# Saturday 05:00:
+#   Close position.
+#
+# DASHBOARD:
+#   Runs from THIS SAME bot.py process.
+#   No dashboard_api.py required.
 # ============================================================
 
 
@@ -60,28 +61,9 @@ load_dotenv()
 
 IST = ZoneInfo("Asia/Kolkata")
 
-
-# ============================================================
-# PATHS
-# ============================================================
-
-BASE_DIR = Path(__file__).resolve().parent
-
-DASHBOARD_DIR = BASE_DIR / "dashboard"
-
-STATE_FILE = Path(
-    os.getenv(
-        "STATE_FILE",
-        str(BASE_DIR / "xautusd_state.json")
-    )
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
 )
-
-TRADE_HISTORY_FILE = BASE_DIR / "trade_history.json"
-
-
-# ============================================================
-# CONFIG
-# ============================================================
 
 BASE_URL = os.getenv(
     "DELTA_BASE_URL",
@@ -109,36 +91,26 @@ API_SECRET = os.getenv(
 ).strip()
 
 LEVERAGE = Decimal(
-    os.getenv(
-        "LEVERAGE",
-        "50"
-    )
+    os.getenv("LEVERAGE", "50")
 )
 
 BALANCE_FRACTION = Decimal(
-    os.getenv(
-        "BALANCE_FRACTION",
-        "0.10"
-    )
+    os.getenv("BALANCE_FRACTION", "0.10")
+)
+
+STATE_FILE = os.getenv(
+    "STATE_FILE",
+    os.path.join(BASE_DIR, "xautusd_state.json")
+)
+
+DASHBOARD_PORT = int(
+    os.getenv("DASHBOARD_PORT", "8000")
 )
 
 RECONNECT_SECONDS = 3
 
-DASHBOARD_HOST = os.getenv(
-    "DASHBOARD_HOST",
-    "0.0.0.0"
-)
-
-DASHBOARD_PORT = int(
-    os.getenv(
-        "DASHBOARD_PORT",
-        "8000"
-    )
-)
-
 
 if not API_KEY or not API_SECRET:
-
     raise SystemExit(
         "Missing DELTA_API_KEY or DELTA_API_SECRET."
     )
@@ -163,7 +135,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Simple-Bot-Dashboard/1.0"
+    "User-Agent": "XAUTUSD-Simple-Bot/1.0"
 })
 
 
@@ -206,11 +178,9 @@ def weekend(dt=None):
 
     dt = dt or now_ist()
 
-    # Saturday after 05:00
     if dt.weekday() == 5:
         return dt.hour >= 5
 
-    # Sunday
     if dt.weekday() == 6:
         return True
 
@@ -361,25 +331,28 @@ def position(product_id):
 
     result = data.get("result")
 
-    if not isinstance(
-        result,
-        dict
-    ):
+    if not isinstance(result, dict):
 
         return {
             "size": 0,
-            "entry": None
+            "entry": None,
+            "stop_loss": 0,
+            "unrealized_pnl": 0
         }
 
     return {
         "size": int(
-            result.get(
-                "size",
-                0
-            )
+            result.get("size", 0)
         ),
         "entry": result.get(
             "entry_price"
+        ),
+        "stop_loss": result.get(
+            "stop_loss"
+        ),
+        "unrealized_pnl": result.get(
+            "unrealized_pnl",
+            0
         )
     }
 
@@ -408,10 +381,7 @@ def balance():
             )
         ).upper()
 
-        if asset in (
-            "USD",
-            "USDT"
-        ):
+        if asset in ("USD", "USDT"):
 
             value = (
                 wallet.get(
@@ -497,7 +467,6 @@ def order_size(
     )
 
     if contract_value <= 0:
-
         contract_value = Decimal("1")
 
     raw = (
@@ -537,7 +506,6 @@ def order_size(
     ) * increment
 
     if size_decimal < minimum:
-
         size_decimal = minimum
 
     size = int(
@@ -718,15 +686,11 @@ def historical_high_low(
             try:
 
                 h = Decimal(
-                    str(
-                        candle["high"]
-                    )
+                    str(candle["high"])
                 )
 
                 l = Decimal(
-                    str(
-                        candle["low"]
-                    )
+                    str(candle["low"])
                 )
 
                 if high is None or h > high:
@@ -736,7 +700,6 @@ def historical_high_low(
                     low = l
 
             except Exception:
-
                 continue
 
         return high, low
@@ -751,7 +714,7 @@ def historical_high_low(
 
 
 # ============================================================
-# BOT
+# SIMPLE BOT
 # ============================================================
 
 class Bot:
@@ -765,18 +728,6 @@ class Bot:
 
         self.product_id = int(
             product_info["id"]
-        )
-
-        self.contract_value = Decimal(
-            str(
-                product_info.get(
-                    "contract_value"
-                )
-                or product_info.get(
-                    "contract_value_usd"
-                )
-                or "1"
-            )
         )
 
         self.day = None
@@ -795,21 +746,9 @@ class Bot:
 
         self.ready = False
 
-        self.websocket_connected = False
-
-        self.last_tick_time = None
-
         self.lock = threading.RLock()
 
-        self.trade_history = []
-
-        self.open_trade = None
-
-        self.dashboard_cache = None
-        self.dashboard_cache_time = 0
-
         self.load_state()
-        self.load_trade_history()
 
 
     # ========================================================
@@ -818,16 +757,16 @@ class Bot:
 
     def load_state(self):
 
-        if not STATE_FILE.exists():
-
+        if not os.path.exists(
+            STATE_FILE
+        ):
             return
 
         try:
 
             with open(
                 STATE_FILE,
-                "r",
-                encoding="utf-8"
+                "r"
             ) as f:
 
                 s = json.load(f)
@@ -928,15 +867,11 @@ class Bot:
                 )
         }
 
-        tmp = Path(
-            str(STATE_FILE)
-            + ".tmp"
-        )
+        tmp = STATE_FILE + ".tmp"
 
         with open(
             tmp,
-            "w",
-            encoding="utf-8"
+            "w"
         ) as f:
 
             json.dump(
@@ -952,176 +887,16 @@ class Bot:
 
 
     # ========================================================
-    # TRADE HISTORY
-    # ========================================================
-
-    def load_trade_history(self):
-
-        if not TRADE_HISTORY_FILE.exists():
-
-            self.trade_history = []
-
-            return
-
-        try:
-
-            with open(
-                TRADE_HISTORY_FILE,
-                "r",
-                encoding="utf-8"
-            ) as f:
-
-                data = json.load(f)
-
-            if isinstance(
-                data,
-                list
-            ):
-
-                self.trade_history = data
-
-            else:
-
-                self.trade_history = []
-
-        except Exception:
-
-            self.trade_history = []
-
-
-    def save_trade_history(self):
-
-        tmp = Path(
-            str(TRADE_HISTORY_FILE)
-            + ".tmp"
-        )
-
-        with open(
-            tmp,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            json.dump(
-                self.trade_history[-500:],
-                f,
-                indent=2
-            )
-
-        os.replace(
-            tmp,
-            TRADE_HISTORY_FILE
-        )
-
-
-    def record_trade_close(
-        self,
-        exit_price
-    ):
-
-        if not self.open_trade:
-
-            return
-
-        try:
-
-            direction = self.open_trade[
-                "direction"
-            ]
-
-            entry_price = Decimal(
-                str(
-                    self.open_trade[
-                        "entry_price"
-                    ]
-                )
-            )
-
-            size = int(
-                self.open_trade[
-                    "size"
-                ]
-            )
-
-            exit_price = Decimal(
-                str(exit_price)
-            )
-
-            if direction == "LONG":
-
-                pnl = (
-                    exit_price
-                    - entry_price
-                ) * Decimal(size) * self.contract_value
-
-            else:
-
-                pnl = (
-                    entry_price
-                    - exit_price
-                ) * Decimal(size) * self.contract_value
-
-            record = {
-
-                "time":
-                    now_ist().isoformat(),
-
-                "direction":
-                    direction,
-
-                "entry_price":
-                    float(entry_price),
-
-                "exit_price":
-                    float(exit_price),
-
-                "size":
-                    size,
-
-                "pnl":
-                    float(pnl)
-            }
-
-            self.trade_history.append(
-                record
-            )
-
-            self.save_trade_history()
-
-            logging.info(
-                f"TRADE CLOSED | "
-                f"{direction} | "
-                f"ENTRY={entry_price} | "
-                f"EXIT={exit_price} | "
-                f"PNL={pnl}"
-            )
-
-        except Exception as e:
-
-            logging.warning(
-                f"TRADE HISTORY ERROR | {e}"
-            )
-
-        finally:
-
-            self.open_trade = None
-
-
-    # ========================================================
     # NEW DAY
     # ========================================================
 
-    def new_day(
-        self,
-        now
-    ):
+    def new_day(self, now):
 
         day = trading_day_start(
             now
         )
 
         if self.day == day:
-
             return
 
         logging.warning(
@@ -1165,11 +940,9 @@ class Bot:
         )
 
         if now < start:
-
             return False
 
         if self.ready:
-
             return True
 
         pos = position(
@@ -1189,9 +962,8 @@ class Bot:
 
             return True
 
-        if now > (
-            start
-            + timedelta(seconds=5)
+        if now > start + timedelta(
+            seconds=5
         ):
 
             high, low = historical_high_low(
@@ -1252,7 +1024,6 @@ class Bot:
     ):
 
         if self.last_position != 0:
-
             return False
 
         pos = position(
@@ -1307,9 +1078,7 @@ class Bot:
 
         for _ in range(50):
 
-            time.sleep(
-                0.2
-            )
+            time.sleep(0.2)
 
             pos = position(
                 self.product_id
@@ -1357,22 +1126,6 @@ class Bot:
             self.trade_low = price
             self.trade_high = None
 
-        self.open_trade = {
-
-            "direction":
-                direction,
-
-            "entry_price":
-                float(price),
-
-            "size":
-                abs(
-                    int(
-                        self.last_position
-                    )
-                )
-        }
-
         self.save()
 
         logging.warning(
@@ -1408,13 +1161,7 @@ class Bot:
 
             self.last_price = price
 
-            self.last_tick_time = time.time()
-
             now = now_ist()
-
-            # ------------------------------------------------
-            # Saturday square-off
-            # ------------------------------------------------
 
             if saturday_squareoff(now):
 
@@ -1424,10 +1171,6 @@ class Bot:
 
                 if pos["size"] != 0:
 
-                    self.record_trade_close(
-                        price
-                    )
-
                     close_position(
                         self.product_id,
                         pos["size"]
@@ -1435,54 +1178,27 @@ class Bot:
 
                 return
 
-            # ------------------------------------------------
-            # Weekend
-            # ------------------------------------------------
-
             if weekend(now):
-
                 return
 
-            # ------------------------------------------------
-            # New day
-            # ------------------------------------------------
-
             self.new_day(now)
-
-            # ------------------------------------------------
-            # Before 05:45
-            # ------------------------------------------------
 
             if now < strategy_start(
                 self.day
             ):
-
                 return
-
-            # ------------------------------------------------
-            # Prepare
-            # ------------------------------------------------
 
             if not self.prepare(
                 now,
                 price
             ):
-
                 return
-
-            # ------------------------------------------------
-            # Exchange position
-            # ------------------------------------------------
 
             pos = position(
                 self.product_id
             )
 
             size = pos["size"]
-
-            # ------------------------------------------------
-            # POSITION CLOSED
-            # ------------------------------------------------
 
             if (
                 size == 0
@@ -1491,7 +1207,7 @@ class Bot:
 
                 old = self.last_position
 
-                sl_hit = (
+                if (
                     self.sl is not None
                     and (
                         (
@@ -1504,13 +1220,7 @@ class Bot:
                             and price >= self.sl
                         )
                     )
-                )
-
-                self.record_trade_close(
-                    price
-                )
-
-                if sl_hit:
+                ):
 
                     if old > 0:
 
@@ -1559,10 +1269,6 @@ class Bot:
 
                 return
 
-            # ------------------------------------------------
-            # LONG
-            # ------------------------------------------------
-
             if size > 0:
 
                 self.last_position = size
@@ -1582,10 +1288,6 @@ class Bot:
                     self.save()
 
                 return
-
-            # ------------------------------------------------
-            # SHORT
-            # ------------------------------------------------
 
             if size < 0:
 
@@ -1607,20 +1309,11 @@ class Bot:
 
                 return
 
-            # ------------------------------------------------
-            # FLAT
-            # ------------------------------------------------
-
             self.last_position = 0
-
-            # ------------------------------------------------
-            # NEW HIGH
-            # ------------------------------------------------
 
             if price > self.high:
 
                 old_high = self.high
-
                 sl = self.low
 
                 logging.warning(
@@ -1640,14 +1333,9 @@ class Bot:
 
                 return
 
-            # ------------------------------------------------
-            # NEW LOW
-            # ------------------------------------------------
-
             if price < self.low:
 
                 old_low = self.low
-
                 sl = self.high
 
                 logging.warning(
@@ -1668,333 +1356,227 @@ class Bot:
                 return
 
 
-    # ========================================================
-    # DASHBOARD DATA
-    # ========================================================
-
-    def dashboard_data(self):
-
-        now = time.time()
-
-        # Cache REST account calls for 3 seconds.
-        # This prevents dashboard polling from hammering Delta.
-        if (
-            self.dashboard_cache is not None
-            and now - self.dashboard_cache_time < 3
-        ):
-
-            return self.dashboard_cache
-
-        with self.lock:
-
-            try:
-
-                pos = position(
-                    self.product_id
-                )
-
-            except Exception as e:
-
-                logging.warning(
-                    f"DASHBOARD POSITION ERROR | {e}"
-                )
-
-                pos = {
-                    "size": 0,
-                    "entry": None
-                }
-
-            try:
-
-                bal = balance()
-
-                balance_value = float(
-                    bal
-                )
-
-            except Exception as e:
-
-                logging.warning(
-                    f"DASHBOARD BALANCE ERROR | {e}"
-                )
-
-                balance_value = 0.0
-
-            size = int(
-                pos.get(
-                    "size",
-                    0
-                )
-            )
-
-            entry = pos.get(
-                "entry"
-            )
-
-            entry_value = (
-                float(entry)
-                if entry is not None
-                else 0.0
-            )
-
-            current_price = (
-                float(
-                    self.last_price
-                )
-                if self.last_price is not None
-                else 0.0
-            )
-
-            unrealized = 0.0
-
-            if (
-                size != 0
-                and entry is not None
-                and current_price > 0
-            ):
-
-                entry_decimal = Decimal(
-                    str(entry)
-                )
-
-                current_decimal = Decimal(
-                    str(current_price)
-                )
-
-                if size > 0:
-
-                    unrealized_decimal = (
-                        current_decimal
-                        - entry_decimal
-                    )
-
-                else:
-
-                    unrealized_decimal = (
-                        entry_decimal
-                        - current_decimal
-                    )
-
-                unrealized_decimal *= Decimal(
-                    abs(size)
-                )
-
-                unrealized_decimal *= (
-                    self.contract_value
-                )
-
-                unrealized = float(
-                    unrealized_decimal
-                )
-
-            closed = self.trade_history
-
-            total_trades = len(
-                closed
-            )
-
-            winning = sum(
-                1
-                for t in closed
-                if float(
-                    t.get(
-                        "pnl",
-                        0
-                    )
-                ) > 0
-            )
-
-            losing = sum(
-                1
-                for t in closed
-                if float(
-                    t.get(
-                        "pnl",
-                        0
-                    )
-                ) < 0
-            )
-
-            total_pnl = sum(
-                float(
-                    t.get(
-                        "pnl",
-                        0
-                    )
-                )
-                for t in closed
-            )
-
-            win_rate = (
-                (
-                    winning
-                    / total_trades
-                    * 100
-                )
-                if total_trades
-                else 0
-            )
-
-            if size > 0:
-
-                direction = "LONG"
-
-            elif size < 0:
-
-                direction = "SHORT"
-
-            else:
-
-                direction = "FLAT"
-
-            last_tick = None
-
-            if self.last_tick_time:
-
-                last_tick = (
-                    datetime.fromtimestamp(
-                        self.last_tick_time,
-                        IST
-                    ).isoformat()
-                )
-
-            data = {
-
-                "success": True,
-
-                "bot_running": True,
-
-                "websocket_connected":
-                    self.websocket_connected,
-
-                "symbol":
-                    SYMBOL,
-
-                "current_price":
-                    current_price,
-
-                "high":
-                    (
-                        float(self.high)
-                        if self.high is not None
-                        else 0.0
-                    ),
-
-                "low":
-                    (
-                        float(self.low)
-                        if self.low is not None
-                        else 0.0
-                    ),
-
-                "session_start":
-                    (
-                        strategy_start(
-                            self.day
-                        ).isoformat()
-                        if self.day
-                        else None
-                    ),
-
-                "balance":
-                    balance_value,
-
-                "total_pnl":
-                    total_pnl,
-
-                "today_pnl":
-                    total_pnl,
-
-                "position": {
-
-                    "direction":
-                        direction,
-
-                    "size":
-                        abs(size),
-
-                    "entry_price":
-                        entry_value,
-
-                    "stop_loss":
-                        (
-                            float(self.sl)
-                            if self.sl is not None
-                            else 0.0
-                        ),
-
-                    "unrealized_pnl":
-                        unrealized
-                },
-
-                "statistics": {
-
-                    "total_trades":
-                        total_trades,
-
-                    "winning_trades":
-                        winning,
-
-                    "losing_trades":
-                        losing,
-
-                    "win_rate":
-                        round(
-                            win_rate,
-                            1
-                        )
-                },
-
-                "last_tick":
-                    last_tick,
-
-                "trades":
-                    closed[-50:]
-            }
-
-            self.dashboard_cache = data
-
-            self.dashboard_cache_time = now
-
-            return data
-
-
 # ============================================================
-# DASHBOARD HTTP SERVER
+# DASHBOARD
 # ============================================================
 
 BOT_INSTANCE = None
+
+
+def decimal_json(value):
+
+    if value is None:
+        return None
+
+    if isinstance(value, Decimal):
+        return float(value)
+
+    try:
+        return float(value)
+    except Exception:
+        return value
+
+
+def dashboard_data():
+
+    bot = BOT_INSTANCE
+
+    if bot is None:
+
+        return {
+            "success": True,
+            "bot_running": False,
+            "message": "Bot is starting..."
+        }
+
+    with bot.lock:
+
+        try:
+
+            live_position = position(
+                bot.product_id
+            )
+
+        except Exception as e:
+
+            logging.warning(
+                f"DASHBOARD POSITION ERROR | {e}"
+            )
+
+            live_position = {
+                "size": 0,
+                "entry": None,
+                "stop_loss": None,
+                "unrealized_pnl": 0
+            }
+
+        try:
+
+            live_balance = balance()
+
+        except Exception as e:
+
+            logging.warning(
+                f"DASHBOARD BALANCE ERROR | {e}"
+            )
+
+            live_balance = None
+
+        size = int(
+            live_position.get(
+                "size",
+                0
+            )
+        )
+
+        if size > 0:
+            direction = "LONG"
+        elif size < 0:
+            direction = "SHORT"
+        else:
+            direction = "FLAT"
+
+        return {
+            "success": True,
+
+            "bot_running": True,
+
+            "symbol": SYMBOL,
+
+            "current_price":
+                decimal_json(
+                    bot.last_price
+                ),
+
+            "high":
+                decimal_json(
+                    bot.high
+                ),
+
+            "low":
+                decimal_json(
+                    bot.low
+                ),
+
+            "stop_loss":
+                decimal_json(
+                    bot.sl
+                ),
+
+            "balance":
+                decimal_json(
+                    live_balance
+                ),
+
+            "position": {
+                "direction":
+                    direction,
+
+                "size":
+                    abs(size),
+
+                "entry_price":
+                    decimal_json(
+                        live_position.get(
+                            "entry"
+                        )
+                    ),
+
+                "stop_loss":
+                    decimal_json(
+                        live_position.get(
+                            "stop_loss"
+                        )
+                        or bot.sl
+                    ),
+
+                "unrealized_pnl":
+                    decimal_json(
+                        live_position.get(
+                            "unrealized_pnl",
+                            0
+                        )
+                    )
+            },
+
+            "session": {
+                "day":
+                    (
+                        bot.day.isoformat()
+                        if bot.day
+                        else None
+                    ),
+
+                "strategy_start":
+                    (
+                        strategy_start(
+                            bot.day
+                        ).isoformat()
+                        if bot.day
+                        else None
+                    ),
+
+                "ready":
+                    bot.ready
+            }
+        }
 
 
 class DashboardHandler(
     SimpleHTTPRequestHandler
 ):
 
-    def log_message(
+    def __init__(
         self,
-        format,
-        *args
+        *args,
+        **kwargs
     ):
 
-        return
+        super().__init__(
+            *args,
+            directory=BASE_DIR,
+            **kwargs
+        )
+
+
+    def do_GET(self):
+
+        if self.path == "/api/health":
+
+            self.send_json({
+                "success": True,
+                "bot_running": True,
+                "symbol": SYMBOL
+            })
+
+            return
+
+        if self.path == "/api/dashboard":
+
+            self.send_json(
+                dashboard_data()
+            )
+
+            return
+
+        if self.path == "/":
+
+            self.path = "/index.html"
+
+        return super().do_GET()
 
 
     def send_json(
         self,
-        payload,
-        status=200
+        data
     ):
 
         raw = json.dumps(
-            payload,
-            ensure_ascii=False
-        ).encode(
-            "utf-8"
-        )
+            data,
+            separators=(",", ":")
+        ).encode("utf-8")
 
-        self.send_response(
-            status
-        )
+        self.send_response(200)
 
         self.send_header(
             "Content-Type",
@@ -2007,190 +1589,76 @@ class DashboardHandler(
         )
 
         self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
-
-        self.send_header(
             "Cache-Control",
             "no-store"
         )
 
         self.end_headers()
 
-        self.wfile.write(
-            raw
-        )
+        self.wfile.write(raw)
 
 
-    def do_OPTIONS(self):
+    def log_message(
+        self,
+        format,
+        *args
+    ):
 
-        self.send_response(
-            204
-        )
-
-        self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
-
-        self.send_header(
-            "Access-Control-Allow-Methods",
-            "GET, OPTIONS"
-        )
-
-        self.send_header(
-            "Access-Control-Allow-Headers",
-            "*"
-        )
-
-        self.end_headers()
+        return
 
 
-    def do_GET(self):
+def start_dashboard():
 
-        parsed = urlparse(
-            self.path
-        )
+    def server_thread():
 
-        path = parsed.path
+        try:
 
-        if path == "/api/health":
-
-            if BOT_INSTANCE is None:
-
-                self.send_json(
-                    {
-                        "success": False,
-                        "bot_running": False
-                    },
-                    503
-                )
-
-                return
-
-            self.send_json(
-                {
-                    "success": True,
-                    "bot_running": True,
-                    "websocket_connected":
-                        BOT_INSTANCE.websocket_connected,
-                    "symbol": SYMBOL,
-                    "port": DASHBOARD_PORT
-                }
+            server = ThreadingHTTPServer(
+                (
+                    "127.0.0.1",
+                    DASHBOARD_PORT
+                ),
+                DashboardHandler
             )
 
-            return
+            logging.warning(
+                "========================================"
+            )
 
-        if path == "/api/dashboard":
+            logging.warning(
+                "DASHBOARD STARTED"
+            )
 
-            if BOT_INSTANCE is None:
+            logging.warning(
+                f"PORT = {DASHBOARD_PORT}"
+            )
 
-                self.send_json(
-                    {
-                        "success": False,
-                        "bot_running": False
-                    },
-                    503
-                )
+            logging.warning(
+                "========================================"
+            )
 
-                return
+            server.serve_forever()
 
-            try:
+        except Exception as e:
 
-                data = BOT_INSTANCE.dashboard_data()
-
-                self.send_json(
-                    data
-                )
-
-            except Exception as e:
-
-                logging.exception(
-                    "DASHBOARD API ERROR"
-                )
-
-                self.send_json(
-                    {
-                        "success": False,
-                        "error": str(e)
-                    },
-                    500
-                )
-
-            return
-
-        # Serve frontend.
-        self.directory = str(
-            DASHBOARD_DIR
-        )
-
-        super().do_GET()
-
-
-def start_dashboard_server(
-    bot
-):
-
-    global BOT_INSTANCE
-
-    BOT_INSTANCE = bot
-
-    DASHBOARD_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-    server = ThreadingHTTPServer(
-        (
-            DASHBOARD_HOST,
-            DASHBOARD_PORT
-        ),
-        DashboardHandler
-    )
-
-    logging.warning(
-        "========================================"
-    )
-
-    logging.warning(
-        "DASHBOARD SERVER STARTED"
-    )
-
-    logging.warning(
-        f"HOST = {DASHBOARD_HOST}"
-    )
-
-    logging.warning(
-        f"PORT = {DASHBOARD_PORT}"
-    )
-
-    logging.warning(
-        f"DIRECTORY = {DASHBOARD_DIR}"
-    )
-
-    logging.warning(
-        "========================================"
-    )
+            logging.exception(
+                f"DASHBOARD SERVER ERROR | {e}"
+            )
 
     thread = threading.Thread(
-        target=server.serve_forever,
+        target=server_thread,
         daemon=True,
         name="dashboard-server"
     )
 
     thread.start()
 
-    return server
-
 
 # ============================================================
 # WEBSOCKET
 # ============================================================
 
-def run_websocket(
-    bot
-):
+def run_websocket(bot):
 
     while True:
 
@@ -2202,22 +1670,12 @@ def run_websocket(
 
             def on_open(ws):
 
-                bot.websocket_connected = True
-
                 payload = {
-
-                    "type":
-                        "subscribe",
-
+                    "type": "subscribe",
                     "payload": {
-
                         "channels": [
-
                             {
-
-                                "name":
-                                    "trades",
-
+                                "name": "trades",
                                 "symbols": [
                                     SYMBOL
                                 ]
@@ -2227,9 +1685,7 @@ def run_websocket(
                 }
 
                 ws.send(
-                    json.dumps(
-                        payload
-                    )
+                    json.dumps(payload)
                 )
 
                 logging.warning(
@@ -2253,17 +1709,11 @@ def run_websocket(
                     ) == "trades":
 
                         symbol = (
-                            data.get(
-                                "sy"
-                            )
-                            or data.get(
-                                "symbol"
-                            )
+                            data.get("sy")
+                            or data.get("symbol")
                         )
 
-                        price = data.get(
-                            "p"
-                        )
+                        price = data.get("p")
 
                         if (
                             symbol == SYMBOL
@@ -2286,8 +1736,6 @@ def run_websocket(
                 error
             ):
 
-                bot.websocket_connected = False
-
                 logging.error(
                     f"WS ERROR | {error}"
                 )
@@ -2298,8 +1746,6 @@ def run_websocket(
                 code,
                 msg
             ):
-
-                bot.websocket_connected = False
 
                 logging.warning(
                     f"WS CLOSED | {code} | {msg}"
@@ -2321,15 +1767,12 @@ def run_websocket(
 
         except Exception as e:
 
-            bot.websocket_connected = False
-
             logging.exception(
                 f"WS CRASH | {e}"
             )
 
         logging.warning(
-            f"RECONNECTING IN "
-            f"{RECONNECT_SECONDS}s"
+            f"RECONNECTING IN {RECONNECT_SECONDS}s"
         )
 
         time.sleep(
@@ -2376,6 +1819,10 @@ if __name__ == "__main__":
     )
 
     logging.warning(
+        f"DASHBOARD PORT = {DASHBOARD_PORT}"
+    )
+
+    logging.warning(
         "============================================"
     )
 
@@ -2384,21 +1831,18 @@ if __name__ == "__main__":
         product_info = product()
 
         set_leverage(
-            int(
-                product_info["id"]
-            )
+            int(product_info["id"])
         )
 
         bot = Bot(
             product_info
         )
 
-        # Dashboard starts inside SAME bot process.
-        start_dashboard_server(
-            bot
-        )
+        BOT_INSTANCE = bot
 
-        # Trading websocket remains the main engine.
+        # Dashboard starts INSIDE the same bot process.
+        start_dashboard()
+
         run_websocket(
             bot
         )
@@ -2413,4 +1857,4 @@ if __name__ == "__main__":
 
         logging.exception(
             f"FATAL ERROR | {e}"
-        )
+    )
