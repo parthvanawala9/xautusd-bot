@@ -41,23 +41,6 @@ function money(value) {
 }
 
 
-function moneyClass(value) {
-
-  const n = Number(value);
-
-  if (
-    Number.isNaN(n) ||
-    n === 0
-  ) {
-    return "";
-  }
-
-  return n > 0
-    ? "history-profit"
-    : "history-loss";
-}
-
-
 function escapeHtml(value) {
 
   return String(value ?? "")
@@ -70,202 +53,37 @@ function escapeHtml(value) {
 
 
 // ============================================================
-// SMALL DASHBOARD STYLES
-//
-// These styles are injected here so index.html and style.css
-// do not need to be changed.
+// DATE
 // ============================================================
 
-function ensureDashboardStyles() {
+function formatDate(
+  value
+) {
 
-  if (
-    document.getElementById(
-      "xaut-dashboard-extra-styles"
-    )
-  ) {
-    return;
+  if (!value) {
+    return "--";
   }
 
-  const style =
-    document.createElement("style");
+  try {
 
-  style.id =
-    "xaut-dashboard-extra-styles";
+    const date =
+      new Date(value);
 
-  style.textContent = `
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
 
-    .xaut-statistics-section {
-      margin-top: 18px;
-      border-top: 1px solid #e8ebef;
-      padding-top: 18px;
+      return String(value);
     }
 
-    .xaut-section-title {
-      font-size: 18px;
-      font-weight: 800;
-      margin: 0 0 12px 0;
-      color: #111827;
-    }
+    return date.toLocaleString();
 
-    .xaut-period-grid {
-      display: grid;
-      grid-template-columns:
-        repeat(2, minmax(0, 1fr));
-      gap: 14px;
-      margin-bottom: 18px;
-    }
+  } catch {
 
-    .xaut-period-card {
-      background: #f8fafc;
-      border: 1px solid #e7ebf0;
-      border-radius: 14px;
-      padding: 15px;
-    }
-
-    .xaut-period-title {
-      font-size: 14px;
-      font-weight: 800;
-      color: #111827;
-      margin-bottom: 12px;
-    }
-
-    .xaut-period-stats {
-      display: grid;
-      grid-template-columns:
-        repeat(5, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .xaut-period-stat {
-      background: #ffffff;
-      border-radius: 10px;
-      padding: 10px;
-      min-width: 0;
-    }
-
-    .xaut-period-stat span {
-      display: block;
-      font-size: 11px;
-      color: #6b7280;
-      margin-bottom: 5px;
-      line-height: 1.25;
-    }
-
-    .xaut-period-stat strong {
-      display: block;
-      font-size: 14px;
-      font-weight: 800;
-      color: #111827;
-      word-break: break-word;
-    }
-
-    .xaut-history-section {
-      margin-top: 18px;
-    }
-
-    .xaut-history-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 12px;
-    }
-
-    .xaut-history-count {
-      font-size: 12px;
-      color: #6b7280;
-      font-weight: 700;
-    }
-
-    .xaut-history-wrap {
-      width: 100%;
-      overflow-x: auto;
-      border: 1px solid #e7ebf0;
-      border-radius: 12px;
-      background: #ffffff;
-    }
-
-    .xaut-history-table {
-      width: 100%;
-      min-width: 820px;
-      border-collapse: collapse;
-      font-size: 12px;
-    }
-
-    .xaut-history-table th {
-      text-align: left;
-      padding: 11px 10px;
-      background: #f8fafc;
-      color: #6b7280;
-      font-weight: 800;
-      white-space: nowrap;
-      border-bottom: 1px solid #e7ebf0;
-    }
-
-    .xaut-history-table td {
-      padding: 11px 10px;
-      border-bottom: 1px solid #eef1f4;
-      color: #111827;
-      white-space: nowrap;
-    }
-
-    .xaut-history-table tr:last-child td {
-      border-bottom: none;
-    }
-
-    .xaut-direction-long {
-      font-weight: 800;
-      color: #087f3f;
-    }
-
-    .xaut-direction-short {
-      font-weight: 800;
-      color: #b42318;
-    }
-
-    .history-profit {
-      color: #087f3f !important;
-      font-weight: 800;
-    }
-
-    .history-loss {
-      color: #b42318 !important;
-      font-weight: 800;
-    }
-
-    .xaut-empty-history {
-      border: 1px solid #e7ebf0;
-      border-radius: 12px;
-      padding: 20px;
-      text-align: center;
-      color: #6b7280;
-      background: #f8fafc;
-      font-size: 13px;
-      font-weight: 600;
-    }
-
-    .xaut-unrealized-live {
-      font-weight: 900 !important;
-    }
-
-    @media (max-width: 800px) {
-
-      .xaut-period-grid {
-        grid-template-columns: 1fr;
-      }
-
-      .xaut-period-stats {
-        grid-template-columns:
-          repeat(2, minmax(0, 1fr));
-      }
-
-    }
-
-  `;
-
-  document.head.appendChild(
-    style
-  );
+    return String(value);
+  }
 }
 
 
@@ -308,12 +126,15 @@ async function apiFetch(
     );
   }
 
+
   const contentType =
     response.headers.get(
       "content-type"
     ) || "";
 
+
   let data = null;
+
 
   if (
     contentType
@@ -345,11 +166,13 @@ async function apiFetch(
       text = "";
     }
 
+
     const cleanText =
       text
         .replace(/<[^>]*>/g, " ")
         .replace(/\s+/g, " ")
         .trim();
+
 
     throw new Error(
       cleanText
@@ -357,6 +180,7 @@ async function apiFetch(
         : `Server returned a non-JSON response (HTTP ${response.status}).`
     );
   }
+
 
   if (
     !response.ok ||
@@ -368,6 +192,7 @@ async function apiFetch(
       `Request failed (HTTP ${response.status}).`
     );
   }
+
 
   return data;
 }
@@ -384,6 +209,7 @@ function requestPin() {
       "xaut_admin_pin"
     );
 
+
   if (saved !== null) {
 
     adminPin = saved;
@@ -391,10 +217,12 @@ function requestPin() {
     return;
   }
 
+
   adminPin =
     window.prompt(
       "Enter dashboard admin PIN:"
     ) || "";
+
 
   localStorage.setItem(
     "xaut_admin_pin",
@@ -425,6 +253,7 @@ async function startBot(
       }
     );
 
+
     await loadDashboard(
       true
     );
@@ -447,8 +276,10 @@ async function stopBot(
       "STOP BOT will close the open position on this account. Continue?"
     )
   ) {
+
     return;
   }
+
 
   try {
 
@@ -463,6 +294,7 @@ async function stopBot(
         })
       }
     );
+
 
     await loadDashboard(
       true
@@ -486,9 +318,11 @@ function openClientForm() {
   const form =
     $("client-form");
 
+
   if (!form) {
     return;
   }
+
 
   form.style.display =
     form.style.display === "none"
@@ -528,7 +362,10 @@ async function addClient() {
   }
 
 
-  if (!apiKey || !apiSecret) {
+  if (
+    !apiKey ||
+    !apiSecret
+  ) {
 
     alert(
       "Enter Delta API key and API secret."
@@ -538,7 +375,10 @@ async function addClient() {
   }
 
 
-  if (!start || !expiry) {
+  if (
+    !start ||
+    !expiry
+  ) {
 
     alert(
       "Enter subscription start and expiry."
@@ -585,6 +425,7 @@ async function addClient() {
 
     const form =
       $("client-form");
+
 
     if (form) {
 
@@ -666,18 +507,22 @@ async function updateSubscription(
       "Subscription start date/time (local):"
     );
 
+
   if (!start) {
     return;
   }
+
 
   const expiry =
     prompt(
       "Subscription expiry date/time (local):"
     );
 
+
   if (!expiry) {
     return;
   }
+
 
   const fee =
     prompt(
@@ -741,6 +586,7 @@ async function deleteClient(
       "Remove this client account? If a position exists, the system will try to close it first."
     )
   ) {
+
     return;
   }
 
@@ -775,97 +621,246 @@ async function deleteClient(
 
 
 // ============================================================
-// STATISTICS
+// RUNNING TRADE
 // ============================================================
 
-function renderStatistics(
-  statistics
+function renderRunningTrade(
+  account
 ) {
 
-  const stats =
-    statistics || {};
+  const position =
+    account.position || {};
 
-  const today =
-    stats.today || {};
 
-  const allTime =
-    stats.all_time || {};
+  const size =
+    Number(
+      position.size || 0
+    );
+
+
+  if (
+    size === 0 ||
+    !position.direction ||
+    position.direction === "FLAT"
+  ) {
+
+    return `
+
+      <div class="running-trade-card">
+
+        <div class="running-trade-header">
+
+          <div>
+            <h3>Running Trade</h3>
+
+            <span class="running-trade-status">
+              NO OPEN TRADE
+            </span>
+          </div>
+
+        </div>
+
+        <div class="running-trade-empty">
+          No trade is currently running on this account.
+        </div>
+
+      </div>
+
+    `;
+  }
+
+
+  const direction =
+    String(
+      position.direction
+    ).toUpperCase();
+
+
+  const directionClass =
+    direction === "LONG"
+      ? "running-long"
+      : "running-short";
 
 
   return `
 
-    <div class="xaut-statistics-section">
+    <div class="running-trade-card">
 
-      <div class="xaut-section-title">
-        Trading Performance
+      <div class="running-trade-header">
+
+        <div>
+
+          <div class="running-trade-label">
+            RUNNING TRADE
+          </div>
+
+          <h3>
+            ${escapeHtml(
+              direction
+            )}
+          </h3>
+
+        </div>
+
+
+        <div class="running-trade-live">
+          ● LIVE
+        </div>
+
       </div>
 
 
-      <div class="xaut-period-grid">
+      <div class="running-trade-grid">
 
-        <div class="xaut-period-card">
+        <div>
+          <span>Direction</span>
+          <strong class="${directionClass}">
+            ${escapeHtml(
+              direction
+            )}
+          </strong>
+        </div>
 
-          <div class="xaut-period-title">
-            Today
-          </div>
 
-          <div class="xaut-period-stats">
+        <div>
+          <span>Size</span>
+          <strong>
+            ${number(
+              size,
+              0
+            )}
+          </strong>
+        </div>
 
-            <div class="xaut-period-stat">
+
+        <div>
+          <span>Entry Price</span>
+          <strong>
+            ${number(
+              position.entry_price
+            )}
+          </strong>
+        </div>
+
+
+        <div>
+          <span>Current Price</span>
+          <strong>
+            ${number(
+              account.current_price
+            )}
+          </strong>
+        </div>
+
+
+        <div>
+          <span>Stop Loss</span>
+          <strong>
+            ${number(
+              position.stop_loss
+            )}
+          </strong>
+        </div>
+
+
+        <div>
+          <span>Unrealized P&amp;L</span>
+          <strong>
+            ${money(
+              position.unrealized_pnl
+            )}
+          </strong>
+        </div>
+
+      </div>
+
+    </div>
+
+  `;
+}
+
+
+// ============================================================
+// PERFORMANCE
+// ============================================================
+
+function renderPerformance(
+  account
+) {
+
+  const statistics =
+    account.statistics || {};
+
+
+  const today =
+    statistics.today || {};
+
+
+  const allTime =
+    statistics.all_time || {};
+
+
+  return `
+
+    <div class="performance-section">
+
+      <h3>
+        Trading Performance
+      </h3>
+
+
+      <div class="performance-grid">
+
+
+        <div class="performance-card">
+
+          <h4>Today</h4>
+
+
+          <div class="performance-stats">
+
+            <div>
               <span>Total Trades</span>
               <strong>
-                ${Number(
-                  today.total_trades || 0
-                )}
+                ${today.total_trades ?? 0}
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
+            <div>
               <span>Winning Trades</span>
               <strong>
-                ${Number(
-                  today.winning_trades || 0
-                )}
+                ${today.winning_trades ?? 0}
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
+            <div>
               <span>Losing Trades</span>
               <strong>
-                ${Number(
-                  today.losing_trades || 0
-                )}
+                ${today.losing_trades ?? 0}
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
+            <div>
               <span>Win Rate</span>
               <strong>
                 ${number(
-                  today.win_rate || 0,
+                  today.win_rate,
                   1
                 )}%
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
-
-              <span>Today P&L</span>
-
-              <strong
-                class="${moneyClass(
-                  today.pnl
-                )}"
-              >
+            <div>
+              <span>Today P&amp;L</span>
+              <strong>
                 ${money(
-                  today.pnl || 0
+                  today.pnl
                 )}
               </strong>
-
             </div>
 
           </div>
@@ -873,69 +868,55 @@ function renderStatistics(
         </div>
 
 
-        <div class="xaut-period-card">
+        <div class="performance-card">
 
-          <div class="xaut-period-title">
-            All Time
-          </div>
+          <h4>All Time</h4>
 
-          <div class="xaut-period-stats">
 
-            <div class="xaut-period-stat">
+          <div class="performance-stats">
+
+            <div>
               <span>Total Trades</span>
               <strong>
-                ${Number(
-                  allTime.total_trades || 0
-                )}
+                ${allTime.total_trades ?? 0}
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
+            <div>
               <span>Winning Trades</span>
               <strong>
-                ${Number(
-                  allTime.winning_trades || 0
-                )}
+                ${allTime.winning_trades ?? 0}
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
+            <div>
               <span>Losing Trades</span>
               <strong>
-                ${Number(
-                  allTime.losing_trades || 0
-                )}
+                ${allTime.losing_trades ?? 0}
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
+            <div>
               <span>Win Rate</span>
               <strong>
                 ${number(
-                  allTime.win_rate || 0,
+                  allTime.win_rate,
                   1
                 )}%
               </strong>
             </div>
 
 
-            <div class="xaut-period-stat">
-
-              <span>All-Time P&L</span>
-
-              <strong
-                class="${moneyClass(
-                  allTime.pnl
-                )}"
-              >
+            <div>
+              <span>All-Time P&amp;L</span>
+              <strong>
                 ${money(
-                  allTime.pnl || 0
+                  allTime.pnl
                 )}
               </strong>
-
             </div>
 
           </div>
@@ -955,37 +936,136 @@ function renderStatistics(
 // ============================================================
 
 function renderTradeHistory(
-  history
+  account
 ) {
 
-  const trades =
-    Array.isArray(history)
-      ? history
+  const history =
+    Array.isArray(
+      account.trade_history
+    )
+      ? account.trade_history
       : [];
 
 
-  if (!trades.length) {
-
-    return `
-
-      <div class="xaut-history-section">
-
-        <div class="xaut-history-header">
-
-          <div class="xaut-section-title">
-            Trade History
-          </div>
-
-          <div class="xaut-history-count">
-            0 trades
-          </div>
-
-        </div>
+  const position =
+    account.position || {};
 
 
-        <div class="xaut-empty-history">
-          No trades recorded yet.
-        </div>
+  const hasRunningTrade =
+    Number(
+      position.size || 0
+    ) !== 0;
+
+
+  let rows = "";
+
+
+  if (history.length > 0) {
+
+    rows =
+      history
+        .map(
+          (trade) => {
+
+            const pnl =
+              Number(
+                trade.pnl || 0
+              );
+
+
+            const pnlClass =
+              pnl > 0
+                ? "trade-profit"
+                : pnl < 0
+                  ? "trade-loss"
+                  : "trade-flat";
+
+
+            return `
+
+              <div class="trade-history-row">
+
+                <div>
+                  <span>Date</span>
+                  <strong>
+                    ${escapeHtml(
+                      trade.date || "--"
+                    )}
+                  </strong>
+                </div>
+
+
+                <div>
+                  <span>Direction</span>
+                  <strong>
+                    ${escapeHtml(
+                      trade.direction || "--"
+                    )}
+                  </strong>
+                </div>
+
+
+                <div>
+                  <span>Entry</span>
+                  <strong>
+                    ${number(
+                      trade.entry_price
+                    )}
+                  </strong>
+                </div>
+
+
+                <div>
+                  <span>Exit</span>
+                  <strong>
+                    ${number(
+                      trade.exit_price
+                    )}
+                  </strong>
+                </div>
+
+
+                <div>
+                  <span>Size</span>
+                  <strong>
+                    ${trade.size ?? 0}
+                  </strong>
+                </div>
+
+
+                <div>
+                  <span>Reason</span>
+                  <strong>
+                    ${escapeHtml(
+                      trade.reason || "--"
+                    )}
+                  </strong>
+                </div>
+
+
+                <div>
+                  <span>P&amp;L</span>
+                  <strong class="${pnlClass}">
+                    ${money(
+                      pnl
+                    )}
+                  </strong>
+                </div>
+
+              </div>
+
+            `;
+          }
+        )
+        .join("");
+
+  } else {
+
+    rows = `
+
+      <div class="trade-history-empty">
+
+        No closed trades yet.
 
       </div>
 
@@ -995,317 +1075,79 @@ function renderTradeHistory(
 
   return `
 
-    <div class="xaut-history-section">
+    <div class="trade-history-section">
 
-      <div class="xaut-history-header">
+      <div class="trade-history-title">
 
-        <div class="xaut-section-title">
+        <h3>
           Trade History
-        </div>
+        </h3>
 
-        <div class="xaut-history-count">
-          ${trades.length}
-          ${
-            trades.length === 1
-              ? "trade"
-              : "trades"
+        <span>
+          ${history.length} closed trade${
+            history.length === 1
+              ? ""
+              : "s"
           }
-        </div>
+        </span>
 
       </div>
 
 
-      <div class="xaut-history-wrap">
+      ${
+        hasRunningTrade
+          ? `
 
-        <table class="xaut-history-table">
+            <div class="running-history-banner">
 
-          <thead>
+              <strong>
+                ● RUNNING TRADE
+              </strong>
 
-            <tr>
-
-              <th>Date</th>
-              <th>Direction</th>
-              <th>Entry</th>
-              <th>Exit</th>
-              <th>Size</th>
-              <th>Stop Loss</th>
-              <th>P&L</th>
-              <th>Reason</th>
-
-            </tr>
-
-          </thead>
-
-
-          <tbody>
-
-            ${trades
-              .map(
-                (
-                  trade
-                ) => {
-
-                  const direction =
-                    String(
-                      trade.direction || ""
-                    ).toUpperCase();
-
-                  const pnl =
-                    Number(
-                      trade.pnl || 0
-                    );
-
-
-                  return `
-
-                    <tr>
-
-                      <td>
-                        ${escapeHtml(
-                          formatDate(
-                            trade.exit_time ||
-                            trade.entry_time ||
-                            trade.date
-                          )
-                        )}
-                      </td>
-
-
-                      <td>
-
-                        <span
-                          class="${
-                            direction === "LONG"
-                              ? "xaut-direction-long"
-                              : "xaut-direction-short"
-                          }"
-                        >
-                          ${escapeHtml(
-                            direction ||
-                            "--"
-                          )}
-                        </span>
-
-                      </td>
-
-
-                      <td>
-                        ${number(
-                          trade.entry_price
-                        )}
-                      </td>
-
-
-                      <td>
-                        ${number(
-                          trade.exit_price
-                        )}
-                      </td>
-
-
-                      <td>
-                        ${Number(
-                          trade.size || 0
-                        )}
-                      </td>
-
-
-                      <td>
-                        ${number(
-                          trade.stop_loss
-                        )}
-                      </td>
-
-
-                      <td
-                        class="${moneyClass(
-                          pnl
-                        )}"
-                      >
-                        ${money(
-                          pnl
-                        )}
-                      </td>
-
-
-                      <td>
-                        ${escapeHtml(
-                          trade.reason ||
-                          "--"
-                        )}
-                      </td>
-
-                    </tr>
-
-                  `;
+              <span>
+                ${
+                  escapeHtml(
+                    position.direction ||
+                    "POSITION"
+                  )
                 }
-              )
-              .join("")}
+                •
+                Entry
+                ${
+                  number(
+                    position.entry_price
+                  )
+                }
+                •
+                Size
+                ${
+                  position.size ?? 0
+                }
+                •
+                Unrealized
+                ${
+                  money(
+                    position.unrealized_pnl
+                  )
+                }
+              </span>
 
-          </tbody>
+            </div>
 
-        </table>
+          `
+          : ""
+      }
+
+
+      <div class="trade-history-list">
+
+        ${rows}
 
       </div>
 
     </div>
 
   `;
-}
-
-
-// ============================================================
-// UNREALIZED P&L
-// ============================================================
-
-function getDisplayedUnrealizedPnl(
-  account
-) {
-
-  const position =
-    account.position || {};
-
-  const raw =
-    position.unrealized_pnl;
-
-
-  // ----------------------------------------------------------
-  // First priority:
-  // Use the value supplied by the bot/exchange.
-  // ----------------------------------------------------------
-
-  if (
-    raw !== null &&
-    raw !== undefined &&
-    !Number.isNaN(Number(raw))
-  ) {
-
-    const numeric =
-      Number(raw);
-
-    // If exchange supplied a non-zero value, use it.
-    if (numeric !== 0) {
-
-      return numeric;
-    }
-
-    // If position is flat, zero is correct.
-    if (
-      Number(position.size || 0)
-      === 0
-    ) {
-
-      return 0;
-    }
-  }
-
-
-  // ----------------------------------------------------------
-  // Fallback:
-  // Calculate from entry/current price when the exchange
-  // response does not provide unrealized P&L.
-  //
-  // The bot's normal value is still preferred above.
-  // ----------------------------------------------------------
-
-  const size =
-    Number(
-      position.size || 0
-    );
-
-  const entry =
-    Number(
-      position.entry_price
-    );
-
-  const current =
-    Number(
-      account.current_price
-    );
-
-
-  if (
-    !size ||
-    !Number.isFinite(entry) ||
-    !Number.isFinite(current)
-  ) {
-
-    return 0;
-  }
-
-
-  // ----------------------------------------------------------
-  // The current bot uses the product contract value internally.
-  // If the backend has not returned an exchange P&L value,
-  // use the account's balance/leverage/size relationship as
-  // a conservative display fallback.
-  // ----------------------------------------------------------
-
-  const balance =
-    Number(
-      account.balance
-    );
-
-  const leverage =
-    Number(
-      account.leverage || 50
-    );
-
-  const fraction =
-    Number(
-      account.balance_fraction || 0.10
-    );
-
-
-  if (
-    !Number.isFinite(balance) ||
-    !Number.isFinite(leverage) ||
-    !Number.isFinite(fraction) ||
-    balance <= 0 ||
-    leverage <= 0 ||
-    fraction <= 0
-  ) {
-
-    return 0;
-  }
-
-
-  const estimatedNotional =
-    balance *
-    fraction *
-    leverage;
-
-
-  const estimatedContractValue =
-    estimatedNotional /
-    (
-      entry *
-      size
-    );
-
-
-  if (
-    !Number.isFinite(
-      estimatedContractValue
-    ) ||
-    estimatedContractValue <= 0
-  ) {
-
-    return 0;
-  }
-
-
-  const priceDifference =
-    position.direction === "SHORT"
-      ? entry - current
-      : current - entry;
-
-
-  return (
-    priceDifference *
-    size *
-    estimatedContractValue
-  );
 }
 
 
@@ -1320,11 +1162,14 @@ function renderAccount(
   const running =
     account.bot_enabled === true;
 
+
   const primary =
     account.account_type === "primary";
 
+
   const subscription =
     account.subscription || {};
+
 
   const position =
     account.position || {};
@@ -1336,7 +1181,9 @@ function renderAccount(
 
   if (!primary) {
 
-    if (subscription.expired) {
+    if (
+      subscription.expired
+    ) {
 
       subscriptionText =
         "SUBSCRIPTION EXPIRED";
@@ -1359,27 +1206,10 @@ function renderAccount(
   }
 
 
-  const unrealizedPnl =
-    getDisplayedUnrealizedPnl(
-      account
-    );
-
-
-  const statistics =
-    account.statistics || {};
-
-
-  const history =
-    Array.isArray(
-      account.trade_history
-    )
-      ? account.trade_history
-      : [];
-
-
   return `
 
     <section class="card account-card">
+
 
       <div class="account-header">
 
@@ -1412,13 +1242,11 @@ function renderAccount(
         </div>
 
 
-        <div
-          class="${
-            running
-              ? "account-running"
-              : "account-stopped"
-          }"
-        >
+        <div class="${
+          running
+            ? "account-running"
+            : "account-stopped"
+        }">
 
           ${
             running
@@ -1565,18 +1393,12 @@ function renderAccount(
         <div>
 
           <span>
-            Unrealized P&L
+            Unrealized P&amp;L
           </span>
 
-          <strong
-            class="xaut-unrealized-live ${
-              moneyClass(
-                unrealizedPnl
-              )
-            }"
-          >
+          <strong>
             ${money(
-              unrealizedPnl
+              position.unrealized_pnl
             )}
           </strong>
 
@@ -1586,18 +1408,12 @@ function renderAccount(
         <div>
 
           <span>
-            All-Time P&L
+            All-Time P&amp;L
           </span>
 
-          <strong
-            class="${moneyClass(
-              statistics
-                ?.all_time
-                ?.pnl
-            )}"
-          >
+          <strong>
             ${money(
-              statistics
+              account.statistics
                 ?.all_time
                 ?.pnl
             )}
@@ -1605,9 +1421,21 @@ function renderAccount(
 
         </div>
 
-
       </div>
 
+
+      <!-- ====================================================
+           RUNNING TRADE
+           ==================================================== -->
+
+      ${renderRunningTrade(
+        account
+      )}
+
+
+      <!-- ====================================================
+           BOT ACTIONS
+           ==================================================== -->
 
       <div class="account-actions">
 
@@ -1672,7 +1500,6 @@ function renderAccount(
             : ""
         }
 
-
       </div>
 
 
@@ -1682,6 +1509,7 @@ function renderAccount(
           ? `
 
             <div class="subscription-details">
+
 
               <div>
 
@@ -1716,6 +1544,7 @@ function renderAccount(
 
               </div>
 
+
             </div>
 
           `
@@ -1724,54 +1553,27 @@ function renderAccount(
       }
 
 
-      ${renderStatistics(
-        statistics
+      <!-- ====================================================
+           PERFORMANCE
+           ==================================================== -->
+
+      ${renderPerformance(
+        account
       )}
 
 
+      <!-- ====================================================
+           TRADE HISTORY
+           ==================================================== -->
+
       ${renderTradeHistory(
-        history
+        account
       )}
 
 
     </section>
 
   `;
-}
-
-
-// ============================================================
-// DATE
-// ============================================================
-
-function formatDate(
-  value
-) {
-
-  if (!value) {
-    return "--";
-  }
-
-  try {
-
-    const date =
-      new Date(value);
-
-    if (
-      Number.isNaN(
-        date.getTime()
-      )
-    ) {
-
-      return String(value);
-    }
-
-    return date.toLocaleString();
-
-  } catch {
-
-    return String(value);
-  }
 }
 
 
@@ -1828,6 +1630,7 @@ async function loadDashboard(
 
 
     if (!container) {
+
       return;
     }
 
@@ -1904,13 +1707,13 @@ async function loadDashboard(
 // INIT
 // ============================================================
 
-ensureDashboardStyles();
-
 requestPin();
 
 loadDashboard();
 
+
 setInterval(
-  () => loadDashboard(),
+  () =>
+    loadDashboard(),
   3000
 );
