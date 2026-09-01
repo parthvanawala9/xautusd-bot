@@ -55,7 +55,9 @@ jobs:
 
 
       # =====================================================
-      # CHECK PYTHON SYNTAX BEFORE TOUCHING ORACLE
+      # CHECK BOT PYTHON SYNTAX
+      #
+      # This happens BEFORE touching Oracle.
       # =====================================================
 
       - name: Check bot.py Syntax
@@ -69,10 +71,12 @@ jobs:
 
 
       # =====================================================
-      # COPY FILES TO ORACLE
+      # UPLOAD BOT + DASHBOARD FILES
       #
-      # Files are first copied to a temporary directory.
-      # Existing running bot is NOT touched during upload.
+      # Upload goes to temporary directory first.
+      #
+      # Existing running application is not touched
+      # until upload is completely successful.
       # =====================================================
 
       - name: Upload Bot And Dashboard
@@ -88,17 +92,10 @@ jobs:
           echo "CONNECTING TO ORACLE"
           echo "========================================"
 
-          SSH_OPTIONS="
-            -i ~/.ssh/oracle.key
-            -o StrictHostKeyChecking=no
-            -o UserKnownHostsFile=/dev/null
-            -o ConnectTimeout=60
-            -o ConnectionAttempts=5
-            -o ServerAliveInterval=15
-            -o ServerAliveCountMax=4
-          "
 
-          echo "Testing SSH connection..."
+          echo
+          echo "Testing Oracle SSH..."
+
 
           ssh \
             -i ~/.ssh/oracle.key \
@@ -114,6 +111,7 @@ jobs:
 
           echo
           echo "Creating temporary deployment directory..."
+
 
           ssh \
             -i ~/.ssh/oracle.key \
@@ -149,7 +147,11 @@ jobs:
       # =====================================================
       # INSTALL NEW FILES
       #
-      # Existing accounts.json and state/history directories
+      # IMPORTANT:
+      # accounts.json
+      # account_states/
+      # account_history/
+      #
       # are NOT touched.
       # =====================================================
 
@@ -174,52 +176,80 @@ jobs:
 
           set -e
 
+
           BOT_DIR="/home/opc/xautusd-bot"
+
           TMP_DIR="$BOT_DIR/.deploy_tmp"
 
+
           echo "========================================"
-          echo "INSTALLING NEW BOT + DASHBOARD FILES"
+          echo "INSTALLING NEW FILES"
           echo "========================================"
+
 
           test -f "$TMP_DIR/bot.py"
+
           test -f "$TMP_DIR/index.html"
+
           test -f "$TMP_DIR/app.js"
+
           test -f "$TMP_DIR/style.css"
 
-          echo "All uploaded files found."
+
+          echo
+          echo "Uploaded files verified."
+
 
           echo
           echo "Checking Python syntax on Oracle..."
 
-          python3 -m py_compile "$TMP_DIR/bot.py"
+
+          python3 -m py_compile \
+            "$TMP_DIR/bot.py"
+
 
           echo "ORACLE_BOT_SYNTAX_OK"
+
 
           echo
           echo "Replacing application files..."
 
-          cp "$TMP_DIR/bot.py" \
-             "$BOT_DIR/bot.py"
 
-          cp "$TMP_DIR/index.html" \
-             "$BOT_DIR/index.html"
+          cp \
+            "$TMP_DIR/bot.py" \
+            "$BOT_DIR/bot.py"
 
-          cp "$TMP_DIR/app.js" \
-             "$BOT_DIR/app.js"
 
-          cp "$TMP_DIR/style.css" \
-             "$BOT_DIR/style.css"
+          cp \
+            "$TMP_DIR/index.html" \
+            "$BOT_DIR/index.html"
 
-          rm -rf "$TMP_DIR"
+
+          cp \
+            "$TMP_DIR/app.js" \
+            "$BOT_DIR/app.js"
+
+
+          cp \
+            "$TMP_DIR/style.css" \
+            "$BOT_DIR/style.css"
+
+
+          rm -rf \
+            "$TMP_DIR"
+
 
           echo
           echo "FILES_INSTALLED_OK"
+
 
           EOF
 
 
       # =====================================================
       # RESTART BOT + DASHBOARD
+      #
+      # bot.py starts the dashboard on port 8000.
       # =====================================================
 
       - name: Restart XAUTUSD Bot
@@ -241,22 +271,34 @@ jobs:
             -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo "========================================"
-          echo "RESTART XAUTUSD BOT + DASHBOARD"
+
           echo "========================================"
 
-          sudo systemctl restart xautusd-bot.service
+          echo "RESTART XAUTUSD BOT + DASHBOARD"
+
+          echo "========================================"
+
+
+          sudo systemctl restart \
+            xautusd-bot.service
+
 
           echo
+
           echo "Waiting for service startup..."
+
 
           sleep 10
 
+
           echo
+
           echo "===== SERVICE STATUS ====="
+
 
           sudo systemctl --no-pager status \
             xautusd-bot.service || true
+
 
           EOF
 
@@ -284,53 +326,73 @@ jobs:
             -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
+
           echo "========================================"
+
           echo "BOT VERIFICATION"
+
           echo "========================================"
 
 
           if sudo systemctl is-active --quiet \
             xautusd-bot.service; then
 
+
             echo "XAUTUSD_BOT_ACTIVE"
+
 
           else
 
+
             echo "XAUTUSD_BOT_FAILED"
 
+
             echo
+
             echo "===== SERVICE STATUS ====="
+
 
             sudo systemctl --no-pager status \
               xautusd-bot.service || true
 
+
             echo
-            echo "===== RECENT LOGS ====="
+
+            echo "===== RECENT BOT LOGS ====="
+
 
             sudo journalctl \
               -u xautusd-bot.service \
               -n 80 \
               --no-pager
 
+
             exit 1
+
 
           fi
 
 
           echo
+
           echo "===== BOT PROCESS ====="
 
+
           pgrep -af \
-            "/home/opc/xautusd-bot/bot.py" || true
+            "/home/opc/xautusd-bot/bot.py" \
+            || true
 
 
           echo
+
           echo "===== RECENT BOT LOGS ====="
+
 
           sudo journalctl \
             -u xautusd-bot.service \
             -n 40 \
             --no-pager
+
 
           EOF
 
@@ -358,59 +420,80 @@ jobs:
             -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
+
           echo "========================================"
+
           echo "DASHBOARD VERIFICATION"
+
           echo "========================================"
 
 
           echo
+
           echo "===== PORT 8000 ====="
+
 
           if ss -lnt | grep -q ':8000'; then
 
+
             echo "DASHBOARD_PORT_8000_OK"
+
 
           else
 
+
             echo "DASHBOARD_PORT_8000_FAILED"
 
+
             echo
+
             echo "===== BOT LOGS ====="
+
 
             sudo journalctl \
               -u xautusd-bot.service \
               -n 80 \
               --no-pager
 
+
             exit 1
+
 
           fi
 
 
           echo
-          echo "===== HEALTH ====="
+
+          echo "===== LOCAL HEALTH ====="
+
 
           curl \
             --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/health
 
+
           echo
 
 
           echo
-          echo "===== DASHBOARD DATA ====="
+
+          echo "===== LOCAL DASHBOARD DATA ====="
+
 
           curl \
             --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/dashboard
 
+
           echo
 
 
           echo
-          echo "===== DASHBOARD PAGE ====="
+
+          echo "===== LOCAL DASHBOARD PAGE ====="
+
 
           curl \
             --max-time 20 \
@@ -418,13 +501,24 @@ jobs:
             http://127.0.0.1:8000/ \
             > /dev/null
 
+
           echo "DASHBOARD_PAGE_OK"
+
 
           EOF
 
 
       # =====================================================
       # CLOUDFLARE QUICK TUNNEL
+      #
+      # IMPORTANT:
+      # We do NOT curl the trycloudflare URL from Oracle.
+      #
+      # The previous workflow failed here because Oracle
+      # could not resolve the temporary Cloudflare hostname.
+      #
+      # We only verify that the tunnel started and obtain
+      # its public URL.
       # =====================================================
 
       - name: Start Cloudflare Quick Tunnel
@@ -446,10 +540,14 @@ jobs:
             -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
+
           set -e
 
+
           echo "========================================"
+
           echo "START CLOUDFLARE QUICK TUNNEL"
+
           echo "========================================"
 
 
@@ -458,14 +556,18 @@ jobs:
 
           if [ -z "$CLOUDFLARED" ]; then
 
+
             echo "ERROR: cloudflared not installed"
 
+
             exit 1
+
 
           fi
 
 
           BOT_DIR="/home/opc/xautusd-bot"
+
 
           PID_FILE="$BOT_DIR/quick-tunnel.pid"
 
@@ -476,38 +578,45 @@ jobs:
 
 
           echo
+
           echo "Stopping previous Quick Tunnel..."
 
 
           if [ -f "$PID_FILE" ]; then
 
-            OLD_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+
+            OLD_PID=$(cat \
+              "$PID_FILE" \
+              2>/dev/null \
+              || true)
+
 
             if [ -n "$OLD_PID" ] && \
                kill -0 "$OLD_PID" 2>/dev/null; then
 
-              kill "$OLD_PID" 2>/dev/null || true
+
+              kill "$OLD_PID" \
+                2>/dev/null \
+                || true
+
 
               sleep 3
 
+
             fi
+
 
           fi
 
 
-          # Also clean up any orphaned quick tunnels.
-
-          pkill -f \
-            "cloudflared.*127.0.0.1:8000" \
-            2>/dev/null || true
-
-
           rm -f "$PID_FILE"
+
 
           : > "$LOG_FILE"
 
 
           echo
+
           echo "Starting new Quick Tunnel..."
 
 
@@ -519,7 +628,8 @@ jobs:
           TUNNEL_PID=$!
 
 
-          echo "$TUNNEL_PID" > "$PID_FILE"
+          echo "$TUNNEL_PID" \
+            > "$PID_FILE"
 
 
           echo "Tunnel PID: $TUNNEL_PID"
@@ -530,12 +640,16 @@ jobs:
 
           for i in $(seq 1 40); do
 
+
             sleep 2
+
 
             URL=$(grep -oE \
               'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
               "$LOG_FILE" \
-              | tail -n 1 || true)
+              | tail -n 1 \
+              || true)
+
 
             if [ -n "$URL" ]; then
 
@@ -543,55 +657,61 @@ jobs:
 
             fi
 
+
           done
 
 
           if [ -z "$URL" ]; then
 
+
             echo "ERROR: Cloudflare URL not found"
 
+
             echo
+
             echo "===== CLOUDFLARE LOG ====="
 
-            cat "$LOG_FILE" || true
+
+            cat "$LOG_FILE" \
+              || true
+
 
             exit 1
+
 
           fi
 
 
           echo
+
           echo "========================================"
+
+          echo "CLOUDFLARE TUNNEL STARTED"
+
+          echo "========================================"
+
+
+          echo
+
           echo "DASHBOARD URL"
+
           echo "$URL"
+
+
+          echo
+
+          echo "TUNNEL PID"
+
+          echo "$TUNNEL_PID"
+
+
+          echo
+
           echo "========================================"
 
-
-          echo
-          echo "===== REMOTE HEALTH ====="
-
-          curl \
-            --max-time 30 \
-            -fsS \
-            "$URL/api/health"
-
-          echo
-
-
-          echo
-          echo "===== REMOTE DASHBOARD ====="
-
-          curl \
-            --max-time 30 \
-            -fsS \
-            "$URL/api/dashboard"
-
-          echo
-
-
-          echo
-          echo "========================================"
           echo "DEPLOYMENT SUCCESS"
+
           echo "========================================"
+
 
           EOF
