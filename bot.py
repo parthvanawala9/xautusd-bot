@@ -56,11 +56,22 @@ from dotenv import load_dotenv
 #   No dashboard_api.py required.
 #
 # TRADE HISTORY:
-#   Completed trades are stored in trade_history.json.
+#   Completed trades are permanently stored in
+#   trade_history.json.
+#
+#   Dashboard shows:
+#   - Today's statistics
+#   - All-time statistics
+#   - All completed trades
 # ============================================================
 
 
 load_dotenv()
+
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -103,22 +114,32 @@ BALANCE_FRACTION = Decimal(
 
 STATE_FILE = os.getenv(
     "STATE_FILE",
-    os.path.join(BASE_DIR, "xautusd_state.json")
+    os.path.join(
+        BASE_DIR,
+        "xautusd_state.json"
+    )
 )
 
 TRADE_HISTORY_FILE = os.getenv(
     "TRADE_HISTORY_FILE",
-    os.path.join(BASE_DIR, "trade_history.json")
+    os.path.join(
+        BASE_DIR,
+        "trade_history.json"
+    )
 )
 
 DASHBOARD_PORT = int(
-    os.getenv("DASHBOARD_PORT", "8000")
+    os.getenv(
+        "DASHBOARD_PORT",
+        "8000"
+    )
 )
 
 RECONNECT_SECONDS = 3
 
 
 if not API_KEY or not API_SECRET:
+
     raise SystemExit(
         "Missing DELTA_API_KEY or DELTA_API_SECRET."
     )
@@ -152,6 +173,7 @@ session.headers.update({
 # ============================================================
 
 def now_ist():
+
     return datetime.now(IST)
 
 
@@ -167,7 +189,10 @@ def trading_day_start(dt=None):
     )
 
     if dt < boundary:
-        boundary -= timedelta(days=1)
+
+        boundary -= timedelta(
+            days=1
+        )
 
     return boundary
 
@@ -187,9 +212,11 @@ def weekend(dt=None):
     dt = dt or now_ist()
 
     if dt.weekday() == 5:
+
         return dt.hour >= 5
 
     if dt.weekday() == 6:
+
         return True
 
     return False
@@ -332,14 +359,21 @@ def position(product_id):
         "GET",
         "/v2/positions",
         params={
-            "product_id": int(product_id)
+            "product_id": int(
+                product_id
+            )
         },
         auth=True
     )
 
-    result = data.get("result")
+    result = data.get(
+        "result"
+    )
 
-    if not isinstance(result, dict):
+    if not isinstance(
+        result,
+        dict
+    ):
 
         return {
             "size": 0,
@@ -350,7 +384,10 @@ def position(product_id):
 
     return {
         "size": int(
-            result.get("size", 0)
+            result.get(
+                "size",
+                0
+            )
         ),
         "entry": result.get(
             "entry_price"
@@ -389,7 +426,10 @@ def balance():
             )
         ).upper()
 
-        if asset in ("USD", "USDT"):
+        if asset in (
+            "USD",
+            "USDT"
+        ):
 
             value = (
                 wallet.get(
@@ -475,7 +515,10 @@ def order_size(
     )
 
     if contract_value <= 0:
-        contract_value = Decimal("1")
+
+        contract_value = Decimal(
+            "1"
+        )
 
     raw = (
         notional
@@ -514,6 +557,7 @@ def order_size(
     ) * increment
 
     if size_decimal < minimum:
+
         size_decimal = minimum
 
     size = int(
@@ -611,6 +655,7 @@ def close_position(
 ):
 
     if size == 0:
+
         return
 
     side = (
@@ -670,14 +715,21 @@ def historical_high_low(
             "GET",
             "/v2/history/candles",
             params={
-                "resolution": "1m",
-                "symbol": SYMBOL,
-                "start": int(
-                    start.timestamp()
-                ),
-                "end": int(
-                    end.timestamp()
-                )
+                "resolution":
+                    "1m",
+
+                "symbol":
+                    SYMBOL,
+
+                "start":
+                    int(
+                        start.timestamp()
+                    ),
+
+                "end":
+                    int(
+                        end.timestamp()
+                    )
             }
         )
 
@@ -694,20 +746,33 @@ def historical_high_low(
             try:
 
                 h = Decimal(
-                    str(candle["high"])
+                    str(
+                        candle["high"]
+                    )
                 )
 
                 l = Decimal(
-                    str(candle["low"])
+                    str(
+                        candle["low"]
+                    )
                 )
 
-                if high is None or h > high:
+                if (
+                    high is None
+                    or h > high
+                ):
+
                     high = h
 
-                if low is None or l < low:
+                if (
+                    low is None
+                    or l < low
+                ):
+
                     low = l
 
             except Exception:
+
                 continue
 
         return high, low
@@ -730,6 +795,7 @@ def load_trade_history():
     if not os.path.exists(
         TRADE_HISTORY_FILE
     ):
+
         return []
 
     try:
@@ -741,7 +807,11 @@ def load_trade_history():
 
             data = json.load(f)
 
-        if isinstance(data, list):
+        if isinstance(
+            data,
+            list
+        ):
+
             return data
 
     except Exception as e:
@@ -757,7 +827,10 @@ def save_trade_history(
     history
 ):
 
-    tmp = TRADE_HISTORY_FILE + ".tmp"
+    tmp = (
+        TRADE_HISTORY_FILE
+        + ".tmp"
+    )
 
     with open(
         tmp,
@@ -797,13 +870,18 @@ def contract_value_from_product(
         )
 
         if value <= 0:
-            return Decimal("1")
+
+            return Decimal(
+                "1"
+            )
 
         return value
 
     except Exception:
 
-        return Decimal("1")
+        return Decimal(
+            "1"
+        )
 
 
 def calculate_trade_pnl(
@@ -820,7 +898,7 @@ def calculate_trade_pnl(
             str(entry_price)
         )
 
-        exit_price = Decimal(
+        exit_value = Decimal(
             str(exit_price)
         )
 
@@ -837,7 +915,7 @@ def calculate_trade_pnl(
         if direction == "LONG":
 
             pnl = (
-                exit_price
+                exit_value
                 - entry
             ) * qty * contract_value
 
@@ -845,7 +923,7 @@ def calculate_trade_pnl(
 
             pnl = (
                 entry
-                - exit_price
+                - exit_value
             ) * qty * contract_value
 
         return pnl
@@ -856,7 +934,9 @@ def calculate_trade_pnl(
             f"P&L CALCULATION ERROR | {e}"
         )
 
-        return Decimal("0")
+        return Decimal(
+            "0"
+        )
 
 
 def record_completed_trade(
@@ -899,16 +979,21 @@ def record_completed_trade(
             bot.product
         )
 
-        entry_time = (
-            bot.active_trade.get(
-                "entry_time"
+        entry_time = None
+
+        if bot.active_trade:
+
+            entry_time = (
+                bot.active_trade.get(
+                    "entry_time"
+                )
             )
-            if bot.active_trade
-            else None
-        )
 
         if not entry_time:
-            entry_time = now_ist().isoformat()
+
+            entry_time = (
+                now_ist().isoformat()
+            )
 
         trade = {
 
@@ -943,17 +1028,13 @@ def record_completed_trade(
 
             "stop_loss":
                 (
-                    float(
-                        bot.sl
-                    )
+                    float(bot.sl)
                     if bot.sl is not None
                     else None
                 ),
 
             "pnl":
-                float(
-                    pnl
-                ),
+                float(pnl),
 
             "reason":
                 reason
@@ -982,6 +1063,10 @@ def record_completed_trade(
             f"ENTRY={entry} | "
             f"EXIT={exit_value} | "
             f"P&L={pnl}"
+        )
+
+        logging.warning(
+            f"TOTAL SAVED TRADES = {len(history)}"
         )
 
         logging.warning(
@@ -1044,6 +1129,7 @@ class Bot:
         if not os.path.exists(
             STATE_FILE
         ):
+
             return
 
         try:
@@ -1057,8 +1143,10 @@ class Bot:
 
             if s.get("day"):
 
-                self.day = datetime.fromisoformat(
-                    s["day"]
+                self.day = (
+                    datetime.fromisoformat(
+                        s["day"]
+                    )
                 )
 
             if s.get("high") is not None:
@@ -1091,7 +1179,9 @@ class Bot:
                     str(s["trade_low"])
                 )
 
-            if s.get("active_trade"):
+            if s.get(
+                "active_trade"
+            ):
 
                 self.active_trade = (
                     s["active_trade"]
@@ -1160,7 +1250,10 @@ class Bot:
                 self.active_trade
         }
 
-        tmp = STATE_FILE + ".tmp"
+        tmp = (
+            STATE_FILE
+            + ".tmp"
+        )
 
         with open(
             tmp,
@@ -1183,13 +1276,17 @@ class Bot:
     # NEW DAY
     # ========================================================
 
-    def new_day(self, now):
+    def new_day(
+        self,
+        now
+    ):
 
         day = trading_day_start(
             now
         )
 
         if self.day == day:
+
             return
 
         logging.warning(
@@ -1233,11 +1330,11 @@ class Bot:
         )
 
         if now < start:
+
             return False
 
         if self.ready:
 
-            # Recover active trade information after restart.
             if (
                 self.last_position != 0
                 and self.active_trade is None
@@ -1371,6 +1468,7 @@ class Bot:
     ):
 
         if self.last_position != 0:
+
             return False
 
         pos = position(
@@ -1425,7 +1523,9 @@ class Bot:
 
         for _ in range(50):
 
-            time.sleep(0.2)
+            time.sleep(
+                0.2
+            )
 
             pos = position(
                 self.product_id
@@ -1435,9 +1535,9 @@ class Bot:
 
                 if pos["size"] > 0:
 
-                    self.last_position = pos[
-                        "size"
-                    ]
+                    self.last_position = (
+                        pos["size"]
+                    )
 
                     break
 
@@ -1445,9 +1545,9 @@ class Bot:
 
                 if pos["size"] < 0:
 
-                    self.last_position = pos[
-                        "size"
-                    ]
+                    self.last_position = (
+                        pos["size"]
+                    )
 
                     break
 
@@ -1472,10 +1572,6 @@ class Bot:
 
             self.trade_low = price
             self.trade_high = None
-
-        # ----------------------------------------------------
-        # START ACTIVE TRADE RECORD
-        # ----------------------------------------------------
 
         self.active_trade = {
 
@@ -1519,21 +1615,28 @@ class Bot:
     ):
 
         if not self.active_trade:
+
             return
 
-        direction = self.active_trade.get(
-            "direction"
+        direction = (
+            self.active_trade.get(
+                "direction"
+            )
         )
 
-        entry_price = self.active_trade.get(
-            "entry_price"
+        entry_price = (
+            self.active_trade.get(
+                "entry_price"
+            )
         )
 
-        trade_size = self.active_trade.get(
-            "size",
-            abs(
-                int(
-                    self.last_position
+        trade_size = (
+            self.active_trade.get(
+                "size",
+                abs(
+                    int(
+                        self.last_position
+                    )
                 )
             )
         )
@@ -1608,13 +1711,16 @@ class Bot:
             # ------------------------------------------------
 
             if weekend(now):
+
                 return
 
             # ------------------------------------------------
             # Day
             # ------------------------------------------------
 
-            self.new_day(now)
+            self.new_day(
+                now
+            )
 
             # ------------------------------------------------
             # Before 05:45
@@ -1645,7 +1751,9 @@ class Bot:
                 self.product_id
             )
 
-            size = pos["size"]
+            size = pos[
+                "size"
+            ]
 
             # ------------------------------------------------
             # POSITION CLOSED
@@ -1658,7 +1766,10 @@ class Bot:
 
                 old = self.last_position
 
-                # If SL was hit, reverse.
+                # --------------------------------------------
+                # STOP LOSS
+                # --------------------------------------------
+
                 if (
                     self.sl is not None
                     and (
@@ -1726,7 +1837,10 @@ class Bot:
 
                     return
 
-                # Manual/external close.
+                # --------------------------------------------
+                # EXTERNAL CLOSE
+                # --------------------------------------------
+
                 self.finish_active_trade(
                     price,
                     "EXTERNAL_CLOSE"
@@ -1854,9 +1968,14 @@ BOT_INSTANCE = None
 def decimal_json(value):
 
     if value is None:
+
         return None
 
-    if isinstance(value, Decimal):
+    if isinstance(
+        value,
+        Decimal
+    ):
+
         return float(value)
 
     try:
@@ -1868,6 +1987,164 @@ def decimal_json(value):
         return value
 
 
+def history_statistics(
+    history
+):
+
+    today = now_ist().strftime(
+        "%Y-%m-%d"
+    )
+
+    today_trades = [
+        trade
+        for trade in history
+        if trade.get("date") == today
+    ]
+
+    all_time_count = len(
+        history
+    )
+
+    all_time_winning = sum(
+        1
+        for trade in history
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) > 0
+    )
+
+    all_time_losing = sum(
+        1
+        for trade in history
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) < 0
+    )
+
+    all_time_pnl = sum(
+        float(
+            trade.get(
+                "pnl",
+                0
+            )
+        )
+        for trade in history
+    )
+
+    all_time_win_rate = (
+        (
+            all_time_winning
+            / all_time_count
+            * 100
+        )
+        if all_time_count > 0
+        else 0
+    )
+
+    today_count = len(
+        today_trades
+    )
+
+    today_winning = sum(
+        1
+        for trade in today_trades
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) > 0
+    )
+
+    today_losing = sum(
+        1
+        for trade in today_trades
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) < 0
+    )
+
+    today_pnl = sum(
+        float(
+            trade.get(
+                "pnl",
+                0
+            )
+        )
+        for trade in today_trades
+    )
+
+    today_win_rate = (
+        (
+            today_winning
+            / today_count
+            * 100
+        )
+        if today_count > 0
+        else 0
+    )
+
+    return {
+
+        "today": {
+
+            "total_trades":
+                today_count,
+
+            "winning_trades":
+                today_winning,
+
+            "losing_trades":
+                today_losing,
+
+            "win_rate":
+                round(
+                    today_win_rate,
+                    1
+                ),
+
+            "pnl":
+                round(
+                    today_pnl,
+                    2
+                )
+        },
+
+        "all_time": {
+
+            "total_trades":
+                all_time_count,
+
+            "winning_trades":
+                all_time_winning,
+
+            "losing_trades":
+                all_time_losing,
+
+            "win_rate":
+                round(
+                    all_time_win_rate,
+                    1
+                ),
+
+            "pnl":
+                round(
+                    all_time_pnl,
+                    2
+                )
+        }
+    }
+
+
 def dashboard_data():
 
     bot = BOT_INSTANCE
@@ -1875,9 +2152,15 @@ def dashboard_data():
     if bot is None:
 
         return {
-            "success": True,
-            "bot_running": False,
-            "message": "Bot is starting..."
+
+            "success":
+                True,
+
+            "bot_running":
+                False,
+
+            "message":
+                "Bot is starting..."
         }
 
     with bot.lock:
@@ -1895,10 +2178,18 @@ def dashboard_data():
             )
 
             live_position = {
-                "size": 0,
-                "entry": None,
-                "stop_loss": None,
-                "unrealized_pnl": 0
+
+                "size":
+                    0,
+
+                "entry":
+                    None,
+
+                "stop_loss":
+                    None,
+
+                "unrealized_pnl":
+                    0
             }
 
         try:
@@ -1921,94 +2212,38 @@ def dashboard_data():
         )
 
         if size > 0:
+
             direction = "LONG"
 
         elif size < 0:
+
             direction = "SHORT"
 
         else:
+
             direction = "FLAT"
 
         history = load_trade_history()
 
-        total_pnl = sum(
-            float(
-                trade.get(
-                    "pnl",
-                    0
-                )
-            )
-            for trade in history
-        )
-
-        today = now_ist().strftime(
-            "%Y-%m-%d"
-        )
-
-        today_trades = [
-            trade
-            for trade in history
-            if trade.get("date") == today
-        ]
-
-        today_pnl = sum(
-            float(
-                trade.get(
-                    "pnl",
-                    0
-                )
-            )
-            for trade in today_trades
-        )
-
-        winning_trades = sum(
-            1
-            for trade in today_trades
-            if float(
-                trade.get(
-                    "pnl",
-                    0
-                )
-            ) > 0
-        )
-
-        losing_trades = sum(
-            1
-            for trade in today_trades
-            if float(
-                trade.get(
-                    "pnl",
-                    0
-                )
-            ) < 0
-        )
-
-        today_count = len(
-            today_trades
-        )
-
-        win_rate = (
-            (
-                winning_trades
-                / today_count
-                * 100
-            )
-            if today_count > 0
-            else 0
-        )
-
-        # Latest trades first.
+        # Newest first.
         history_for_dashboard = list(
             reversed(history)
         )
 
+        statistics = history_statistics(
+            history
+        )
+
         return {
 
-            "success": True,
+            "success":
+                True,
 
-            "bot_running": True,
+            "bot_running":
+                True,
 
-            "symbol": SYMBOL,
+            "symbol":
+                SYMBOL,
 
             "current_price":
                 decimal_json(
@@ -2067,38 +2302,14 @@ def dashboard_data():
                     )
             },
 
-            "statistics": {
-
-                "total_trades":
-                    today_count,
-
-                "winning_trades":
-                    winning_trades,
-
-                "losing_trades":
-                    losing_trades,
-
-                "win_rate":
-                    round(
-                        win_rate,
-                        1
-                    ),
-
-                "today_pnl":
-                    round(
-                        today_pnl,
-                        2
-                    ),
-
-                "total_pnl":
-                    round(
-                        total_pnl,
-                        2
-                    )
-            },
+            "statistics":
+                statistics,
 
             "trade_history":
                 history_for_dashboard,
+
+            "history_count":
+                len(history),
 
             "session": {
 
@@ -2123,6 +2334,10 @@ def dashboard_data():
             }
         }
 
+
+# ============================================================
+# DASHBOARD HTTP HANDLER
+# ============================================================
 
 class DashboardHandler(
     SimpleHTTPRequestHandler
@@ -2183,9 +2398,13 @@ class DashboardHandler(
         raw = json.dumps(
             data,
             separators=(",", ":")
-        ).encode("utf-8")
+        ).encode(
+            "utf-8"
+        )
 
-        self.send_response(200)
+        self.send_response(
+            200
+        )
 
         self.send_header(
             "Content-Type",
@@ -2338,7 +2557,9 @@ def run_websocket(bot):
                             or data.get("symbol")
                         )
 
-                        price = data.get("p")
+                        price = data.get(
+                            "p"
+                        )
 
                         if (
                             symbol == SYMBOL
@@ -2448,7 +2669,11 @@ if __name__ == "__main__":
     )
 
     logging.warning(
-        "TRADE HISTORY = ENABLED"
+        "TRADE HISTORY = ALL-TIME ENABLED"
+    )
+
+    logging.warning(
+        f"TRADE HISTORY FILE = {TRADE_HISTORY_FILE}"
     )
 
     logging.warning(
@@ -2471,7 +2696,6 @@ if __name__ == "__main__":
 
         BOT_INSTANCE = bot
 
-        # Dashboard starts INSIDE the same bot process.
         start_dashboard()
 
         run_websocket(
