@@ -69,63 +69,7 @@ jobs:
 
 
       # =====================================================
-      # SSH CONFIGURATION
-      # =====================================================
-
-      - name: Configure SSH
-        run: |
-
-          set -e
-
-          cat > ~/.ssh/config << 'EOF'
-
-          Host oracle-xautusd
-
-              HostName PLACEHOLDER_ORACLE_HOST
-
-              User PLACEHOLDER_ORACLE_USER
-
-              IdentityFile ~/.ssh/oracle.key
-
-              BatchMode yes
-
-              StrictHostKeyChecking no
-
-              UserKnownHostsFile /dev/null
-
-              ConnectTimeout 60
-
-              ConnectionAttempts 1
-
-              ServerAliveInterval 15
-
-              ServerAliveCountMax 4
-
-              TCPKeepAlive yes
-
-              IPQoS throughput
-
-              GSSAPIAuthentication no
-
-              PreferredAuthentications publickey
-
-              PubkeyAuthentication yes
-
-              IdentitiesOnly yes
-
-              AddressFamily inet
-
-          EOF
-
-
-          echo "SSH CONFIG CREATED"
-
-
-      # =====================================================
       # TEST ORACLE SSH
-      #
-      # We create the final SSH config after environment
-      # variables are available.
       # =====================================================
 
       - name: Test Oracle SSH
@@ -141,25 +85,12 @@ jobs:
           echo "TESTING ORACLE SSH"
           echo "========================================"
 
-          echo
-          echo "Oracle host:"
-          echo "$ORACLE_HOST"
-
-          echo
-          echo "Oracle user:"
-          echo "$ORACLE_USER"
-
-
           SUCCESS=0
-
 
           for ATTEMPT in 1 2 3 4 5 6; do
 
             echo
-            echo "========================================"
             echo "SSH ATTEMPT $ATTEMPT / 6"
-            echo "========================================"
-
 
             if timeout 75 ssh \
               -4 \
@@ -184,30 +115,19 @@ jobs:
               SUCCESS=1
 
               echo
-              echo "========================================"
               echo "ORACLE_SSH_OK"
-              echo "========================================"
 
               break
 
             fi
 
-
-            echo
             echo "SSH attempt $ATTEMPT failed."
 
-
             if [ "$ATTEMPT" -lt 6 ]; then
-
-              echo
-              echo "Waiting 15 seconds before next attempt..."
-
               sleep 15
-
             fi
 
           done
-
 
           if [ "$SUCCESS" -ne 1 ]; then
 
@@ -215,10 +135,6 @@ jobs:
             echo "========================================"
             echo "ORACLE SSH FAILED"
             echo "========================================"
-
-            echo
-            echo "GitHub Actions could not establish"
-            echo "an SSH session with Oracle."
 
             echo
             echo "The application files were NOT changed."
@@ -229,7 +145,7 @@ jobs:
 
 
       # =====================================================
-      # PREPARE ORACLE DEPLOYMENT DIRECTORY
+      # PREPARE DEPLOYMENT DIRECTORY
       # =====================================================
 
       - name: Prepare Oracle Deployment Directory
@@ -241,58 +157,25 @@ jobs:
 
           set -e
 
-
-          SUCCESS=0
-
-
-          for ATTEMPT in 1 2 3; do
-
-            echo
-            echo "PREPARE DIRECTORY ATTEMPT $ATTEMPT / 3"
-
-
-            if timeout 90 ssh \
-              -4 \
-              -i ~/.ssh/oracle.key \
-              -o BatchMode=yes \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=60 \
-              -o ConnectionAttempts=1 \
-              -o ServerAliveInterval=15 \
-              -o ServerAliveCountMax=4 \
-              -o TCPKeepAlive=yes \
-              -o IPQoS=throughput \
-              -o GSSAPIAuthentication=no \
-              -o PreferredAuthentications=publickey \
-              -o PubkeyAuthentication=yes \
-              -o IdentitiesOnly=yes \
-              -o AddressFamily=inet \
-              "$ORACLE_USER@$ORACLE_HOST" \
-              "mkdir -p /home/opc/xautusd-bot/.deploy_tmp"; then
-
-              SUCCESS=1
-
-              break
-
-            fi
-
-
-            echo "Directory preparation failed."
-
-            sleep 10
-
-          done
-
-
-          if [ "$SUCCESS" -ne 1 ]; then
-
-            echo "ORACLE_DEPLOY_DIRECTORY_FAILED"
-
-            exit 1
-
-          fi
-
+          timeout 90 ssh \
+            -4 \
+            -i ~/.ssh/oracle.key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
+            -o GSSAPIAuthentication=no \
+            -o PreferredAuthentications=publickey \
+            -o PubkeyAuthentication=yes \
+            -o IdentitiesOnly=yes \
+            -o AddressFamily=inet \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot/.deploy_tmp"
 
           echo "ORACLE_DEPLOY_DIRECTORY_OK"
 
@@ -314,15 +197,12 @@ jobs:
           echo "UPLOADING BOT + DASHBOARD"
           echo "========================================"
 
-
           SUCCESS=0
-
 
           for ATTEMPT in 1 2 3; do
 
             echo
             echo "UPLOAD ATTEMPT $ATTEMPT / 3"
-
 
             if timeout 120 scp \
               -4 \
@@ -348,35 +228,28 @@ jobs:
               "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/.deploy_tmp/"; then
 
               SUCCESS=1
-
               break
 
             fi
 
-
             echo "Upload failed."
 
-            sleep 10
+            if [ "$ATTEMPT" -lt 3 ]; then
+              sleep 10
+            fi
 
           done
 
-
           if [ "$SUCCESS" -ne 1 ]; then
-
-            echo
             echo "UPLOAD_FAILED"
-
             exit 1
-
           fi
 
-
-          echo
           echo "UPLOAD_OK"
 
 
       # =====================================================
-      # VERIFY UPLOADED FILES BEFORE INSTALL
+      # VERIFY UPLOADED FILES
       # =====================================================
 
       - name: Verify Uploaded Files
@@ -387,7 +260,6 @@ jobs:
         run: |
 
           set -e
-
 
           timeout 90 ssh \
             -4 \
@@ -410,36 +282,22 @@ jobs:
 
           set -e
 
-
           BOT_DIR="/home/opc/xautusd-bot"
-
           TMP_DIR="$BOT_DIR/.deploy_tmp"
-
 
           echo "========================================"
           echo "VERIFYING UPLOADED FILES"
           echo "========================================"
 
-
           test -f "$TMP_DIR/bot.py"
-
           test -f "$TMP_DIR/index.html"
-
           test -f "$TMP_DIR/app.js"
-
           test -f "$TMP_DIR/style.css"
-
 
           echo "ALL_UPLOADS_PRESENT"
 
-
-          echo
-          echo "Checking uploaded bot.py syntax..."
-
-
           python3 -m py_compile \
             "$TMP_DIR/bot.py"
-
 
           echo "UPLOADED_BOT_SYNTAX_OK"
 
@@ -449,7 +307,7 @@ jobs:
       # =====================================================
       # INSTALL FILES
       #
-      # Existing runtime data remains untouched.
+      # Runtime data is not touched.
       # =====================================================
 
       - name: Install New Files
@@ -461,7 +319,6 @@ jobs:
 
           set -e
 
-
           timeout 120 ssh \
             -4 \
             -i ~/.ssh/oracle.key \
@@ -483,66 +340,37 @@ jobs:
 
           set -e
 
-
           BOT_DIR="/home/opc/xautusd-bot"
-
           TMP_DIR="$BOT_DIR/.deploy_tmp"
-
 
           echo "========================================"
           echo "INSTALLING NEW FILES"
           echo "========================================"
 
-
           test -f "$TMP_DIR/bot.py"
-
           test -f "$TMP_DIR/index.html"
-
           test -f "$TMP_DIR/app.js"
-
           test -f "$TMP_DIR/style.css"
-
-
-          echo
-          echo "Checking bot.py syntax..."
-
 
           python3 -m py_compile \
             "$TMP_DIR/bot.py"
 
-
           echo "ORACLE_BOT_SYNTAX_OK"
 
+          cp "$TMP_DIR/bot.py" \
+             "$BOT_DIR/bot.py"
 
-          echo
-          echo "Installing application files..."
+          cp "$TMP_DIR/index.html" \
+             "$BOT_DIR/index.html"
 
+          cp "$TMP_DIR/app.js" \
+             "$BOT_DIR/app.js"
 
-          cp \
-            "$TMP_DIR/bot.py" \
-            "$BOT_DIR/bot.py"
+          cp "$TMP_DIR/style.css" \
+             "$BOT_DIR/style.css"
 
+          rm -rf "$TMP_DIR"
 
-          cp \
-            "$TMP_DIR/index.html" \
-            "$BOT_DIR/index.html"
-
-
-          cp \
-            "$TMP_DIR/app.js" \
-            "$BOT_DIR/app.js"
-
-
-          cp \
-            "$TMP_DIR/style.css" \
-            "$BOT_DIR/style.css"
-
-
-          rm -rf \
-            "$TMP_DIR"
-
-
-          echo
           echo "FILES_INSTALLED_OK"
 
           EOF
@@ -551,9 +379,8 @@ jobs:
       # =====================================================
       # RESTART BOT
       #
-      # bot.py starts:
-      # 1. Trading bot
-      # 2. Dashboard
+      # Existing bot service is restarted only after
+      # uploaded bot.py has passed syntax verification.
       # =====================================================
 
       - name: Restart XAUTUSD Bot
@@ -565,7 +392,6 @@ jobs:
 
           set -e
 
-
           timeout 120 ssh \
             -4 \
             -i ~/.ssh/oracle.key \
@@ -587,21 +413,14 @@ jobs:
 
           set -e
 
-
           echo "========================================"
           echo "RESTARTING XAUTUSD BOT"
           echo "========================================"
 
-
           sudo systemctl restart \
             xautusd-bot.service
 
-
-          echo
-          echo "Waiting for bot..."
-
           sleep 10
-
 
           if sudo systemctl is-active --quiet \
             xautusd-bot.service; then
@@ -620,7 +439,7 @@ jobs:
               || true
 
             echo
-            echo "===== RECENT LOGS ====="
+            echo "===== RECENT BOT LOGS ====="
 
             sudo journalctl \
               -u xautusd-bot.service \
@@ -635,7 +454,7 @@ jobs:
 
 
       # =====================================================
-      # VERIFY DASHBOARD
+      # VERIFY LOCAL DASHBOARD
       # =====================================================
 
       - name: Verify Dashboard
@@ -646,7 +465,6 @@ jobs:
         run: |
 
           set -e
-
 
           timeout 120 ssh \
             -4 \
@@ -669,33 +487,17 @@ jobs:
 
           set -e
 
-
           echo "========================================"
           echo "VERIFYING DASHBOARD"
           echo "========================================"
 
-
           echo
           echo "===== PORT 8000 ====="
 
-
           if ss -lnt | grep -q ':8000'; then
-
             echo "DASHBOARD_PORT_8000_OK"
-
           else
-
             echo "DASHBOARD_PORT_8000_FAILED"
-
-            echo
-            echo "===== BOT STATUS ====="
-
-            sudo systemctl --no-pager status \
-              xautusd-bot.service \
-              || true
-
-            echo
-            echo "===== BOT LOGS ====="
 
             sudo journalctl \
               -u xautusd-bot.service \
@@ -703,39 +505,30 @@ jobs:
               --no-pager
 
             exit 1
-
           fi
-
 
           echo
           echo "===== HEALTH ====="
-
 
           curl \
             --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/health
 
-
           echo
-
 
           echo
           echo "===== DASHBOARD DATA ====="
-
 
           curl \
             --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/dashboard
 
-
           echo
-
 
           echo
           echo "===== DASHBOARD PAGE ====="
-
 
           curl \
             --max-time 20 \
@@ -743,14 +536,18 @@ jobs:
             http://127.0.0.1:8000/ \
             > /dev/null
 
-
           echo "DASHBOARD_PAGE_OK"
 
           EOF
 
 
       # =====================================================
-      # INSTALL PERSISTENT CLOUDFLARE TUNNEL
+      # INSTALL / REFRESH PERSISTENT CLOUDFLARE SERVICE
+      #
+      # IMPORTANT:
+      # The Cloudflare log is cleared BEFORE starting the
+      # service so an old trycloudflare.com URL cannot be
+      # reused.
       # =====================================================
 
       - name: Install Persistent Cloudflare Tunnel
@@ -762,8 +559,7 @@ jobs:
 
           set -e
 
-
-          timeout 150 ssh \
+          timeout 180 ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -784,7 +580,6 @@ jobs:
 
           set -e
 
-
           BOT_DIR="/home/opc/xautusd-bot"
 
           SERVICE_FILE="/etc/systemd/system/xautusd-cloudflared.service"
@@ -792,8 +587,6 @@ jobs:
           LOG_FILE="$BOT_DIR/cloudflared.log"
 
           URL_FILE="$BOT_DIR/dashboard-url.txt"
-
-          PID_FILE="$BOT_DIR/quick-tunnel.pid"
 
 
           echo "========================================"
@@ -817,42 +610,25 @@ jobs:
 
 
           # -------------------------------------------------
-          # Stop previous manual tunnel if present.
+          # IMPORTANT:
+          # Remove the old URL/log BEFORE restarting the
+          # service. This prevents stale URL detection.
           # -------------------------------------------------
 
-          if [ -f "$PID_FILE" ]; then
-
-            OLD_PID=$(cat \
-              "$PID_FILE" \
-              2>/dev/null \
-              || true)
-
-
-            if [ -n "$OLD_PID" ] && \
-               kill -0 "$OLD_PID" 2>/dev/null; then
-
-              kill "$OLD_PID" \
-                2>/dev/null \
-                || true
-
-              sleep 2
-
-            fi
-
-          fi
-
-
-          rm -f "$PID_FILE"
-
-
-          # -------------------------------------------------
-          # Stop previous systemd tunnel.
-          # -------------------------------------------------
+          echo
+          echo "Clearing old Cloudflare state..."
 
           sudo systemctl stop \
             xautusd-cloudflared.service \
             2>/dev/null \
             || true
+
+
+          rm -f \
+            "$URL_FILE"
+
+
+          : > "$LOG_FILE"
 
 
           # -------------------------------------------------
@@ -862,35 +638,21 @@ jobs:
           sudo tee "$SERVICE_FILE" > /dev/null << EOF_SERVICE
 
           [Unit]
-
           Description=XAUTUSD Dashboard Cloudflare Quick Tunnel
-
           After=network-online.target xautusd-bot.service
-
           Wants=network-online.target
 
-
           [Service]
-
           Type=simple
-
           User=opc
-
           WorkingDirectory=$BOT_DIR
-
           ExecStart=$CLOUDFLARED tunnel --no-autoupdate --url http://127.0.0.1:8000 --logfile $LOG_FILE
-
           Restart=always
-
           RestartSec=5
-
           KillMode=mixed
-
           TimeoutStopSec=20
 
-
           [Install]
-
           WantedBy=multi-user.target
 
           EOF_SERVICE
@@ -903,18 +665,22 @@ jobs:
             xautusd-cloudflared.service
 
 
+          echo
+          echo "Starting Cloudflare service..."
+
+
           sudo systemctl restart \
             xautusd-cloudflared.service
 
 
           echo
-          echo "Waiting for Cloudflare URL..."
+          echo "Waiting for NEW Cloudflare URL..."
 
 
           URL=""
 
 
-          for i in $(seq 1 45); do
+          for i in $(seq 1 60); do
 
             sleep 2
 
@@ -927,9 +693,7 @@ jobs:
 
 
             if [ -n "$URL" ]; then
-
               break
-
             fi
 
           done
@@ -942,11 +706,11 @@ jobs:
           if sudo systemctl is-active --quiet \
             xautusd-cloudflared.service; then
 
-            echo "CLOUDFLARE_TUNNEL_ACTIVE"
+            echo "CLOUDFLARE_TUNNEL_SERVICE_ACTIVE"
 
           else
 
-            echo "CLOUDFLARE_TUNNEL_FAILED"
+            echo "CLOUDFLARE_TUNNEL_SERVICE_FAILED"
 
             sudo systemctl --no-pager status \
               xautusd-cloudflared.service \
@@ -967,7 +731,7 @@ jobs:
           if [ -z "$URL" ]; then
 
             echo
-            echo "ERROR: Cloudflare URL not found."
+            echo "ERROR: NEW CLOUDFLARE URL NOT FOUND"
 
             echo
             echo "===== CLOUDFLARE LOG ====="
@@ -981,6 +745,10 @@ jobs:
           fi
 
 
+          # -------------------------------------------------
+          # Save the actual newly detected URL.
+          # -------------------------------------------------
+
           printf '%s\n' "$URL" \
             > "$URL_FILE"
 
@@ -991,12 +759,173 @@ jobs:
 
           echo
           echo "========================================"
-          echo "DASHBOARD URL"
+          echo "NEW DASHBOARD URL"
           echo "$URL"
           echo "========================================"
 
 
           EOF
+
+
+      # =====================================================
+      # GET CURRENT CLOUDFLARE URL
+      #
+      # Export URL from Oracle to GitHub Actions.
+      # =====================================================
+
+      - name: Get Cloudflare URL
+        id: cloudflare_url
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          set -e
+
+          URL=$(timeout 90 ssh \
+            -4 \
+            -i ~/.ssh/oracle.key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
+            -o GSSAPIAuthentication=no \
+            -o PreferredAuthentications=publickey \
+            -o PubkeyAuthentication=yes \
+            -o IdentitiesOnly=yes \
+            -o AddressFamily=inet \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "cat /home/opc/xautusd-bot/dashboard-url.txt")
+
+          if ! echo "$URL" | grep -qE \
+            '^https://[a-zA-Z0-9.-]+\.trycloudflare\.com$'; then
+
+            echo "INVALID_CLOUDFLARE_URL"
+
+            echo "$URL"
+
+            exit 1
+
+          fi
+
+          echo
+          echo "========================================"
+          echo "CURRENT CLOUDFLARE URL"
+          echo "$URL"
+          echo "========================================"
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+
+      # =====================================================
+      # VERIFY PUBLIC CLOUDFLARE URL
+      #
+      # This is the important new check.
+      # GitHub itself tests the public URL.
+      # =====================================================
+
+      - name: Verify Public Cloudflare Dashboard
+        env:
+          CLOUDFLARE_URL: ${{ steps.cloudflare_url.outputs.url }}
+
+        run: |
+
+          set -e
+
+          echo "========================================"
+          echo "VERIFYING PUBLIC CLOUDFLARE URL"
+          echo "========================================"
+
+          echo
+          echo "URL:"
+          echo "$CLOUDFLARE_URL"
+
+          echo
+          echo "===== PUBLIC HEALTH ====="
+
+          HEALTH_OK=0
+
+          for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
+
+            echo
+            echo "PUBLIC HEALTH ATTEMPT $ATTEMPT / 10"
+
+            if curl \
+              --http1.1 \
+              --max-time 30 \
+              --connect-timeout 15 \
+              -fsS \
+              "$CLOUDFLARE_URL/api/health"; then
+
+              HEALTH_OK=1
+
+              echo
+              echo "PUBLIC_HEALTH_OK"
+
+              break
+
+            fi
+
+            echo "Public health check failed."
+
+            if [ "$ATTEMPT" -lt 10 ]; then
+              sleep 10
+            fi
+
+          done
+
+
+          if [ "$HEALTH_OK" -ne 1 ]; then
+
+            echo
+            echo "========================================"
+            echo "PUBLIC CLOUDFLARE HEALTH FAILED"
+            echo "========================================"
+
+            echo
+            echo "The Cloudflare service may be running,"
+            echo "but the public tunnel is not reachable."
+
+            exit 1
+
+          fi
+
+
+          echo
+          echo "===== PUBLIC DASHBOARD DATA ====="
+
+
+          curl \
+            --http1.1 \
+            --max-time 30 \
+            --connect-timeout 15 \
+            -fsS \
+            "$CLOUDFLARE_URL/api/dashboard"
+
+
+          echo
+
+
+          echo
+          echo "===== PUBLIC DASHBOARD PAGE ====="
+
+
+          curl \
+            --http1.1 \
+            --max-time 30 \
+            --connect-timeout 15 \
+            -fsS \
+            "$CLOUDFLARE_URL/" \
+            > /dev/null
+
+
+          echo "PUBLIC_DASHBOARD_PAGE_OK"
 
 
       # =====================================================
@@ -1007,11 +936,11 @@ jobs:
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          CLOUDFLARE_URL: ${{ steps.cloudflare_url.outputs.url }}
 
         run: |
 
           set -e
-
 
           timeout 150 ssh \
             -4 \
@@ -1030,14 +959,13 @@ jobs:
             -o PubkeyAuthentication=yes \
             -o IdentitiesOnly=yes \
             -o AddressFamily=inet \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" << EOF
 
           set -e
 
-
           BOT_DIR="/home/opc/xautusd-bot"
 
-          URL_FILE="$BOT_DIR/dashboard-url.txt"
+          URL_FILE="\$BOT_DIR/dashboard-url.txt"
 
 
           echo "========================================"
@@ -1069,7 +997,7 @@ jobs:
 
 
           echo
-          echo "===== DASHBOARD ====="
+          echo "===== LOCAL DASHBOARD ====="
 
 
           curl \
@@ -1082,20 +1010,7 @@ jobs:
 
 
           echo
-          echo "===== DASHBOARD DATA ====="
-
-
-          curl \
-            --max-time 20 \
-            -fsS \
-            http://127.0.0.1:8000/api/dashboard
-
-
-          echo
-
-
-          echo
-          echo "===== CLOUDFLARE ====="
+          echo "===== CLOUDFLARE SERVICE ====="
 
 
           if sudo systemctl is-active --quiet \
@@ -1125,16 +1040,18 @@ jobs:
 
 
           echo
-          echo "===== DASHBOARD URL ====="
+          echo "===== SAVED DASHBOARD URL ====="
 
 
-          if [ -f "$URL_FILE" ]; then
+          if [ -f "\$URL_FILE" ]; then
 
-            cat "$URL_FILE"
+            SAVED_URL=\$(cat "\$URL_FILE")
+
+            echo "\$SAVED_URL"
 
           else
 
-            echo "URL FILE NOT FOUND"
+            echo "URL_FILE_NOT_FOUND"
 
             exit 1
 
@@ -1142,10 +1059,35 @@ jobs:
 
 
           echo
+          echo "===== URL CONSISTENCY ====="
+
+
+          if [ "\$SAVED_URL" = "$CLOUDFLARE_URL" ]; then
+
+            echo "CLOUDFLARE_URL_MATCH_OK"
+
+          else
+
+            echo "CLOUDFLARE_URL_MISMATCH"
+
+            echo "Saved:"
+            echo "\$SAVED_URL"
+
+            echo "GitHub:"
+            echo "$CLOUDFLARE_URL"
+
+            exit 1
+
+          fi
+
+
           echo
           echo "========================================"
           echo "DEPLOYMENT SUCCESS"
           echo "========================================"
 
+          echo
+          echo "Dashboard:"
+          echo "$CLOUDFLARE_URL"
 
           EOF
