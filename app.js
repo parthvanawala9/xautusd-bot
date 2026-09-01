@@ -2,17 +2,26 @@ const $ = (id) =>
   document.getElementById(id);
 
 
-function number(value, decimals = 2) {
+let historyView = "all";
+
+
+function number(
+  value,
+  decimals = 2
+) {
 
   if (
     value === null ||
     value === undefined ||
     Number.isNaN(Number(value))
   ) {
+
     return "--";
   }
 
-  return Number(value).toFixed(decimals);
+  return Number(value).toFixed(
+    decimals
+  );
 }
 
 
@@ -23,12 +32,14 @@ function money(value) {
     value === undefined ||
     Number.isNaN(Number(value))
   ) {
+
     return "--";
   }
 
   const n = Number(value);
 
   if (n >= 0) {
+
     return "+$" + n.toFixed(2);
   }
 
@@ -36,30 +47,40 @@ function money(value) {
 }
 
 
-function setStatus(running) {
+function setStatus(
+  running
+) {
 
-  const status = $("bot-status");
+  const status =
+    $("bot-status");
 
   if (!status) {
+
     return;
   }
 
   if (running) {
 
-    status.textContent = "BOT RUNNING";
+    status.textContent =
+      "BOT RUNNING";
 
     status.className =
       "status online";
 
   } else {
 
-    status.textContent = "OFFLINE";
+    status.textContent =
+      "OFFLINE";
 
     status.className =
       "status offline";
   }
 }
 
+
+// ============================================================
+// HISTORY SECTION
+// ============================================================
 
 function ensureHistorySection() {
 
@@ -68,6 +89,7 @@ function ensureHistorySection() {
       "trade-history-section"
     )
   ) {
+
     return;
   }
 
@@ -77,6 +99,7 @@ function ensureHistorySection() {
     );
 
   if (!container) {
+
     return;
   }
 
@@ -96,45 +119,205 @@ function ensureHistorySection() {
     <div class="trade-history-header">
 
       <div>
-        <h2>Trade History</h2>
+
+        <h2>
+          Trade History
+        </h2>
+
         <p id="history-date">
-          Today's completed trades
+          All completed trades
         </p>
+
+      </div>
+
+      <div class="history-count-box">
+        <span>Total Saved</span>
+        <strong id="history-saved-count">0</strong>
       </div>
 
     </div>
 
 
-    <div class="history-summary">
+    <div class="history-view-buttons">
+
+      <button
+        id="history-all-btn"
+        class="history-view-btn active"
+        type="button"
+        onclick="setHistoryView('all')"
+      >
+        ALL TIME
+      </button>
+
+      <button
+        id="history-today-btn"
+        class="history-view-btn"
+        type="button"
+        onclick="setHistoryView('today')"
+      >
+        TODAY
+      </button>
+
+    </div>
+
+
+    <div
+      id="all-time-stat-title"
+      class="history-stat-title"
+    >
+      ALL-TIME PERFORMANCE
+    </div>
+
+
+    <div
+      id="all-time-summary"
+      class="history-summary"
+    >
 
       <div class="history-stat">
-        <span>Today Trades</span>
-        <strong id="history-total">0</strong>
+
+        <span>
+          Total Trades
+        </span>
+
+        <strong id="all-history-total">
+          0
+        </strong>
+
       </div>
 
-      <div class="history-stat">
-        <span>Winning</span>
-        <strong id="history-winning">0</strong>
-      </div>
 
       <div class="history-stat">
-        <span>Losing</span>
-        <strong id="history-losing">0</strong>
+
+        <span>
+          Winning
+        </span>
+
+        <strong id="all-history-winning">
+          0
+        </strong>
+
       </div>
 
-      <div class="history-stat">
-        <span>Win Rate</span>
-        <strong id="history-winrate">0.0%</strong>
-      </div>
 
       <div class="history-stat">
-        <span>Today P&L</span>
-        <strong id="history-today-pnl">$0.00</strong>
+
+        <span>
+          Losing
+        </span>
+
+        <strong id="all-history-losing">
+          0
+        </strong>
+
       </div>
 
+
       <div class="history-stat">
-        <span>Total P&L</span>
-        <strong id="history-total-pnl">$0.00</strong>
+
+        <span>
+          Win Rate
+        </span>
+
+        <strong id="all-history-winrate">
+          0.0%
+        </strong>
+
+      </div>
+
+
+      <div class="history-stat">
+
+        <span>
+          Total P&L
+        </span>
+
+        <strong id="all-history-pnl">
+          $0.00
+        </strong>
+
+      </div>
+
+    </div>
+
+
+    <div
+      id="today-stat-title"
+      class="history-stat-title"
+      style="display:none;"
+    >
+      TODAY'S PERFORMANCE
+    </div>
+
+
+    <div
+      id="today-summary"
+      class="history-summary"
+      style="display:none;"
+    >
+
+      <div class="history-stat">
+
+        <span>
+          Today's Trades
+        </span>
+
+        <strong id="today-history-total">
+          0
+        </strong>
+
+      </div>
+
+
+      <div class="history-stat">
+
+        <span>
+          Winning
+        </span>
+
+        <strong id="today-history-winning">
+          0
+        </strong>
+
+      </div>
+
+
+      <div class="history-stat">
+
+        <span>
+          Losing
+        </span>
+
+        <strong id="today-history-losing">
+          0
+        </strong>
+
+      </div>
+
+
+      <div class="history-stat">
+
+        <span>
+          Win Rate
+        </span>
+
+        <strong id="today-history-winrate">
+          0.0%
+        </strong>
+
+      </div>
+
+
+      <div class="history-stat">
+
+        <span>
+          Today P&L
+        </span>
+
+        <strong id="today-history-pnl">
+          $0.00
+        </strong>
+
       </div>
 
     </div>
@@ -147,23 +330,56 @@ function ensureHistorySection() {
         <thead>
 
           <tr>
-            <th>Time</th>
-            <th>Trade</th>
-            <th>Entry</th>
-            <th>Exit</th>
-            <th>Size</th>
-            <th>Reason</th>
-            <th>P&L</th>
+
+            <th>
+              Date
+            </th>
+
+            <th>
+              Entry Time
+            </th>
+
+            <th>
+              Exit Time
+            </th>
+
+            <th>
+              Trade
+            </th>
+
+            <th>
+              Entry
+            </th>
+
+            <th>
+              Exit
+            </th>
+
+            <th>
+              Size
+            </th>
+
+            <th>
+              Reason
+            </th>
+
+            <th>
+              P&L
+            </th>
+
           </tr>
 
         </thead>
 
+
         <tbody id="trade-history-body">
 
           <tr>
-            <td colspan="7">
+
+            <td colspan="9">
               No completed trades yet.
             </td>
+
           </tr>
 
         </tbody>
@@ -182,6 +398,10 @@ function ensureHistorySection() {
 }
 
 
+// ============================================================
+// HISTORY STYLES
+// ============================================================
+
 function addHistoryStyles() {
 
   if (
@@ -189,6 +409,7 @@ function addHistoryStyles() {
       "trade-history-styles"
     )
   ) {
+
     return;
   }
 
@@ -207,16 +428,20 @@ function addHistoryStyles() {
       overflow: hidden;
     }
 
+
     .trade-history-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 16px;
+      gap: 12px;
+      margin-bottom: 14px;
     }
+
 
     .trade-history-header h2 {
       margin: 0 0 4px 0;
     }
+
 
     .trade-history-header p {
       margin: 0;
@@ -224,19 +449,76 @@ function addHistoryStyles() {
       font-size: 13px;
     }
 
+
+    .history-count-box {
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: rgba(128,128,128,0.08);
+      text-align: center;
+      min-width: 80px;
+    }
+
+
+    .history-count-box span {
+      display: block;
+      font-size: 11px;
+      opacity: 0.65;
+      margin-bottom: 3px;
+    }
+
+
+    .history-count-box strong {
+      font-size: 18px;
+    }
+
+
+    .history-view-buttons {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+
+    .history-view-btn {
+      border: 1px solid rgba(128,128,128,0.25);
+      background: transparent;
+      padding: 8px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+
+    .history-view-btn.active {
+      background: rgba(128,128,128,0.16);
+    }
+
+
+    .history-stat-title {
+      font-size: 12px;
+      font-weight: 700;
+      opacity: 0.65;
+      margin-bottom: 8px;
+      letter-spacing: 0.4px;
+    }
+
+
     .history-summary {
       display: grid;
       grid-template-columns:
-        repeat(6, minmax(100px, 1fr));
+        repeat(5, minmax(100px, 1fr));
       gap: 10px;
-      margin-bottom: 18px;
+      margin-bottom: 20px;
     }
+
 
     .history-stat {
       padding: 12px;
       border-radius: 10px;
       background: rgba(128,128,128,0.08);
     }
+
 
     .history-stat span {
       display: block;
@@ -245,29 +527,34 @@ function addHistoryStyles() {
       margin-bottom: 5px;
     }
 
+
     .history-stat strong {
       font-size: 18px;
     }
+
 
     .history-table-wrapper {
       width: 100%;
       overflow-x: auto;
     }
 
+
     .trade-history-table {
       width: 100%;
       border-collapse: collapse;
-      min-width: 720px;
+      min-width: 980px;
     }
+
 
     .trade-history-table th,
     .trade-history-table td {
-      padding: 11px 10px;
+      padding: 10px;
       text-align: left;
       border-bottom: 1px solid
         rgba(128,128,128,0.15);
       white-space: nowrap;
     }
+
 
     .trade-history-table th {
       font-size: 12px;
@@ -275,25 +562,38 @@ function addHistoryStyles() {
       font-weight: 600;
     }
 
+
     .trade-history-table td {
       font-size: 13px;
     }
+
 
     .history-long {
       font-weight: 700;
     }
 
+
     .history-short {
       font-weight: 700;
     }
+
 
     .history-profit {
       font-weight: 700;
     }
 
+
     .history-loss {
       font-weight: 700;
     }
+
+
+    .history-empty {
+      text-align: center !important;
+      padding: 24px !important;
+      opacity: 0.6;
+    }
+
 
     @media (max-width: 800px) {
 
@@ -302,8 +602,14 @@ function addHistoryStyles() {
           repeat(2, minmax(120px, 1fr));
       }
 
+
       .trade-history-card {
         padding: 14px;
+      }
+
+
+      .trade-history-header {
+        align-items: flex-start;
       }
 
     }
@@ -316,19 +622,191 @@ function addHistoryStyles() {
 }
 
 
-function formatTradeTime(
+// ============================================================
+// HISTORY VIEW
+// ============================================================
+
+function setHistoryView(
+  view
+) {
+
+  historyView = view;
+
+  const allButton =
+    $("history-all-btn");
+
+  const todayButton =
+    $("history-today-btn");
+
+  if (allButton) {
+
+    allButton.classList.toggle(
+      "active",
+      view === "all"
+    );
+  }
+
+  if (todayButton) {
+
+    todayButton.classList.toggle(
+      "active",
+      view === "today"
+    );
+  }
+
+  const allTitle =
+    $("all-time-stat-title");
+
+  const allSummary =
+    $("all-time-summary");
+
+  const todayTitle =
+    $("today-stat-title");
+
+  const todaySummary =
+    $("today-summary");
+
+  if (view === "all") {
+
+    if (allTitle) {
+      allTitle.style.display =
+        "block";
+    }
+
+    if (allSummary) {
+      allSummary.style.display =
+        "grid";
+    }
+
+    if (todayTitle) {
+      todayTitle.style.display =
+        "none";
+    }
+
+    if (todaySummary) {
+      todaySummary.style.display =
+        "none";
+    }
+
+    const subtitle =
+      $("history-date");
+
+    if (subtitle) {
+
+      subtitle.textContent =
+        "All completed trades — newest first";
+    }
+
+  } else {
+
+    if (allTitle) {
+      allTitle.style.display =
+        "none";
+    }
+
+    if (allSummary) {
+      allSummary.style.display =
+        "none";
+    }
+
+    if (todayTitle) {
+      todayTitle.style.display =
+        "block";
+    }
+
+    if (todaySummary) {
+      todaySummary.style.display =
+        "grid";
+    }
+
+    const subtitle =
+      $("history-date");
+
+    if (subtitle) {
+
+      subtitle.textContent =
+        "Today's completed trades";
+    }
+  }
+
+  if (
+    window.__lastDashboardData
+  ) {
+
+    renderTradeHistory(
+      window.__lastDashboardData
+    );
+  }
+}
+
+
+// ============================================================
+// TIME FORMAT
+// ============================================================
+
+function formatTradeDate(
   value
 ) {
 
   if (!value) {
+
     return "--";
   }
 
   try {
 
-    return new Date(
-      value
-    ).toLocaleTimeString(
+    const date =
+      new Date(value);
+
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
+
+      return value;
+    }
+
+    return date.toLocaleDateString(
+      [],
+      {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric"
+      }
+    );
+
+  } catch {
+
+    return value;
+  }
+}
+
+
+function formatTradeTime(
+  value
+) {
+
+  if (!value) {
+
+    return "--";
+  }
+
+  try {
+
+    const date =
+      new Date(value);
+
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
+
+      return value;
+    }
+
+    return date.toLocaleTimeString(
       [],
       {
         hour: "2-digit",
@@ -344,6 +822,10 @@ function formatTradeTime(
 }
 
 
+// ============================================================
+// RENDER HISTORY
+// ============================================================
+
 function renderTradeHistory(
   data
 ) {
@@ -357,13 +839,16 @@ function renderTradeHistory(
       ? data.trade_history
       : [];
 
+
   const statistics =
     data.statistics || {};
 
 
   const today =
-    new Date().toISOString()
-      .slice(0, 10);
+    new Date()
+      .toLocaleDateString(
+        "en-CA"
+      );
 
 
   const todayHistory =
@@ -373,60 +858,59 @@ function renderTradeHistory(
     );
 
 
-  const total =
+  // ----------------------------------------------------------
+  // ALL-TIME STATISTICS
+  // ----------------------------------------------------------
+
+  const allTime =
+    statistics.all_time || {};
+
+
+  const allTimeTotal =
     Number(
-      statistics.total_trades
-      ?? todayHistory.length
+      allTime.total_trades
+      ?? history.length
     );
 
 
-  const winning =
+  const allTimeWinning =
     Number(
-      statistics.winning_trades
-      ?? todayHistory.filter(
+      allTime.winning_trades
+      ?? history.filter(
         trade =>
           Number(trade.pnl) > 0
       ).length
     );
 
 
-  const losing =
+  const allTimeLosing =
     Number(
-      statistics.losing_trades
-      ?? todayHistory.filter(
+      allTime.losing_trades
+      ?? history.filter(
         trade =>
           Number(trade.pnl) < 0
       ).length
     );
 
 
-  const winRate =
+  const allTimeWinRate =
     Number(
-      statistics.win_rate
+      allTime.win_rate
       ?? (
-        total > 0
-          ? winning / total * 100
+        allTimeTotal > 0
+          ? (
+              allTimeWinning
+              / allTimeTotal
+              * 100
+            )
           : 0
       )
     );
 
 
-  const todayPnl =
+  const allTimePnl =
     Number(
-      statistics.today_pnl
-      ?? todayHistory.reduce(
-        (sum, trade) =>
-          sum + Number(
-            trade.pnl || 0
-          ),
-        0
-      )
-    );
-
-
-  const totalPnl =
-    Number(
-      statistics.total_pnl
+      allTime.pnl
       ?? history.reduce(
         (sum, trade) =>
           sum + Number(
@@ -437,72 +921,215 @@ function renderTradeHistory(
     );
 
 
-  const historyTotal =
-    $("history-total");
+  // ----------------------------------------------------------
+  // TODAY STATISTICS
+  // ----------------------------------------------------------
 
-  const historyWinning =
-    $("history-winning");
-
-  const historyLosing =
-    $("history-losing");
-
-  const historyWinrate =
-    $("history-winrate");
-
-  const historyTodayPnl =
-    $("history-today-pnl");
-
-  const historyTotalPnl =
-    $("history-total-pnl");
+  const todayStats =
+    statistics.today || {};
 
 
-  if (historyTotal) {
-    historyTotal.textContent =
-      total;
+  const todayTotal =
+    Number(
+      todayStats.total_trades
+      ?? todayHistory.length
+    );
+
+
+  const todayWinning =
+    Number(
+      todayStats.winning_trades
+      ?? todayHistory.filter(
+        trade =>
+          Number(trade.pnl) > 0
+      ).length
+    );
+
+
+  const todayLosing =
+    Number(
+      todayStats.losing_trades
+      ?? todayHistory.filter(
+        trade =>
+          Number(trade.pnl) < 0
+      ).length
+    );
+
+
+  const todayWinRate =
+    Number(
+      todayStats.win_rate
+      ?? (
+        todayTotal > 0
+          ? (
+              todayWinning
+              / todayTotal
+              * 100
+            )
+          : 0
+      )
+    );
+
+
+  const todayPnl =
+    Number(
+      todayStats.pnl
+      ?? todayHistory.reduce(
+        (sum, trade) =>
+          sum + Number(
+            trade.pnl || 0
+          ),
+        0
+      )
+    );
+
+
+  // ----------------------------------------------------------
+  // UPDATE ALL-TIME BOX
+  // ----------------------------------------------------------
+
+  if ($("all-history-total")) {
+
+    $("all-history-total")
+      .textContent =
+      allTimeTotal;
   }
 
-  if (historyWinning) {
-    historyWinning.textContent =
-      winning;
+
+  if ($("all-history-winning")) {
+
+    $("all-history-winning")
+      .textContent =
+      allTimeWinning;
   }
 
-  if (historyLosing) {
-    historyLosing.textContent =
-      losing;
+
+  if ($("all-history-losing")) {
+
+    $("all-history-losing")
+      .textContent =
+      allTimeLosing;
   }
 
-  if (historyWinrate) {
-    historyWinrate.textContent =
-      winRate.toFixed(1) + "%";
+
+  if ($("all-history-winrate")) {
+
+    $("all-history-winrate")
+      .textContent =
+      allTimeWinRate.toFixed(1)
+      + "%";
   }
 
-  if (historyTodayPnl) {
-    historyTodayPnl.textContent =
+
+  if ($("all-history-pnl")) {
+
+    $("all-history-pnl")
+      .textContent =
+      money(allTimePnl);
+  }
+
+
+  // ----------------------------------------------------------
+  // UPDATE TODAY BOX
+  // ----------------------------------------------------------
+
+  if ($("today-history-total")) {
+
+    $("today-history-total")
+      .textContent =
+      todayTotal;
+  }
+
+
+  if ($("today-history-winning")) {
+
+    $("today-history-winning")
+      .textContent =
+      todayWinning;
+  }
+
+
+  if ($("today-history-losing")) {
+
+    $("today-history-losing")
+      .textContent =
+      todayLosing;
+  }
+
+
+  if ($("today-history-winrate")) {
+
+    $("today-history-winrate")
+      .textContent =
+      todayWinRate.toFixed(1)
+      + "%";
+  }
+
+
+  if ($("today-history-pnl")) {
+
+    $("today-history-pnl")
+      .textContent =
       money(todayPnl);
   }
 
-  if (historyTotalPnl) {
-    historyTotalPnl.textContent =
-      money(totalPnl);
+
+  // ----------------------------------------------------------
+  // TOTAL SAVED COUNT
+  // ----------------------------------------------------------
+
+  if ($("history-saved-count")) {
+
+    $("history-saved-count")
+      .textContent =
+      Number(
+        data.history_count
+        ?? history.length
+      );
   }
+
+
+  // ----------------------------------------------------------
+  // SELECT HISTORY
+  // ----------------------------------------------------------
+
+  const visibleHistory =
+    historyView === "today"
+      ? todayHistory
+      : history;
 
 
   const body =
     $("trade-history-body");
 
+
   if (!body) {
+
     return;
   }
 
 
-  if (history.length === 0) {
+  if (
+    visibleHistory.length === 0
+  ) {
+
+    const message =
+      historyView === "today"
+        ? "No completed trades today."
+        : "No completed trades yet.";
+
 
     body.innerHTML = `
 
       <tr>
-        <td colspan="7">
-          No completed trades yet.
+
+        <td
+          colspan="9"
+          class="history-empty"
+        >
+          ${message}
         </td>
+
       </tr>
 
     `;
@@ -512,22 +1139,25 @@ function renderTradeHistory(
 
 
   body.innerHTML =
-    history
+    visibleHistory
       .map(
         trade => {
 
           const direction =
             trade.direction || "--";
 
+
           const pnl =
             Number(
               trade.pnl || 0
             );
 
+
           const pnlClass =
             pnl >= 0
               ? "history-profit"
               : "history-loss";
+
 
           const directionClass =
             direction === "LONG"
@@ -540,14 +1170,30 @@ function renderTradeHistory(
             <tr>
 
               <td>
+                ${formatTradeDate(
+                  trade.exit_time
+                )}
+              </td>
+
+
+              <td>
+                ${formatTradeTime(
+                  trade.entry_time
+                )}
+              </td>
+
+
+              <td>
                 ${formatTradeTime(
                   trade.exit_time
                 )}
               </td>
 
+
               <td class="${directionClass}">
                 ${direction}
               </td>
+
 
               <td>
                 ${number(
@@ -555,19 +1201,23 @@ function renderTradeHistory(
                 )}
               </td>
 
+
               <td>
                 ${number(
                   trade.exit_price
                 )}
               </td>
 
+
               <td>
                 ${trade.size ?? 0}
               </td>
 
+
               <td>
                 ${trade.reason || "--"}
               </td>
+
 
               <td class="${pnlClass}">
                 ${money(pnl)}
@@ -582,9 +1232,17 @@ function renderTradeHistory(
 }
 
 
+// ============================================================
+// UPDATE DASHBOARD
+// ============================================================
+
 function updateDashboard(
   data
 ) {
+
+  window.__lastDashboardData =
+    data;
+
 
   setStatus(
     data.bot_running === true
@@ -687,15 +1345,18 @@ function updateDashboard(
   if ($("session-ready")) {
 
     $("session-ready").textContent =
-      ready ? "YES" : "NO";
+      ready
+        ? "YES"
+        : "NO";
   }
 
 
   if ($("last-update")) {
 
     $("last-update").textContent =
-      "Last update: " +
-      new Date().toLocaleTimeString();
+      "Last update: "
+      + new Date()
+        .toLocaleTimeString();
   }
 
 
@@ -704,6 +1365,10 @@ function updateDashboard(
   );
 }
 
+
+// ============================================================
+// LOAD DASHBOARD
+// ============================================================
 
 async function loadDashboard() {
 
@@ -721,7 +1386,8 @@ async function loadDashboard() {
     if (!response.ok) {
 
       throw new Error(
-        "HTTP " + response.status
+        "HTTP "
+        + response.status
       );
     }
 
@@ -741,7 +1407,9 @@ async function loadDashboard() {
       error
     );
 
+
     setStatus(false);
+
 
     if ($("last-update")) {
 
@@ -751,6 +1419,10 @@ async function loadDashboard() {
   }
 }
 
+
+// ============================================================
+// START
+// ============================================================
 
 ensureHistorySection();
 
