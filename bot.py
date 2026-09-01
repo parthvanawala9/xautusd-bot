@@ -19,73 +19,80 @@ from dotenv import load_dotenv
 # ============================================================
 # XAUTUSD MULTI ACCOUNT BOT
 #
-# COMPATIBLE WITH EXISTING app.js
+# COMPATIBLE WITH ROOT app.js
 #
-# FEATURES
-# ------------------------------------------------------------
-# PRIMARY ACCOUNT
-# CLIENT ACCOUNTS
-# START / STOP BOT
-# EXISTING POSITION RECOVERY
-# ONLINE / OFFLINE
-# BALANCE
-# PRICE
-# POSITION
-# ENTRY
-# STOP LOSS
-# UNREALIZED PNL
-# TODAY HISTORY
-# ALL-TIME HISTORY
-# CLIENT SUBSCRIPTION
-# ADD CLIENT
-# EDIT SUBSCRIPTION
-# DELETE CLIENT
+# DASHBOARD EXPECTS:
+#   /api/dashboard
+#       -> {
+#            accounts: [...]
+#          }
 #
-# TRADING RULES
-# ------------------------------------------------------------
-# 05:45 IST = strategy starts
+# ACCOUNT ACTIONS:
+#   POST /api/bot/start
+#   POST /api/bot/stop
 #
-# START BOT:
-#   No position:
-#       normal trading
+# CLIENT MANAGEMENT:
+#   POST /api/client/add
+#   POST /api/client/subscription
+#   POST /api/client/delete
 #
-#   Existing position:
-#       recover position
-#       DO NOT CLOSE IT
+# TRADING STRATEGY:
+#   Session day starts = 05:30 IST
+#   Trading starts = 05:45 IST
 #
-# STOP BOT:
-#   disables new entries
-#   closes existing position
-#   saves MANUAL_STOP trade
+#   FLAT:
+#       price > HIGH -> LONG
+#       price < LOW  -> SHORT
 #
-# FLAT:
-#   price > HIGH -> LONG
-#   price < LOW  -> SHORT
+#   LONG:
+#       new HIGH -> update HIGH
 #
-# LONG:
-#   new HIGH -> update HIGH
+#   SHORT:
+#       new LOW -> update LOW
 #
-# SHORT:
-#   new LOW -> update LOW
+#   LONG SL:
+#       session LOW at entry
 #
-# LONG SL:
-#   session LOW at entry
+#   SHORT SL:
+#       session HIGH at entry
 #
-# SHORT SL:
-#   session HIGH at entry
+#   SL closes:
+#       LONG -> SHORT
+#       SHORT -> LONG
 #
-# SL HIT:
-#   LONG -> SHORT
-#   SHORT -> LONG
+#   Position size:
+#       10% available balance
+#       50x leverage
 #
-# SATURDAY 05:00 IST:
-#   close open position
+#   Saturday 05:00 IST:
+#       close position
 #
 # IMPORTANT:
-# Existing live exchange positions are NEVER closed
-# during process startup.
+#   Bot starts STOPPED after process restart.
 #
-# They are only recovered when START BOT is pressed.
+#   Existing exchange positions are NOT closed on restart.
+#
+#   User must manually press START BOT.
+#
+#   START BOT with an existing position:
+#       recover it
+#       do NOT close it
+#
+#   STOP BOT:
+#       disable new entries
+#       close existing position
+#       save MANUAL_STOP history
+#
+# HISTORY:
+#   Each account has its own permanent history file.
+#
+# FILES:
+#   bot.py
+#   app.js
+#   index.html
+#   accounts.json
+#   account_states/
+#   account_history/
 # ============================================================
 
 
@@ -115,26 +122,6 @@ WS_URL = os.getenv(
 SYMBOL = os.getenv(
     "DELTA_SYMBOL",
     "XAUTUSD"
-).strip()
-
-PRIMARY_ACCOUNT_ID = os.getenv(
-    "PRIMARY_ACCOUNT_ID",
-    "primary"
-).strip()
-
-PRIMARY_ACCOUNT_NAME = os.getenv(
-    "ACCOUNT_NAME",
-    "Primary Account"
-).strip()
-
-PRIMARY_API_KEY = os.getenv(
-    "DELTA_API_KEY",
-    ""
-).strip()
-
-PRIMARY_API_SECRET = os.getenv(
-    "DELTA_API_SECRET",
-    ""
 ).strip()
 
 LEVERAGE = Decimal(
@@ -174,28 +161,80 @@ BALANCE_CACHE_SECONDS = float(
     )
 )
 
-CLIENTS_FILE = os.getenv(
-    "CLIENTS_FILE",
+ACCOUNTS_FILE = os.getenv(
+    "ACCOUNTS_FILE",
     os.path.join(
         BASE_DIR,
-        "clients.json"
+        "accounts.json"
     )
 )
 
-PRIMARY_STATE_FILE = os.getenv(
-    "STATE_FILE",
+STATE_DIR = os.getenv(
+    "STATE_DIR",
     os.path.join(
         BASE_DIR,
-        "xautusd_state.json"
+        "account_states"
     )
 )
 
-PRIMARY_HISTORY_FILE = os.getenv(
-    "TRADE_HISTORY_FILE",
+HISTORY_DIR = os.getenv(
+    "HISTORY_DIR",
     os.path.join(
         BASE_DIR,
-        "trade_history.json"
+        "account_history"
     )
+)
+
+ADMIN_PIN = os.getenv(
+    "ADMIN_PIN",
+    ""
+).strip()
+
+
+# ============================================================
+# PRIMARY ACCOUNT
+# ============================================================
+
+PRIMARY_ACCOUNT_ID = os.getenv(
+    "ACCOUNT_ID",
+    "primary"
+).strip()
+
+PRIMARY_ACCOUNT_NAME = os.getenv(
+    "ACCOUNT_NAME",
+    "Primary Account"
+).strip()
+
+PRIMARY_API_KEY = os.getenv(
+    "DELTA_API_KEY",
+    ""
+).strip()
+
+PRIMARY_API_SECRET = os.getenv(
+    "DELTA_API_SECRET",
+    ""
+).strip()
+
+
+if not PRIMARY_API_KEY or not PRIMARY_API_SECRET:
+
+    raise SystemExit(
+        "Missing DELTA_API_KEY or DELTA_API_SECRET."
+    )
+
+
+# ============================================================
+# DIRECTORIES
+# ============================================================
+
+os.makedirs(
+    STATE_DIR,
+    exist_ok=True
+)
+
+os.makedirs(
+    HISTORY_DIR,
+    exist_ok=True
 )
 
 
@@ -207,76 +246,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
-
-
-# ============================================================
-# HTTP SESSION
-# ============================================================
-
-session = requests.Session()
-
-session.headers.update({
-    "Accept": "application/json",
-    "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-MultiAccount-Bot/3.0"
-})
-
-
-# ============================================================
-# FILE HELPERS
-# ============================================================
-
-def safe_account_filename(
-    account_id
-):
-
-    value = str(
-        account_id
-    )
-
-    allowed = (
-        "abcdefghijklmnopqrstuvwxyz"
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        "0123456789_-"
-    )
-
-    value = "".join(
-        c
-        for c in value
-        if c in allowed
-    )
-
-    return value or "account"
-
-
-def account_state_file(
-    account_id,
-    primary=False
-):
-
-    if primary:
-
-        return PRIMARY_STATE_FILE
-
-    return os.path.join(
-        BASE_DIR,
-        f"state_{safe_account_filename(account_id)}.json"
-    )
-
-
-def account_history_file(
-    account_id,
-    primary=False
-):
-
-    if primary:
-
-        return PRIMARY_HISTORY_FILE
-
-    return os.path.join(
-        BASE_DIR,
-        f"history_{safe_account_filename(account_id)}.json"
-    )
 
 
 # ============================================================
@@ -350,833 +319,102 @@ def saturday_squareoff(
     return (
         dt.weekday() == 5
         and dt.hour == 5
+        and dt.minute >= 0
     )
 
 
 # ============================================================
-# DELTA API SIGNING
+# JSON / FILE HELPERS
 # ============================================================
 
-def make_signature(
-    api_key,
-    api_secret,
-    method,
-    path,
-    query="",
-    body=""
+def safe_filename(
+    value
 ):
 
-    timestamp = str(
-        int(time.time())
-    )
-
-    message = (
-        method.upper()
-        + timestamp
-        + path
-        + query
-        + body
-    )
-
-    signature = hmac.new(
-        api_secret.encode(),
-        message.encode(),
-        hashlib.sha256
-    ).hexdigest()
-
-    return {
-        "api-key": api_key,
-        "signature": signature,
-        "timestamp": timestamp
-    }
-
-
-# ============================================================
-# ACCOUNT API
-# ============================================================
-
-def account_api(
-    account,
-    method,
-    path,
-    params=None,
-    body=None,
-    auth=False
-):
-
-    params = params or {}
-
-    body_text = ""
-
-    if body is not None:
-
-        body_text = json.dumps(
-            body,
-            separators=(",", ":")
-        )
-
-    query = ""
-
-    if params:
-
-        query = "?" + urlencode(
-            params,
-            doseq=True
-        )
-
-    headers = {}
-
-    if auth:
-
-        headers = make_signature(
-            account.api_key,
-            account.api_secret,
-            method,
-            path,
-            query,
-            body_text
-        )
-
-    response = session.request(
-        method.upper(),
-        BASE_URL + path,
-        params=params,
-        data=(
-            body_text
-            if body is not None
-            else None
-        ),
-        headers=headers,
-        timeout=(5, 15)
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    if data.get(
-        "success"
-    ) is False:
-
-        raise RuntimeError(
-            f"Delta error: {data}"
-        )
-
-    account.last_api_ok_time = (
-        now_ist().isoformat()
-    )
-
-    account.api_error = None
-
-    return data
-
-
-# ============================================================
-# ACCOUNT CLASS
-# ============================================================
-
-class Account:
-
-    def __init__(
-        self,
-        account_id,
-        account_name,
-        api_key,
-        api_secret,
-        account_type="client",
-        subscription=None,
-        primary=False
-    ):
-
-        self.account_id = str(
-            account_id
-        )
-
-        self.account_name = (
-            account_name
-            or self.account_id
-        )
-
-        self.api_key = (
-            api_key
-            or ""
-        ).strip()
-
-        self.api_secret = (
-            api_secret
-            or ""
-        ).strip()
-
-        self.account_type = (
-            account_type
-        )
-
-        self.primary = (
-            primary
-            or account_type == "primary"
-        )
-
-        self.subscription = (
-            subscription
-            or {}
-        )
-
-        self.lock = threading.RLock()
-
-        self.product = None
-        self.product_id = None
-
-        self.bot = None
-
-        self.last_api_ok_time = None
-        self.api_error = None
-
-        self.websocket_connected = False
-        self.last_ws_message_time = None
-
-    # ========================================================
-    # SUBSCRIPTION
-    # ========================================================
-
-    def subscription_info(
-        self
-    ):
-
-        if self.primary:
-
-            return {
-                "active": True,
-                "expired": False,
-                "start": None,
-                "expiry": None,
-                "fee": 0
-            }
-
-        subscription = (
-            self.subscription
-            or {}
-        )
-
-        start = subscription.get(
-            "subscription_start"
-        )
-
-        expiry = subscription.get(
-            "subscription_expiry"
-        )
-
-        fee = subscription.get(
-            "subscription_fee",
-            0
-        )
-
-        active = False
-        expired = False
-
-        try:
-
-            if expiry:
-
-                expiry_dt = datetime.fromisoformat(
-                    str(expiry).replace(
-                        "Z",
-                        "+00:00"
-                    )
-                )
-
-                if expiry_dt.tzinfo is None:
-
-                    expiry_dt = expiry_dt.replace(
-                        tzinfo=IST
-                    )
-
-                active = (
-                    now_ist()
-                    <= expiry_dt.astimezone(IST)
-                )
-
-                expired = not active
-
-        except Exception:
-
-            active = False
-
-        return {
-
-            "active":
-                active,
-
-            "expired":
-                expired,
-
-            "start":
-                start,
-
-            "expiry":
-                expiry,
-
-            "fee":
-                float(fee or 0)
-        }
-
-    # ========================================================
-    # PRODUCT
-    # ========================================================
-
-    def load_product(
-        self
-    ):
-
-        data = account_api(
-            self,
-            "GET",
-            f"/v2/products/{SYMBOL}"
-        )
-
-        self.product = data[
-            "result"
-        ]
-
-        self.product_id = int(
-            self.product["id"]
-        )
-
-        return self.product
-
-    # ========================================================
-    # LEVERAGE
-    # ========================================================
-
-    def set_leverage(
-        self
-    ):
-
-        if not self.product_id:
-
-            return
-
-        try:
-
-            account_api(
-                self,
-                "POST",
-                f"/v2/products/{self.product_id}/orders/leverage",
-                body={
-                    "leverage":
-                        str(LEVERAGE)
-                },
-                auth=True
+    result = ""
+
+    for char in str(value):
+
+        if (
+            char.isalnum()
+            or char in (
+                "-",
+                "_"
             )
-
-            logging.info(
-                f"[{self.account_name}] "
-                f"LEVERAGE = {LEVERAGE}x"
-            )
-
-        except Exception as e:
-
-            logging.warning(
-                f"[{self.account_name}] "
-                f"Could not set leverage: {e}"
-            )
-
-    # ========================================================
-    # CREATE BOT
-    # ========================================================
-
-    def create_bot(
-        self
-    ):
-
-        if not self.product:
-
-            self.load_product()
-
-        self.bot = Bot(
-            account=self,
-            product_info=self.product,
-            state_file=account_state_file(
-                self.account_id,
-                self.primary
-            ),
-            history_file=account_history_file(
-                self.account_id,
-                self.primary
-            )
-        )
-
-        return self.bot
-
-
-# ============================================================
-# POSITION
-# ============================================================
-
-def get_position(
-    account,
-    product_id
-):
-
-    data = account_api(
-        account,
-        "GET",
-        "/v2/positions",
-        params={
-            "product_id":
-                int(product_id)
-        },
-        auth=True
-    )
-
-    result = data.get(
-        "result"
-    )
-
-    if not isinstance(
-        result,
-        dict
-    ):
-
-        return {
-            "size": 0,
-            "entry": None,
-            "stop_loss": None,
-            "unrealized_pnl": 0
-        }
-
-    raw_size = (
-        result.get(
-            "size",
-            0
-        )
-        or 0
-    )
-
-    try:
-
-        size = int(
-            float(
-                raw_size
-            )
-        )
-
-    except Exception:
-
-        size = 0
-
-    return {
-
-        "size":
-            size,
-
-        "entry":
-            result.get(
-                "entry_price"
-            ),
-
-        "stop_loss":
-            result.get(
-                "stop_loss"
-            ),
-
-        "unrealized_pnl":
-            result.get(
-                "unrealized_pnl"
-            )
-    }
-
-
-# ============================================================
-# BALANCE
-# ============================================================
-
-def get_balance(
-    account
-):
-
-    data = account_api(
-        account,
-        "GET",
-        "/v2/wallet/balances",
-        auth=True
-    )
-
-    for wallet in data.get(
-        "result",
-        []
-    ):
-
-        asset = str(
-            wallet.get(
-                "asset_symbol",
-                ""
-            )
-        ).upper()
-
-        if asset in (
-            "USD",
-            "USDT"
         ):
 
-            value = wallet.get(
-                "available_balance"
-            )
+            result += char
 
-            if value is None:
+        else:
 
-                value = wallet.get(
-                    "balance"
-                )
+            result += "_"
 
-            if value is not None:
-
-                return Decimal(
-                    str(value)
-                )
-
-    raise RuntimeError(
-        "USD/USDT balance not found."
-    )
+    return result or "account"
 
 
-# ============================================================
-# ORDER SIZE
-# ============================================================
-
-def calculate_order_size(
-    account,
-    product_info,
-    price
+def account_state_file(
+    account_id
 ):
 
-    bal = get_balance(
-        account
+    return os.path.join(
+        STATE_DIR,
+        safe_filename(
+            account_id
+        ) + ".json"
     )
 
-    margin = (
-        bal
-        * BALANCE_FRACTION
-    )
 
-    notional = (
-        margin
-        * LEVERAGE
-    )
-
-    contract_value = Decimal(
-        str(
-            product_info.get(
-                "contract_value"
-            )
-            or product_info.get(
-                "contract_value_usd"
-            )
-            or "1"
-        )
-    )
-
-    if contract_value <= 0:
-
-        contract_value = Decimal(
-            "1"
-        )
-
-    raw = (
-        notional
-        / price
-        / contract_value
-    )
-
-    increment = Decimal(
-        str(
-            product_info.get(
-                "lot_size"
-            )
-            or product_info.get(
-                "order_size_increment"
-            )
-            or "1"
-        )
-    )
-
-    minimum = Decimal(
-        str(
-            product_info.get(
-                "min_order_size"
-            )
-            or product_info.get(
-                "minimum_order_size"
-            )
-            or increment
-        )
-    )
-
-    size_decimal = (
-        raw / increment
-    ).to_integral_value(
-        rounding=ROUND_DOWN
-    ) * increment
-
-    if size_decimal < minimum:
-
-        size_decimal = minimum
-
-    size = int(
-        size_decimal
-    )
-
-    if size <= 0:
-
-        raise RuntimeError(
-            "Order size calculated as zero."
-        )
-
-    logging.info(
-        f"[{account.account_name}] "
-        f"SIZE | Balance={bal} "
-        f"| Margin={margin} "
-        f"| Notional={notional} "
-        f"| Size={size}"
-    )
-
-    return size
-
-
-# ============================================================
-# MARKET ENTRY
-# ============================================================
-
-def place_market_entry(
-    account,
-    product_id,
-    side,
-    size,
-    sl
+def account_history_file(
+    account_id
 ):
 
-    body = {
-
-        "product_id":
-            int(product_id),
-
-        "product_symbol":
-            SYMBOL,
-
-        "size":
-            int(abs(size)),
-
-        "side":
-            side,
-
-        "order_type":
-            "market_order",
-
-        "bracket_stop_loss_price":
-            str(sl),
-
-        "bracket_stop_trigger_method":
-            "last_traded_price",
-
-        "client_order_id":
-            (
-                f"entry_"
-                f"{safe_account_filename(account.account_id)}_"
-                f"{int(time.time()*1000)}"
-            )[-32:]
-    }
-
-    logging.warning(
-        "========================================"
-    )
-
-    logging.warning(
-        f"[{account.account_name}] "
-        f"ENTRY {side.upper()}"
-    )
-
-    logging.warning(
-        f"SIZE = {size}"
-    )
-
-    logging.warning(
-        f"SL = {sl}"
-    )
-
-    logging.warning(
-        "========================================"
-    )
-
-    return account_api(
-        account,
-        "POST",
-        "/v2/orders",
-        body=body,
-        auth=True
+    return os.path.join(
+        HISTORY_DIR,
+        safe_filename(
+            account_id
+        ) + ".json"
     )
 
 
-# ============================================================
-# CLOSE POSITION
-# ============================================================
-
-def close_exchange_position(
-    account,
-    product_id,
-    size
+def atomic_write_json(
+    filename,
+    data
 ):
 
-    if size == 0:
-
-        return
-
-    side = (
-        "sell"
-        if size > 0
-        else "buy"
+    tmp = (
+        filename
+        + ".tmp"
     )
 
-    body = {
+    with open(
+        tmp,
+        "w",
+        encoding="utf-8"
+    ) as f:
 
-        "product_id":
-            int(product_id),
+        json.dump(
+            data,
+            f,
+            indent=2
+        )
 
-        "product_symbol":
-            SYMBOL,
-
-        "size":
-            abs(int(size)),
-
-        "side":
-            side,
-
-        "order_type":
-            "market_order",
-
-        "reduce_only":
-            True,
-
-        "client_order_id":
-            (
-                f"close_"
-                f"{safe_account_filename(account.account_id)}_"
-                f"{int(time.time()*1000)}"
-            )[-32:]
-    }
-
-    logging.warning(
-        f"[{account.account_name}] "
-        f"CLOSING POSITION | SIZE={size}"
-    )
-
-    return account_api(
-        account,
-        "POST",
-        "/v2/orders",
-        body=body,
-        auth=True
+    os.replace(
+        tmp,
+        filename
     )
 
 
 # ============================================================
-# HISTORICAL HIGH / LOW
+# ACCOUNTS FILE
 # ============================================================
 
-def historical_high_low(
-    account,
-    start,
-    end
-):
-
-    try:
-
-        data = account_api(
-            account,
-            "GET",
-            "/v2/history/candles",
-            params={
-
-                "resolution":
-                    "1m",
-
-                "symbol":
-                    SYMBOL,
-
-                "start":
-                    int(
-                        start.timestamp()
-                    ),
-
-                "end":
-                    int(
-                        end.timestamp()
-                    )
-            }
-        )
-
-        candles = data.get(
-            "result",
-            []
-        )
-
-        high = None
-        low = None
-
-        for candle in candles:
-
-            try:
-
-                h = Decimal(
-                    str(
-                        candle["high"]
-                    )
-                )
-
-                l = Decimal(
-                    str(
-                        candle["low"]
-                    )
-                )
-
-                if (
-                    high is None
-                    or h > high
-                ):
-
-                    high = h
-
-                if (
-                    low is None
-                    or l < low
-                ):
-
-                    low = l
-
-            except Exception:
-
-                continue
-
-        return high, low
-
-    except Exception as e:
-
-        logging.warning(
-            f"[{account.account_name}] "
-            f"HISTORY ERROR | {e}"
-        )
-
-        return None, None
+accounts_file_lock = threading.RLock()
 
 
-# ============================================================
-# HISTORY
-# ============================================================
-
-def load_history(
-    file_path
-):
+def load_client_accounts():
 
     if not os.path.exists(
-        file_path
+        ACCOUNTS_FILE
     ):
 
         return []
@@ -1184,8 +422,714 @@ def load_history(
     try:
 
         with open(
-            file_path,
-            "r"
+            ACCOUNTS_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            data = json.load(
+                f
+            )
+
+        if not isinstance(
+            data,
+            list
+        ):
+
+            return []
+
+        return data
+
+    except Exception as e:
+
+        logging.warning(
+            f"ACCOUNTS LOAD ERROR | {e}"
+        )
+
+        return []
+
+
+def save_client_accounts(
+    accounts
+):
+
+    with accounts_file_lock:
+
+        atomic_write_json(
+            ACCOUNTS_FILE,
+            accounts
+        )
+
+
+# ============================================================
+# ACCOUNT HTTP CLIENT
+# ============================================================
+
+class DeltaClient:
+
+    def __init__(
+        self,
+        api_key,
+        api_secret,
+        account_name
+    ):
+
+        self.api_key = (
+            api_key or ""
+        ).strip()
+
+        self.api_secret = (
+            api_secret or ""
+        ).strip()
+
+        self.account_name = (
+            account_name or
+            "Account"
+        ).strip()
+
+        self.session = (
+            requests.Session()
+        )
+
+        self.session.headers.update({
+
+            "Accept":
+                "application/json",
+
+            "Content-Type":
+                "application/json",
+
+            "User-Agent":
+                "XAUTUSD-Multi-Account-Bot/1.0"
+        })
+
+
+    # ========================================================
+    # AUTH
+    # ========================================================
+
+    def sign(
+        self,
+        method,
+        path,
+        query="",
+        body=""
+    ):
+
+        timestamp = str(
+            int(
+                time.time()
+            )
+        )
+
+        message = (
+            method.upper()
+            + timestamp
+            + path
+            + query
+            + body
+        )
+
+        signature = hmac.new(
+            self.api_secret.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        return {
+
+            "api-key":
+                self.api_key,
+
+            "signature":
+                signature,
+
+            "timestamp":
+                timestamp
+        }
+
+
+    # ========================================================
+    # REST
+    # ========================================================
+
+    def api(
+        self,
+        method,
+        path,
+        params=None,
+        body=None,
+        auth=False
+    ):
+
+        params = params or {}
+
+        body_text = ""
+
+        if body is not None:
+
+            body_text = json.dumps(
+                body,
+                separators=(",", ":")
+            )
+
+        query = ""
+
+        if params:
+
+            query = "?" + urlencode(
+                params,
+                doseq=True
+            )
+
+        headers = {}
+
+        if auth:
+
+            headers = self.sign(
+                method,
+                path,
+                query,
+                body_text
+            )
+
+        response = (
+            self.session.request(
+                method.upper(),
+                BASE_URL + path,
+                params=params,
+                data=(
+                    body_text
+                    if body is not None
+                    else None
+                ),
+                headers=headers,
+                timeout=(5, 15)
+            )
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get(
+            "success"
+        ) is False:
+
+            raise RuntimeError(
+                f"Delta error: {data}"
+            )
+
+        return data
+
+
+    # ========================================================
+    # PRODUCT
+    # ========================================================
+
+    def product(self):
+
+        return self.api(
+            "GET",
+            f"/v2/products/{SYMBOL}"
+        )["result"]
+
+
+    # ========================================================
+    # POSITION
+    # ========================================================
+
+    def position(
+        self,
+        product_id
+    ):
+
+        data = self.api(
+            "GET",
+            "/v2/positions",
+            params={
+                "product_id":
+                    int(product_id)
+            },
+            auth=True
+        )
+
+        result = data.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            dict
+        ):
+
+            return {
+
+                "size":
+                    0,
+
+                "entry":
+                    None,
+
+                "stop_loss":
+                    None,
+
+                "unrealized_pnl":
+                    0
+            }
+
+        return {
+
+            "size":
+                int(
+                    result.get(
+                        "size",
+                        0
+                    )
+                ),
+
+            "entry":
+                result.get(
+                    "entry_price"
+                ),
+
+            "stop_loss":
+                result.get(
+                    "stop_loss"
+                ),
+
+            "unrealized_pnl":
+                result.get(
+                    "unrealized_pnl",
+                    0
+                )
+        }
+
+
+    # ========================================================
+    # BALANCE
+    # ========================================================
+
+    def balance(self):
+
+        data = self.api(
+            "GET",
+            "/v2/wallet/balances",
+            auth=True
+        )
+
+        for wallet in data.get(
+            "result",
+            []
+        ):
+
+            asset = str(
+                wallet.get(
+                    "asset_symbol",
+                    ""
+                )
+            ).upper()
+
+            if asset in (
+                "USD",
+                "USDT"
+            ):
+
+                value = (
+                    wallet.get(
+                        "available_balance"
+                    )
+                )
+
+                if value is None:
+
+                    value = wallet.get(
+                        "balance"
+                    )
+
+                if value is not None:
+
+                    return Decimal(
+                        str(value)
+                    )
+
+        raise RuntimeError(
+            "USD/USDT balance not found."
+        )
+
+
+    # ========================================================
+    # LEVERAGE
+    # ========================================================
+
+    def set_leverage(
+        self,
+        product_id
+    ):
+
+        try:
+
+            self.api(
+                "POST",
+                f"/v2/products/{product_id}/orders/leverage",
+                body={
+                    "leverage":
+                        str(
+                            LEVERAGE
+                        )
+                },
+                auth=True
+            )
+
+            logging.info(
+                f"{self.account_name} | "
+                f"LEVERAGE = {LEVERAGE}x"
+            )
+
+        except Exception as e:
+
+            logging.warning(
+                f"{self.account_name} | "
+                f"LEVERAGE ERROR | {e}"
+            )
+
+
+    # ========================================================
+    # ORDER SIZE
+    # ========================================================
+
+    def order_size(
+        self,
+        product_info,
+        price
+    ):
+
+        bal = self.balance()
+
+        margin = (
+            bal
+            * BALANCE_FRACTION
+        )
+
+        notional = (
+            margin
+            * LEVERAGE
+        )
+
+        contract_value = Decimal(
+            str(
+                product_info.get(
+                    "contract_value"
+                )
+                or product_info.get(
+                    "contract_value_usd"
+                )
+                or "1"
+            )
+        )
+
+        if contract_value <= 0:
+
+            contract_value = Decimal(
+                "1"
+            )
+
+        raw = (
+            notional
+            / price
+            / contract_value
+        )
+
+        increment = Decimal(
+            str(
+                product_info.get(
+                    "lot_size"
+                )
+                or product_info.get(
+                    "order_size_increment"
+                )
+                or "1"
+            )
+        )
+
+        minimum = Decimal(
+            str(
+                product_info.get(
+                    "min_order_size"
+                )
+                or product_info.get(
+                    "minimum_order_size"
+                )
+                or increment
+            )
+        )
+
+        size_decimal = (
+            raw / increment
+        ).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * increment
+
+        if size_decimal < minimum:
+
+            size_decimal = minimum
+
+        size = int(
+            size_decimal
+        )
+
+        if size <= 0:
+
+            raise RuntimeError(
+                "Order size calculated as zero."
+            )
+
+        logging.info(
+            f"{self.account_name} | "
+            f"SIZE | Balance={bal} | "
+            f"Margin={margin} | "
+            f"Notional={notional} | "
+            f"Size={size}"
+        )
+
+        return size
+
+
+    # ========================================================
+    # MARKET ENTRY
+    # ========================================================
+
+    def market_entry(
+        self,
+        product_id,
+        side,
+        size,
+        sl
+    ):
+
+        body = {
+
+            "product_id":
+                int(product_id),
+
+            "product_symbol":
+                SYMBOL,
+
+            "size":
+                int(
+                    abs(size)
+                ),
+
+            "side":
+                side,
+
+            "order_type":
+                "market_order",
+
+            "bracket_stop_loss_price":
+                str(sl),
+
+            "bracket_stop_trigger_method":
+                "last_traded_price",
+
+            "client_order_id":
+                (
+                    f"simple_"
+                    f"{int(time.time()*1000)}"
+                )[-32:]
+        }
+
+        logging.warning(
+            f"{self.account_name} | "
+            f"ENTRY {side.upper()} | "
+            f"SIZE={size} | SL={sl}"
+        )
+
+        return self.api(
+            "POST",
+            "/v2/orders",
+            body=body,
+            auth=True
+        )
+
+
+    # ========================================================
+    # CLOSE POSITION
+    # ========================================================
+
+    def close_position(
+        self,
+        product_id,
+        size
+    ):
+
+        if size == 0:
+
+            return
+
+        side = (
+            "sell"
+            if size > 0
+            else "buy"
+        )
+
+        body = {
+
+            "product_id":
+                int(product_id),
+
+            "product_symbol":
+                SYMBOL,
+
+            "size":
+                abs(
+                    int(size)
+                ),
+
+            "side":
+                side,
+
+            "order_type":
+                "market_order",
+
+            "reduce_only":
+                True,
+
+            "client_order_id":
+                (
+                    f"close_"
+                    f"{int(time.time()*1000)}"
+                )[-32:]
+        }
+
+        logging.warning(
+            f"{self.account_name} | "
+            f"CLOSE POSITION | SIZE={size}"
+        )
+
+        return self.api(
+            "POST",
+            "/v2/orders",
+            body=body,
+            auth=True
+        )
+
+
+    # ========================================================
+    # HISTORICAL HIGH LOW
+    # ========================================================
+
+    def historical_high_low(
+        self,
+        start,
+        end
+    ):
+
+        try:
+
+            data = self.api(
+                "GET",
+                "/v2/history/candles",
+                params={
+
+                    "resolution":
+                        "1m",
+
+                    "symbol":
+                        SYMBOL,
+
+                    "start":
+                        int(
+                            start.timestamp()
+                        ),
+
+                    "end":
+                        int(
+                            end.timestamp()
+                        )
+                }
+            )
+
+            candles = data.get(
+                "result",
+                []
+            )
+
+            high = None
+            low = None
+
+            for candle in candles:
+
+                try:
+
+                    h = Decimal(
+                        str(
+                            candle["high"]
+                        )
+                    )
+
+                    l = Decimal(
+                        str(
+                            candle["low"]
+                        )
+                    )
+
+                    if (
+                        high is None
+                        or h > high
+                    ):
+
+                        high = h
+
+                    if (
+                        low is None
+                        or l < low
+                    ):
+
+                        low = l
+
+                except Exception:
+
+                    continue
+
+            return high, low
+
+        except Exception as e:
+
+            logging.warning(
+                f"{self.account_name} | "
+                f"HISTORY ERROR | {e}"
+            )
+
+            return None, None
+
+
+# ============================================================
+# TRADE HISTORY
+# ============================================================
+
+def load_trade_history(
+    account_id
+):
+
+    filename = (
+        account_history_file(
+            account_id
+        )
+    )
+
+    if not os.path.exists(
+        filename
+    ):
+
+        return []
+
+    try:
+
+        with open(
+            filename,
+            "r",
+            encoding="utf-8"
         ) as f:
 
             data = json.load(
@@ -1202,36 +1146,27 @@ def load_history(
     except Exception as e:
 
         logging.warning(
-            f"HISTORY LOAD ERROR | {e}"
+            f"HISTORY LOAD ERROR | "
+            f"{account_id} | {e}"
         )
 
     return []
 
 
-def save_history(
-    file_path,
+def save_trade_history(
+    account_id,
     history
 ):
 
-    tmp = (
-        file_path
-        + ".tmp"
+    filename = (
+        account_history_file(
+            account_id
+        )
     )
 
-    with open(
-        tmp,
-        "w"
-    ) as f:
-
-        json.dump(
-            history,
-            f,
-            indent=2
-        )
-
-    os.replace(
-        tmp,
-        file_path
+    atomic_write_json(
+        filename,
+        history
     )
 
 
@@ -1239,7 +1174,7 @@ def save_history(
 # PNL
 # ============================================================
 
-def contract_value(
+def contract_value_from_product(
     product_info
 ):
 
@@ -1274,7 +1209,7 @@ def contract_value(
         )
 
 
-def calculate_pnl(
+def calculate_trade_pnl(
     direction,
     entry_price,
     exit_price,
@@ -1296,8 +1231,10 @@ def calculate_pnl(
             str(abs(size))
         )
 
-        cv = contract_value(
-            product_info
+        contract_value = (
+            contract_value_from_product(
+                product_info
+            )
         )
 
         if direction == "LONG":
@@ -1305,14 +1242,18 @@ def calculate_pnl(
             return (
                 exit_value
                 - entry
-            ) * qty * cv
+            ) * qty * contract_value
 
         return (
             entry
             - exit_value
-        ) * qty * cv
+        ) * qty * contract_value
 
-    except Exception:
+    except Exception as e:
+
+        logging.warning(
+            f"PNL ERROR | {e}"
+        )
 
         return Decimal(
             "0"
@@ -1320,33 +1261,49 @@ def calculate_pnl(
 
 
 # ============================================================
-# BOT
+# ACCOUNT BOT
 # ============================================================
 
-class Bot:
+class AccountBot:
 
     def __init__(
         self,
-        account,
-        product_info,
-        state_file,
-        history_file
+        account_id,
+        account_name,
+        account_type,
+        api_key,
+        api_secret,
+        subscription=None
     ):
 
-        self.account = account
+        self.account_id = (
+            account_id
+        )
 
-        self.product = product_info
+        self.account_name = (
+            account_name
+        )
+
+        self.account_type = (
+            account_type
+        )
+
+        self.subscription = (
+            subscription or {}
+        )
+
+        self.client = DeltaClient(
+            api_key,
+            api_secret,
+            account_name
+        )
+
+        self.product = (
+            self.client.product()
+        )
 
         self.product_id = int(
-            product_info["id"]
-        )
-
-        self.state_file = (
-            state_file
-        )
-
-        self.history_file = (
-            history_file
+            self.product["id"]
         )
 
         self.day = None
@@ -1365,19 +1322,31 @@ class Bot:
 
         self.ready = False
 
-        self.active_trade = None
-
         self.bot_enabled = False
 
         self.stop_reason = (
             "START REQUIRED"
         )
 
+        self.active_trade = None
+
+        self.lock = (
+            threading.RLock()
+        )
+
         self.cached_position = {
-            "size": 0,
-            "entry": None,
-            "stop_loss": None,
-            "unrealized_pnl": 0
+
+            "size":
+                0,
+
+            "entry":
+                None,
+
+            "stop_loss":
+                None,
+
+            "unrealized_pnl":
+                0
         }
 
         self.position_cache_time = 0
@@ -1386,13 +1355,18 @@ class Bot:
 
         self.balance_cache_time = 0
 
-        self.lock = threading.RLock()
+        self.websocket_connected = False
+
+        self.last_ws_message_time = None
+
+        self.last_api_ok_time = None
+
+        self.api_error = None
 
         self.load_state()
 
         # ----------------------------------------------------
-        # NEVER automatically resume after restart.
-        # Existing position remains on exchange.
+        # NEVER automatically resume trading.
         # ----------------------------------------------------
 
         self.bot_enabled = False
@@ -1405,15 +1379,19 @@ class Bot:
 
 
     # ========================================================
-    # STATE LOAD
+    # STATE
     # ========================================================
 
-    def load_state(
-        self
-    ):
+    def load_state(self):
+
+        filename = (
+            account_state_file(
+                self.account_id
+            )
+        )
 
         if not os.path.exists(
-            self.state_file
+            filename
         ):
 
             return
@@ -1421,8 +1399,9 @@ class Bot:
         try:
 
             with open(
-                self.state_file,
-                "r"
+                filename,
+                "r",
+                encoding="utf-8"
             ) as f:
 
                 state = json.load(
@@ -1433,8 +1412,10 @@ class Bot:
                 "day"
             ):
 
-                self.day = datetime.fromisoformat(
-                    state["day"]
+                self.day = (
+                    datetime.fromisoformat(
+                        state["day"]
+                    )
                 )
 
             if state.get(
@@ -1492,32 +1473,28 @@ class Bot:
             ):
 
                 self.active_trade = (
-                    state["active_trade"]
+                    state[
+                        "active_trade"
+                    ]
                 )
 
         except Exception as e:
 
             logging.warning(
-                f"[{self.account.account_name}] "
+                f"{self.account_name} | "
                 f"STATE LOAD ERROR | {e}"
             )
 
 
-    # ========================================================
-    # STATE SAVE
-    # ========================================================
-
-    def save(
-        self
-    ):
+    def save(self):
 
         data = {
 
             "account_id":
-                self.account.account_id,
+                self.account_id,
 
             "account_name":
-                self.account.account_name,
+                self.account_name,
 
             "symbol":
                 SYMBOL,
@@ -1574,25 +1551,11 @@ class Bot:
                 self.stop_reason
         }
 
-        tmp = (
-            self.state_file
-            + ".tmp"
-        )
-
-        with open(
-            tmp,
-            "w"
-        ) as f:
-
-            json.dump(
-                data,
-                f,
-                indent=2
-            )
-
-        os.replace(
-            tmp,
-            self.state_file
+        atomic_write_json(
+            account_state_file(
+                self.account_id
+            ),
+            data
         )
 
 
@@ -1620,33 +1583,34 @@ class Bot:
 
         try:
 
-            pos = get_position(
-                self.account,
+            pos = self.client.position(
                 self.product_id
             )
 
-            self.cached_position = pos
+            self.cached_position = (
+                pos
+            )
 
             self.position_cache_time = (
                 current
             )
 
-            self.account.last_api_ok_time = (
+            self.last_api_ok_time = (
                 now_ist().isoformat()
             )
 
-            self.account.api_error = None
+            self.api_error = None
 
             return pos
 
         except Exception as e:
 
-            self.account.api_error = (
-                str(e)
+            self.api_error = str(
+                e
             )
 
             logging.warning(
-                f"[{self.account.account_name}] "
+                f"{self.account_name} | "
                 f"POSITION ERROR | {e}"
             )
 
@@ -1666,7 +1630,8 @@ class Bot:
 
         if (
             not force
-            and self.cached_balance is not None
+            and self.cached_balance
+            is not None
             and (
                 current
                 - self.balance_cache_time
@@ -1678,32 +1643,34 @@ class Bot:
 
         try:
 
-            value = get_balance(
-                self.account
+            value = (
+                self.client.balance()
             )
 
-            self.cached_balance = value
+            self.cached_balance = (
+                value
+            )
 
             self.balance_cache_time = (
                 current
             )
 
-            self.account.last_api_ok_time = (
+            self.last_api_ok_time = (
                 now_ist().isoformat()
             )
 
-            self.account.api_error = None
+            self.api_error = None
 
             return value
 
         except Exception as e:
 
-            self.account.api_error = (
-                str(e)
+            self.api_error = str(
+                e
             )
 
             logging.warning(
-                f"[{self.account.account_name}] "
+                f"{self.account_name} | "
                 f"BALANCE ERROR | {e}"
             )
 
@@ -1714,62 +1681,56 @@ class Bot:
     # START BOT
     # ========================================================
 
-    def start_bot(
-        self
-    ):
+    def start_bot(self):
 
         with self.lock:
 
-            # ------------------------------------------------
-            # Client subscription check.
-            # ------------------------------------------------
-
-            subscription = (
-                self.account.subscription_info()
+            logging.warning(
+                f"{self.account_name} | "
+                f"START BOT REQUEST"
             )
+
+            # ------------------------------------------------
+            # Subscription check for client.
+            # ------------------------------------------------
 
             if (
-                not self.account.primary
-                and not subscription["active"]
+                self.account_type
+                != "primary"
             ):
 
-                return {
+                if not self.subscription_active():
 
-                    "success":
-                        False,
+                    self.bot_enabled = False
 
-                    "bot_enabled":
-                        False,
+                    self.stop_reason = (
+                        "SUBSCRIPTION EXPIRED"
+                    )
 
-                    "message":
-                        "Client subscription is inactive or expired."
-                }
+                    self.save()
 
-            logging.warning(
-                "========================================"
-            )
+                    return {
 
-            logging.warning(
-                f"[{self.account.account_name}] "
-                "START BOT REQUEST"
-            )
+                        "success":
+                            False,
+
+                        "message":
+                            "Client subscription is not active."
+                    }
 
             # ------------------------------------------------
-            # Force live exchange position read.
+            # Verify exchange position.
             # ------------------------------------------------
 
             try:
 
-                pos = self.refresh_position(
-                    force=True
+                pos = (
+                    self.refresh_position(
+                        force=True
+                    )
                 )
 
-            except Exception as e:
-
-                logging.exception(
-                    f"[{self.account.account_name}] "
-                    f"START POSITION ERROR | {e}"
-                )
+            except Exception:
 
                 return {
 
@@ -1799,13 +1760,13 @@ class Bot:
                     else "SHORT"
                 )
 
+                recovered_entry = None
+
                 exchange_entry = (
                     pos.get(
                         "entry"
                     )
                 )
-
-                recovered_entry = None
 
                 if exchange_entry is not None:
 
@@ -1888,14 +1849,18 @@ class Bot:
 
                     if direction == "LONG":
 
-                        recovered_sl = self.low
+                        recovered_sl = (
+                            self.low
+                        )
 
                     else:
 
-                        recovered_sl = self.high
+                        recovered_sl = (
+                            self.high
+                        )
 
                 # ------------------------------------------------
-                # Preserve existing active trade.
+                # Active trade recovery.
                 # ------------------------------------------------
 
                 if self.active_trade is None:
@@ -1976,14 +1941,6 @@ class Bot:
 
                     self.trade_high = None
 
-                # ------------------------------------------------
-                # CRITICAL:
-                #
-                # NO CLOSE.
-                #
-                # Existing position stays LIVE.
-                # ------------------------------------------------
-
                 self.last_position = size
 
                 self.bot_enabled = True
@@ -1993,28 +1950,12 @@ class Bot:
                 self.save()
 
                 logging.warning(
-                    f"[{self.account.account_name}] "
-                    f"EXISTING POSITION RECOVERED"
-                )
-
-                logging.warning(
-                    f"DIRECTION={direction}"
-                )
-
-                logging.warning(
-                    f"SIZE={size}"
-                )
-
-                logging.warning(
-                    f"ENTRY={recovered_entry}"
-                )
-
-                logging.warning(
+                    f"{self.account_name} | "
+                    f"EXISTING {direction} "
+                    f"POSITION RECOVERED | "
+                    f"SIZE={size} | "
+                    f"ENTRY={recovered_entry} | "
                     f"SL={self.sl}"
-                )
-
-                logging.warning(
-                    "POSITION WAS NOT CLOSED"
                 )
 
                 return {
@@ -2046,7 +1987,9 @@ class Bot:
 
                     "stop_loss":
                         (
-                            float(self.sl)
+                            float(
+                                self.sl
+                            )
                             if self.sl is not None
                             else None
                         ),
@@ -2060,7 +2003,7 @@ class Bot:
                 }
 
             # =================================================
-            # FLAT
+            # NO POSITION
             # =================================================
 
             self.last_position = 0
@@ -2080,8 +2023,8 @@ class Bot:
             self.save()
 
             logging.warning(
-                f"[{self.account.account_name}] "
-                "BOT MANUALLY STARTED"
+                f"{self.account_name} | "
+                f"BOT STARTED"
             )
 
             return {
@@ -2101,12 +2044,67 @@ class Bot:
 
 
     # ========================================================
+    # SUBSCRIPTION
+    # ========================================================
+
+    def subscription_active(
+        self
+    ):
+
+        if (
+            self.account_type
+            == "primary"
+        ):
+
+            return True
+
+        subscription = (
+            self.subscription
+            or {}
+        )
+
+        expiry = (
+            subscription.get(
+                "expiry"
+            )
+        )
+
+        if not expiry:
+
+            return False
+
+        try:
+
+            expiry_dt = datetime.fromisoformat(
+                expiry.replace(
+                    "Z",
+                    "+00:00"
+                )
+            )
+
+            if expiry_dt.tzinfo is None:
+
+                expiry_dt = (
+                    expiry_dt.replace(
+                        tzinfo=IST
+                    )
+                )
+
+            return (
+                expiry_dt
+                > now_ist()
+            )
+
+        except Exception:
+
+            return False
+
+
+    # ========================================================
     # STOP BOT
     # ========================================================
 
-    def stop_bot(
-        self
-    ):
+    def stop_bot(self):
 
         with self.lock:
 
@@ -2119,21 +2117,24 @@ class Bot:
             self.save()
 
             logging.warning(
-                "========================================"
-            )
-
-            logging.warning(
-                f"[{self.account.account_name}] "
-                "BOT MANUALLY STOPPED"
+                f"{self.account_name} | "
+                f"BOT MANUALLY STOPPED"
             )
 
             try:
 
-                pos = self.refresh_position(
-                    force=True
+                pos = (
+                    self.refresh_position(
+                        force=True
+                    )
                 )
 
-            except Exception:
+            except Exception as e:
+
+                logging.exception(
+                    f"{self.account_name} | "
+                    f"STOP POSITION ERROR | {e}"
+                )
 
                 return {
 
@@ -2165,13 +2166,28 @@ class Bot:
 
                 self.last_position = 0
 
-                self.active_trade = None
-
                 self.sl = None
+
+                self.active_trade = None
 
                 self.trade_high = None
 
                 self.trade_low = None
+
+                self.cached_position = {
+
+                    "size":
+                        0,
+
+                    "entry":
+                        None,
+
+                    "stop_loss":
+                        None,
+
+                    "unrealized_pnl":
+                        0
+                }
 
                 self.save()
 
@@ -2196,8 +2212,7 @@ class Bot:
 
             try:
 
-                close_exchange_position(
-                    self.account,
+                self.client.close_position(
                     self.product_id,
                     size
                 )
@@ -2205,7 +2220,7 @@ class Bot:
             except Exception as e:
 
                 logging.exception(
-                    f"[{self.account.account_name}] "
+                    f"{self.account_name} | "
                     f"STOP CLOSE ERROR | {e}"
                 )
 
@@ -2228,12 +2243,12 @@ class Bot:
                 }
 
             # ------------------------------------------------
-            # Verify close.
+            # Verify.
             # ------------------------------------------------
 
-            final_position = None
-
             closed = False
+
+            final_position = None
 
             for _ in range(50):
 
@@ -2243,17 +2258,10 @@ class Bot:
 
                 try:
 
-                    final_position = get_position(
-                        self.account,
-                        self.product_id
-                    )
-
-                    self.cached_position = (
-                        final_position
-                    )
-
-                    self.position_cache_time = (
-                        time.time()
+                    final_position = (
+                        self.client.position(
+                            self.product_id
+                        )
                     )
 
                     if int(
@@ -2267,9 +2275,12 @@ class Bot:
 
                         break
 
-                except Exception:
+                except Exception as e:
 
-                    continue
+                    logging.warning(
+                        f"{self.account_name} | "
+                        f"STOP VERIFY ERROR | {e}"
+                    )
 
             if not closed:
 
@@ -2309,7 +2320,7 @@ class Bot:
                 }
 
             # ------------------------------------------------
-            # Record completed trade.
+            # Record trade.
             # ------------------------------------------------
 
             exit_price = (
@@ -2332,8 +2343,6 @@ class Bot:
             )
 
             self.last_position = 0
-
-            self.active_trade = None
 
             self.sl = None
 
@@ -2375,7 +2384,7 @@ class Bot:
 
 
     # ========================================================
-    # NEW DAY
+    # NEW SESSION
     # ========================================================
 
     def new_day(
@@ -2383,13 +2392,20 @@ class Bot:
         now
     ):
 
-        day = trading_day_start(
-            now
+        day = (
+            trading_day_start(
+                now
+            )
         )
 
         if self.day == day:
 
             return
+
+        logging.warning(
+            f"{self.account_name} | "
+            f"NEW SESSION | {day}"
+        )
 
         self.day = day
 
@@ -2399,14 +2415,22 @@ class Bot:
 
         self.ready = False
 
-        live_size = self.last_position
+        # ----------------------------------------------------
+        # Never blindly erase a live position.
+        # ----------------------------------------------------
+
+        live_size = (
+            self.last_position
+        )
 
         if live_size == 0:
 
             try:
 
-                pos = self.refresh_position(
-                    force=True
+                pos = (
+                    self.refresh_position(
+                        force=True
+                    )
                 )
 
                 live_size = int(
@@ -2430,10 +2454,6 @@ class Bot:
 
             self.active_trade = None
 
-        # ----------------------------------------------------
-        # Every new session requires manual START.
-        # ----------------------------------------------------
-
         self.bot_enabled = False
 
         self.stop_reason = (
@@ -2442,14 +2462,9 @@ class Bot:
 
         self.save()
 
-        logging.warning(
-            f"[{self.account.account_name}] "
-            f"NEW SESSION | {day}"
-        )
-
 
     # ========================================================
-    # PREPARE
+    # PREPARE SESSION
     # ========================================================
 
     def prepare(
@@ -2458,8 +2473,10 @@ class Bot:
         price
     ):
 
-        start = strategy_start(
-            self.day
+        start = (
+            strategy_start(
+                self.day
+            )
         )
 
         if now < start:
@@ -2470,17 +2487,30 @@ class Bot:
 
             return True
 
+        # ----------------------------------------------------
+        # Recover current position.
+        # ----------------------------------------------------
+
         try:
 
-            pos = self.refresh_position(
-                force=True
+            pos = (
+                self.refresh_position(
+                    force=True
+                )
             )
 
         except Exception:
 
             pos = {
+
                 "size":
-                    self.last_position
+                    self.last_position,
+
+                "entry":
+                    None,
+
+                "stop_loss":
+                    None
             }
 
         self.last_position = int(
@@ -2491,7 +2521,7 @@ class Bot:
         )
 
         # ----------------------------------------------------
-        # Recover today's high / low.
+        # Historical session range.
         # ----------------------------------------------------
 
         if now > (
@@ -2501,10 +2531,11 @@ class Bot:
             )
         ):
 
-            high, low = historical_high_low(
-                self.account,
-                start,
-                now
+            high, low = (
+                self.client.historical_high_low(
+                    start,
+                    now
+                )
             )
 
             if (
@@ -2520,10 +2551,10 @@ class Bot:
 
                 self.save()
 
-                logging.info(
-                    f"[{self.account.account_name}] "
-                    f"SESSION RANGE "
-                    f"HIGH={high} LOW={low}"
+                logging.warning(
+                    f"{self.account_name} | "
+                    f"RECOVERED RANGE | "
+                    f"HIGH={high} | LOW={low}"
                 )
 
                 return True
@@ -2539,6 +2570,12 @@ class Bot:
         self.ready = True
 
         self.save()
+
+        logging.warning(
+            f"{self.account_name} | "
+            f"INITIAL RANGE | "
+            f"HIGH={price} | LOW={price}"
+        )
 
         return True
 
@@ -2562,24 +2599,19 @@ class Bot:
 
             return False
 
-        subscription = (
-            self.account.subscription_info()
-        )
+        if sl is None:
 
-        if (
-            not self.account.primary
-            and not subscription["active"]
-        ):
-
-            logging.warning(
-                f"[{self.account.account_name}] "
-                "ENTRY BLOCKED - SUBSCRIPTION INACTIVE"
+            logging.error(
+                f"{self.account_name} | "
+                f"ENTRY BLOCKED | SL NONE"
             )
 
             return False
 
-        pos = self.refresh_position(
-            force=True
+        pos = (
+            self.refresh_position(
+                force=True
+            )
         )
 
         if pos["size"] != 0:
@@ -2590,18 +2622,14 @@ class Bot:
 
             return False
 
-        if sl is None:
-
-            return False
-
         if direction == "LONG":
 
             if sl >= price:
 
                 logging.error(
-                    f"[{self.account.account_name}] "
+                    f"{self.account_name} | "
                     f"LONG BLOCKED | "
-                    f"PRICE={price} SL={sl}"
+                    f"PRICE={price} | SL={sl}"
                 )
 
                 return False
@@ -2613,9 +2641,9 @@ class Bot:
             if sl <= price:
 
                 logging.error(
-                    f"[{self.account.account_name}] "
+                    f"{self.account_name} | "
                     f"SHORT BLOCKED | "
-                    f"PRICE={price} SL={sl}"
+                    f"PRICE={price} | SL={sl}"
                 )
 
                 return False
@@ -2624,14 +2652,14 @@ class Bot:
 
         try:
 
-            size = calculate_order_size(
-                self.account,
-                self.product,
-                price
+            size = (
+                self.client.order_size(
+                    self.product,
+                    price
+                )
             )
 
-            place_market_entry(
-                self.account,
+            self.client.market_entry(
                 self.product_id,
                 side,
                 size,
@@ -2641,8 +2669,8 @@ class Bot:
         except Exception as e:
 
             logging.exception(
-                f"[{self.account.account_name}] "
-                f"ENTRY ERROR | {e}"
+                f"{self.account_name} | "
+                f"ENTRY ORDER ERROR | {e}"
             )
 
             return False
@@ -2657,52 +2685,56 @@ class Bot:
 
             try:
 
-                pos = get_position(
-                    self.account,
-                    self.product_id
+                pos = (
+                    self.client.position(
+                        self.product_id
+                    )
                 )
 
-            except Exception:
+                self.cached_position = (
+                    pos
+                )
 
-                continue
+                self.position_cache_time = (
+                    time.time()
+                )
 
-            self.cached_position = (
-                pos
-            )
+                if direction == "LONG":
 
-            self.position_cache_time = (
-                time.time()
-            )
+                    if pos["size"] > 0:
 
-            if direction == "LONG":
+                        self.last_position = (
+                            pos["size"]
+                        )
 
-                if pos["size"] > 0:
+                        confirmed = True
 
-                    self.last_position = (
-                        pos["size"]
-                    )
+                        break
 
-                    confirmed = True
+                else:
 
-                    break
+                    if pos["size"] < 0:
 
-            else:
+                        self.last_position = (
+                            pos["size"]
+                        )
 
-                if pos["size"] < 0:
+                        confirmed = True
 
-                    self.last_position = (
-                        pos["size"]
-                    )
+                        break
 
-                    confirmed = True
+            except Exception as e:
 
-                    break
+                logging.warning(
+                    f"{self.account_name} | "
+                    f"ENTRY VERIFY ERROR | {e}"
+                )
 
         if not confirmed:
 
             logging.error(
-                f"[{self.account.account_name}] "
-                "ENTRY NOT CONFIRMED"
+                f"{self.account_name} | "
+                f"ENTRY NOT CONFIRMED"
             )
 
             return False
@@ -2745,10 +2777,10 @@ class Bot:
         self.save()
 
         logging.warning(
-            f"[{self.account.account_name}] "
+            f"{self.account_name} | "
             f"TRADE LIVE | "
             f"{direction} | "
-            f"ENTRY≈{price} | "
+            f"ENTRY={price} | "
             f"SL={sl}"
         )
 
@@ -2796,10 +2828,7 @@ class Bot:
             )
         )
 
-        if (
-            entry_price is None
-            or not trade_size
-        ):
+        if entry_price is None:
 
             self.active_trade = None
 
@@ -2807,7 +2836,7 @@ class Bot:
 
             return
 
-        pnl = calculate_pnl(
+        pnl = calculate_trade_pnl(
             direction,
             entry_price,
             exit_price,
@@ -2824,10 +2853,10 @@ class Bot:
                 ),
 
             "account_id":
-                self.account.account_id,
+                self.account_id,
 
             "account":
-                self.account.account_name,
+                self.account_name,
 
             "symbol":
                 SYMBOL,
@@ -2867,38 +2896,45 @@ class Bot:
 
             "stop_loss":
                 (
-                    float(self.sl)
+                    float(
+                        self.sl
+                    )
                     if self.sl is not None
                     else None
                 ),
 
             "pnl":
-                float(pnl),
+                float(
+                    pnl
+                ),
 
             "reason":
                 reason
         }
 
-        history = load_history(
-            self.history_file
+        history = (
+            load_trade_history(
+                self.account_id
+            )
         )
 
         history.append(
             trade
         )
 
-        save_history(
-            self.history_file,
+        save_trade_history(
+            self.account_id,
             history
         )
 
         logging.warning(
-            f"[{self.account.account_name}] "
+            f"{self.account_name} | "
             f"TRADE HISTORY SAVED | "
             f"{direction} | "
             f"ENTRY={entry_price} | "
             f"EXIT={exit_price} | "
-            f"P&L={pnl}"
+            f"PNL={pnl} | "
+            f"REASON={reason}"
         )
 
         self.active_trade = None
@@ -2912,45 +2948,38 @@ class Bot:
 
     def price_tick(
         self,
-        price_text
+        price
     ):
-
-        try:
-
-            price = Decimal(
-                str(price_text)
-            )
-
-        except Exception:
-
-            return
 
         with self.lock:
 
             self.last_price = price
 
-            self.account.last_ws_message_time = (
-                now_ist().isoformat()
-            )
-
             now = now_ist()
+
+            self.last_ws_message_time = (
+                now.isoformat()
+            )
 
             # ------------------------------------------------
             # Saturday square-off.
             # ------------------------------------------------
 
-            if saturday_squareoff(now):
+            if saturday_squareoff(
+                now
+            ):
 
                 try:
 
-                    pos = self.refresh_position(
-                        force=True
+                    pos = (
+                        self.refresh_position(
+                            force=True
+                        )
                     )
 
                     if pos["size"] != 0:
 
-                        close_exchange_position(
-                            self.account,
+                        self.client.close_position(
                             self.product_id,
                             pos["size"]
                         )
@@ -2984,8 +3013,8 @@ class Bot:
                 except Exception as e:
 
                     logging.exception(
-                        f"[{self.account.account_name}] "
-                        f"SATURDAY CLOSE ERROR | {e}"
+                        f"{self.account_name} | "
+                        f"SATURDAY SQUAREOFF ERROR | {e}"
                     )
 
                 return
@@ -2994,7 +3023,9 @@ class Bot:
             # Weekend.
             # ------------------------------------------------
 
-            if weekend(now):
+            if weekend(
+                now
+            ):
 
                 return
 
@@ -3007,7 +3038,7 @@ class Bot:
             )
 
             # ------------------------------------------------
-            # Before strategy start.
+            # Before 05:45.
             # ------------------------------------------------
 
             if now < strategy_start(
@@ -3031,7 +3062,9 @@ class Bot:
             # Position.
             # ------------------------------------------------
 
-            pos = self.refresh_position()
+            pos = (
+                self.refresh_position()
+            )
 
             size = int(
                 pos.get(
@@ -3049,15 +3082,16 @@ class Bot:
                 and self.last_position != 0
             ):
 
-                old = self.last_position
+                old = (
+                    self.last_position
+                )
 
                 # ------------------------------------------------
                 # STOP LOSS -> REVERSE
                 # ------------------------------------------------
 
-                if (
-                    self.bot_enabled
-                    and self.sl is not None
+                sl_hit = (
+                    self.sl is not None
                     and (
                         (
                             old > 0
@@ -3069,6 +3103,11 @@ class Bot:
                             and price >= self.sl
                         )
                     )
+                )
+
+                if (
+                    self.bot_enabled
+                    and sl_hit
                 ):
 
                     if old > 0:
@@ -3122,7 +3161,7 @@ class Bot:
                     return
 
                 # ------------------------------------------------
-                # External/manual close.
+                # External close.
                 # ------------------------------------------------
 
                 self.finish_active_trade(
@@ -3219,26 +3258,7 @@ class Bot:
 
             self.last_position = 0
 
-            # ------------------------------------------------
-            # STOPPED = NO NEW ENTRY.
-            # ------------------------------------------------
-
             if not self.bot_enabled:
-
-                return
-
-            # ------------------------------------------------
-            # Subscription.
-            # ------------------------------------------------
-
-            subscription = (
-                self.account.subscription_info()
-            )
-
-            if (
-                not self.account.primary
-                and not subscription["active"]
-            ):
 
                 return
 
@@ -3251,12 +3271,14 @@ class Bot:
                 and price > self.high
             ):
 
-                old_high = self.high
+                old_high = (
+                    self.high
+                )
 
                 sl = self.low
 
-                logging.info(
-                    f"[{self.account.account_name}] "
+                logging.warning(
+                    f"{self.account_name} | "
                     f"NEW HIGH | "
                     f"{old_high} -> {price}"
                 )
@@ -3282,12 +3304,14 @@ class Bot:
                 and price < self.low
             ):
 
-                old_low = self.low
+                old_low = (
+                    self.low
+                )
 
                 sl = self.high
 
-                logging.info(
-                    f"[{self.account.account_name}] "
+                logging.warning(
+                    f"{self.account_name} | "
                     f"NEW LOW | "
                     f"{old_low} -> {price}"
                 )
@@ -3306,91 +3330,17 @@ class Bot:
 
 
 # ============================================================
-# ACCOUNT STORAGE
+# ACCOUNT MANAGER
 # ============================================================
 
-ACCOUNTS = {}
+BOT_ACCOUNTS = {}
 
 ACCOUNTS_LOCK = threading.RLock()
 
 
-def load_clients():
-
-    if not os.path.exists(
-        CLIENTS_FILE
-    ):
-
-        return []
-
-    try:
-
-        with open(
-            CLIENTS_FILE,
-            "r"
-        ) as f:
-
-            data = json.load(
-                f
-            )
-
-        if isinstance(
-            data,
-            list
-        ):
-
-            return data
-
-    except Exception as e:
-
-        logging.warning(
-            f"CLIENT FILE LOAD ERROR | {e}"
-        )
-
-    return []
-
-
-def save_clients(
-    clients
-):
-
-    tmp = (
-        CLIENTS_FILE
-        + ".tmp"
-    )
-
-    with open(
-        tmp,
-        "w"
-    ) as f:
-
-        json.dump(
-            clients,
-            f,
-            indent=2
-        )
-
-    os.replace(
-        tmp,
-        CLIENTS_FILE
-    )
-
-
-# ============================================================
-# CREATE PRIMARY
-# ============================================================
-
 def create_primary_account():
 
-    if (
-        not PRIMARY_API_KEY
-        or not PRIMARY_API_SECRET
-    ):
-
-        raise SystemExit(
-            "Missing DELTA_API_KEY or DELTA_API_SECRET."
-        )
-
-    account = Account(
+    return AccountBot(
 
         account_id=
             PRIMARY_ACCOUNT_ID,
@@ -3398,93 +3348,56 @@ def create_primary_account():
         account_name=
             PRIMARY_ACCOUNT_NAME,
 
+        account_type=
+            "primary",
+
         api_key=
             PRIMARY_API_KEY,
 
         api_secret=
             PRIMARY_API_SECRET,
 
-        account_type=
-            "primary",
-
-        primary=
-            True
+        subscription={}
     )
 
-    account.load_product()
-
-    account.set_leverage()
-
-    account.create_bot()
-
-    return account
-
-
-# ============================================================
-# CREATE CLIENT ACCOUNT
-# ============================================================
 
 def create_client_account(
     data
 ):
 
-    account_id = str(
-        data.get(
-            "account_id"
-        )
-        or ""
-    ).strip()
-
-    if not account_id:
-
-        account_id = (
-            "client_"
-            + str(
-                int(
-                    time.time() * 1000
-                )
-            )
-        )
-
-    account = Account(
+    return AccountBot(
 
         account_id=
-            account_id,
+            data["account_id"],
 
         account_name=
             data.get(
                 "name",
-                "Client"
-            ),
-
-        api_key=
-            data.get(
-                "api_key",
-                ""
-            ),
-
-        api_secret=
-            data.get(
-                "api_secret",
-                ""
+                "Client Account"
             ),
 
         account_type=
             "client",
 
+        api_key=
+            data["api_key"],
+
+        api_secret=
+            data["api_secret"],
+
         subscription={
 
-            "subscription_start":
+            "start":
                 data.get(
                     "subscription_start"
                 ),
 
-            "subscription_expiry":
+            "expiry":
                 data.get(
                     "subscription_expiry"
                 ),
 
-            "subscription_fee":
+            "fee":
                 data.get(
                     "subscription_fee",
                     0
@@ -3492,66 +3405,156 @@ def create_client_account(
         }
     )
 
-    account.load_product()
 
-    account.set_leverage()
-
-    account.create_bot()
-
-    return account
-
-
-# ============================================================
-# LOAD ALL ACCOUNTS
-# ============================================================
-
-def initialize_accounts():
-
-    primary = (
-        create_primary_account()
-    )
+def load_all_accounts():
 
     with ACCOUNTS_LOCK:
 
-        ACCOUNTS[
-            primary.account_id
-        ] = primary
+        BOT_ACCOUNTS.clear()
 
-    clients = load_clients()
-
-    for client in clients:
+        # ----------------------------------------------------
+        # Primary.
+        # ----------------------------------------------------
 
         try:
 
-            account = (
-                create_client_account(
-                    client
-                )
+            primary = (
+                create_primary_account()
             )
 
-            with ACCOUNTS_LOCK:
+            primary.client.set_leverage(
+                primary.product_id
+            )
 
-                ACCOUNTS[
-                    account.account_id
-                ] = account
+            BOT_ACCOUNTS[
+                primary.account_id
+            ] = primary
 
             logging.warning(
-                f"CLIENT LOADED | "
-                f"{account.account_name}"
+                f"PRIMARY ACCOUNT LOADED | "
+                f"{primary.account_name}"
             )
 
         except Exception as e:
 
             logging.exception(
-                f"CLIENT LOAD FAILED | {e}"
+                f"PRIMARY ACCOUNT ERROR | {e}"
             )
 
-    return primary
+            raise
+
+        # ----------------------------------------------------
+        # Clients.
+        # ----------------------------------------------------
+
+        clients = (
+            load_client_accounts()
+        )
+
+        for data in clients:
+
+            try:
+
+                account_id = str(
+                    data.get(
+                        "account_id",
+                        ""
+                    )
+                ).strip()
+
+                if not account_id:
+
+                    continue
+
+                if (
+                    account_id
+                    == PRIMARY_ACCOUNT_ID
+                ):
+
+                    continue
+
+                if not data.get(
+                    "api_key"
+                ):
+
+                    continue
+
+                if not data.get(
+                    "api_secret"
+                ):
+
+                    continue
+
+                client_bot = (
+                    create_client_account(
+                        data
+                    )
+                )
+
+                client_bot.client.set_leverage(
+                    client_bot.product_id
+                )
+
+                BOT_ACCOUNTS[
+                    account_id
+                ] = client_bot
+
+                logging.warning(
+                    f"CLIENT ACCOUNT LOADED | "
+                    f"{client_bot.account_name}"
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"CLIENT LOAD ERROR | {e}"
+                )
+
+
+def get_bot(
+    account_id
+):
+
+    with ACCOUNTS_LOCK:
+
+        return BOT_ACCOUNTS.get(
+            str(
+                account_id
+            )
+        )
 
 
 # ============================================================
-# HISTORY STATISTICS
+# DASHBOARD HELPERS
 # ============================================================
+
+def decimal_json(
+    value
+):
+
+    if value is None:
+
+        return None
+
+    if isinstance(
+        value,
+        Decimal
+    ):
+
+        return float(
+            value
+        )
+
+    try:
+
+        return float(
+            value
+        )
+
+    except Exception:
+
+        return value
+
 
 def history_statistics(
     history
@@ -3562,49 +3565,70 @@ def history_statistics(
     )
 
     today_trades = [
+
         trade
         for trade in history
+
         if trade.get(
             "date"
         ) == today
     ]
-
-    def pnl_value(
-        trade
-    ):
-
-        try:
-
-            return float(
-                trade.get(
-                    "pnl",
-                    0
-                )
-            )
-
-        except Exception:
-
-            return 0.0
 
     all_time_count = len(
         history
     )
 
     all_time_winning = sum(
+
         1
+
         for trade in history
-        if pnl_value(trade) > 0
+
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) > 0
     )
 
     all_time_losing = sum(
+
         1
+
         for trade in history
-        if pnl_value(trade) < 0
+
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) < 0
     )
 
     all_time_pnl = sum(
-        pnl_value(trade)
+
+        float(
+            trade.get(
+                "pnl",
+                0
+            )
+        )
+
         for trade in history
+    )
+
+    all_time_win_rate = (
+
+        (
+            all_time_winning
+            / all_time_count
+            * 100
+        )
+
+        if all_time_count > 0
+
+        else 0
     )
 
     today_count = len(
@@ -3612,20 +3636,56 @@ def history_statistics(
     )
 
     today_winning = sum(
+
         1
+
         for trade in today_trades
-        if pnl_value(trade) > 0
+
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) > 0
     )
 
     today_losing = sum(
+
         1
+
         for trade in today_trades
-        if pnl_value(trade) < 0
+
+        if float(
+            trade.get(
+                "pnl",
+                0
+            )
+        ) < 0
     )
 
     today_pnl = sum(
-        pnl_value(trade)
+
+        float(
+            trade.get(
+                "pnl",
+                0
+            )
+        )
+
         for trade in today_trades
+    )
+
+    today_win_rate = (
+
+        (
+            today_winning
+            / today_count
+            * 100
+        )
+
+        if today_count > 0
+
+        else 0
     )
 
     return {
@@ -3643,13 +3703,7 @@ def history_statistics(
 
             "win_rate":
                 round(
-                    (
-                        today_winning
-                        / today_count
-                        * 100
-                    )
-                    if today_count
-                    else 0,
+                    today_win_rate,
                     1
                 ),
 
@@ -3673,13 +3727,7 @@ def history_statistics(
 
             "win_rate":
                 round(
-                    (
-                        all_time_winning
-                        / all_time_count
-                        * 100
-                    )
-                    if all_time_count
-                    else 0,
+                    all_time_win_rate,
                     1
                 ),
 
@@ -3692,46 +3740,83 @@ def history_statistics(
     }
 
 
-# ============================================================
-# DASHBOARD ACCOUNT DATA
-# ============================================================
-
-def account_dashboard_data(
-    account
+def subscription_data(
+    bot
 ):
 
-    bot = account.bot
+    if bot.account_type == "primary":
 
-    if bot is None:
+        return {
 
-        return None
+            "active":
+                True,
+
+            "expired":
+                False,
+
+            "start":
+                None,
+
+            "expiry":
+                None,
+
+            "fee":
+                0
+        }
+
+    sub = (
+        bot.subscription
+        or {}
+    )
+
+    expiry = sub.get(
+        "expiry"
+    )
+
+    active = (
+        bot.subscription_active()
+    )
+
+    return {
+
+        "active":
+            active,
+
+        "expired":
+            (
+                bool(expiry)
+                and not active
+            ),
+
+        "start":
+            sub.get(
+                "start"
+            ),
+
+        "expiry":
+            expiry,
+
+        "fee":
+            sub.get(
+                "fee",
+                0
+            )
+    }
+
+
+def account_dashboard(
+    bot
+):
 
     with bot.lock:
 
-        try:
+        live_position = (
+            bot.refresh_position()
+        )
 
-            live_position = (
-                bot.refresh_position()
-            )
-
-        except Exception:
-
-            live_position = {
-                "size": 0,
-                "entry": None,
-                "stop_loss": None,
-                "unrealized_pnl": 0
-            }
-
-        try:
-
-            live_balance = (
-                bot.refresh_balance()
-            )
-
-        except Exception:
-
-            live_balance = None
+        live_balance = (
+            bot.refresh_balance()
+        )
 
         size = int(
             live_position.get(
@@ -3788,8 +3873,10 @@ def account_dashboard_data(
                         )
                     )
 
-                    cv = contract_value(
-                        bot.product
+                    cv = (
+                        contract_value_from_product(
+                            bot.product
+                        )
                     )
 
                     if size > 0:
@@ -3818,52 +3905,49 @@ def account_dashboard_data(
                     "0"
                 )
 
-        history = load_history(
-            bot.history_file
+        history = (
+            load_trade_history(
+                bot.account_id
+            )
         )
 
-        subscription = (
-            account.subscription_info()
+        statistics = (
+            history_statistics(
+                history
+            )
         )
 
-        # ----------------------------------------------------
-        # ONLINE:
-        #
-        # WebSocket connected OR recent price received.
-        # ----------------------------------------------------
+        history_for_dashboard = list(
+            reversed(
+                history
+            )
+        )
 
         online = (
-            account.websocket_connected
-            or (
-                bot.last_price is not None
-                and account.last_ws_message_time
-                is not None
-            )
+            bot.websocket_connected
+            or
+            bot.last_price is not None
         )
 
         return {
 
-            # ------------------------------------------------
-            # APP.JS REQUIRED
-            # ------------------------------------------------
-
             "account_id":
-                account.account_id,
+                bot.account_id,
 
             "account_name":
-                account.account_name,
+                bot.account_name,
 
             "account_type":
-                account.account_type,
-
-            "bot_running":
-                online,
-
-            "server_online":
-                True,
+                bot.account_type,
 
             "online":
                 online,
+
+            "bot_running":
+                True,
+
+            "server_online":
+                True,
 
             "bot_enabled":
                 bot.bot_enabled,
@@ -3886,43 +3970,34 @@ def account_dashboard_data(
                     LEVERAGE
                 ),
 
-            "balance":
-                (
-                    float(
-                        live_balance
-                    )
-                    if live_balance is not None
-                    else None
+            "balance_fraction":
+                float(
+                    BALANCE_FRACTION
                 ),
 
             "current_price":
-                (
-                    float(
-                        bot.last_price
-                    )
-                    if bot.last_price is not None
-                    else None
+                decimal_json(
+                    bot.last_price
                 ),
 
             "high":
-                (
-                    float(bot.high)
-                    if bot.high is not None
-                    else None
+                decimal_json(
+                    bot.high
                 ),
 
             "low":
-                (
-                    float(bot.low)
-                    if bot.low is not None
-                    else None
+                decimal_json(
+                    bot.low
                 ),
 
             "stop_loss":
-                (
-                    float(bot.sl)
-                    if bot.sl is not None
-                    else None
+                decimal_json(
+                    bot.sl
+                ),
+
+            "balance":
+                decimal_json(
+                    live_balance
                 ),
 
             "position": {
@@ -3934,74 +4009,50 @@ def account_dashboard_data(
                     abs(size),
 
                 "entry_price":
-                    (
-                        float(
-                            live_position.get(
-                                "entry"
-                            )
-                        )
-                        if live_position.get(
+                    decimal_json(
+                        live_position.get(
                             "entry"
-                        ) is not None
-                        else None
+                        )
                     ),
 
                 "stop_loss":
-                    (
-                        float(
-                            live_position.get(
-                                "stop_loss"
-                            )
-                        )
-                        if live_position.get(
-                            "stop_loss"
-                        ) is not None
-                        else (
-                            float(bot.sl)
-                            if bot.sl is not None
-                            else None
-                        )
+                    decimal_json(
+                        bot.sl
                     ),
 
                 "unrealized_pnl":
-                    (
-                        float(unrealized)
-                        if unrealized is not None
-                        else 0
+                    decimal_json(
+                        unrealized
                     )
             },
 
             "statistics":
-                history_statistics(
-                    history
-                ),
+                statistics,
 
             "trade_history":
-                list(
-                    reversed(
-                        history
-                    )
-                ),
+                history_for_dashboard,
 
             "history_count":
                 len(history),
 
             "subscription":
-                subscription,
+                subscription_data(
+                    bot
+                ),
 
             "connection": {
 
                 "websocket":
-                    account.websocket_connected,
+                    bot.websocket_connected,
 
                 "last_message":
-                    account.last_ws_message_time,
+                    bot.last_ws_message_time,
 
                 "last_api_ok":
-                    account.last_api_ok_time,
+                    bot.last_api_ok_time,
 
                 "api_error":
-                    account.api_error
+                    bot.api_error
             },
 
             "session": {
@@ -4028,173 +4079,111 @@ def account_dashboard_data(
         }
 
 
-# ============================================================
-# FULL DASHBOARD RESPONSE
-# ============================================================
-
 def dashboard_data():
-
-    accounts = []
 
     with ACCOUNTS_LOCK:
 
-        account_list = list(
-            ACCOUNTS.values()
-        )
+        accounts = [
 
-    # --------------------------------------------------------
-    # Primary first.
-    # --------------------------------------------------------
-
-    account_list.sort(
-        key=lambda a:
-            (
-                0
-                if a.primary
-                else 1,
-                a.account_name.lower()
-            )
-    )
-
-    for account in account_list:
-
-        try:
-
-            data = (
-                account_dashboard_data(
-                    account
-                )
+            account_dashboard(
+                bot
             )
 
-            if data is not None:
-
-                accounts.append(
-                    data
-                )
-
-        except Exception as e:
-
-            logging.exception(
-                f"DASHBOARD ACCOUNT ERROR | "
-                f"{account.account_name} | {e}"
-            )
-
-    primary = next(
-        (
-            a
-            for a in accounts
-            if a.get(
-                "account_type"
-            ) == "primary"
-        ),
-        None
-    )
+            for bot in BOT_ACCOUNTS.values()
+        ]
 
     return {
 
         "success":
             True,
 
-        # ----------------------------------------------------
-        # THIS IS THE MOST IMPORTANT PART FOR app.js
-        # ----------------------------------------------------
-
-        "accounts":
-            accounts,
-
-        "account_count":
-            len(accounts),
-
         "online":
-            bool(
-                primary
-                and primary.get(
-                    "online"
-                )
-            ),
+            True,
 
         "bot_running":
-            bool(
-                primary
-                and primary.get(
-                    "bot_running"
-                )
-            ),
+            True,
 
-        "bot_enabled":
-            bool(
-                primary
-                and primary.get(
-                    "bot_enabled"
-                )
-            ),
-
-        "account_name":
-            (
-                primary.get(
-                    "account_name"
-                )
-                if primary
-                else PRIMARY_ACCOUNT_NAME
-            ),
-
-        "symbol":
-            SYMBOL,
-
-        "server_online":
-            True
+        "accounts":
+            accounts
     }
 
 
 # ============================================================
-# CLIENT API HELPERS
+# HTTP REQUEST BODY
 # ============================================================
 
-def find_account(
-    account_id
+def read_json_body(
+    handler
 ):
 
-    with ACCOUNTS_LOCK:
+    try:
 
-        return ACCOUNTS.get(
-            str(account_id)
+        length = int(
+            handler.headers.get(
+                "Content-Length",
+                "0"
+            )
         )
 
+    except Exception:
 
-def client_record_from_account(
-    account
+        length = 0
+
+    if length <= 0:
+
+        return {}
+
+    raw = (
+        handler.rfile.read(
+            length
+        )
+    )
+
+    if not raw:
+
+        return {}
+
+    try:
+
+        return json.loads(
+            raw.decode(
+                "utf-8"
+            )
+        )
+
+    except Exception:
+
+        return {}
+
+
+# ============================================================
+# ADMIN PIN
+# ============================================================
+
+def verify_admin_pin(
+    handler
 ):
 
-    return {
+    # --------------------------------------------------------
+    # If ADMIN_PIN is not configured, preserve compatibility
+    # with the existing dashboard.
+    # --------------------------------------------------------
 
-        "account_id":
-            account.account_id,
+    if not ADMIN_PIN:
 
-        "name":
-            account.account_name,
+        return True
 
-        "api_key":
-            account.api_key,
+    supplied = (
+        handler.headers.get(
+            "X-Admin-Pin",
+            ""
+        )
+    )
 
-        "api_secret":
-            account.api_secret,
-
-        "subscription_start":
-            account.subscription.get(
-                "subscription_start"
-            ),
-
-        "subscription_expiry":
-            account.subscription.get(
-                "subscription_expiry"
-            ),
-
-        "subscription_fee":
-            account.subscription.get(
-                "subscription_fee",
-                0
-            )
-    }
+    return hmac.compare_digest(
+        supplied,
+        ADMIN_PIN
+    )
 
 
 # ============================================================
@@ -4222,16 +4211,13 @@ class DashboardHandler(
     # GET
     # ========================================================
 
-    def do_GET(
-        self
-    ):
+    def do_GET(self):
 
-        path = self.path.split(
-            "?",
-            1
-        )[0]
+        # ----------------------------------------------------
+        # Health.
+        # ----------------------------------------------------
 
-        if path == "/api/health":
+        if self.path == "/api/health":
 
             self.send_json({
 
@@ -4246,8 +4232,1282 @@ class DashboardHandler(
 
                 "accounts":
                     len(
-                        ACCOUNTS
+                        BOT_ACCOUNTS
                     ),
 
                 "symbol":
                     SYMBOL
+            })
+
+            return
+
+        # ----------------------------------------------------
+        # Dashboard.
+        # ----------------------------------------------------
+
+        if self.path == "/api/dashboard":
+
+            try:
+
+                self.send_json(
+                    dashboard_data()
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"DASHBOARD ERROR | {e}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Dashboard data error."
+                }, status=500)
+
+            return
+
+        # ----------------------------------------------------
+        # Root.
+        # ----------------------------------------------------
+
+        if self.path == "/":
+
+            self.path = "/index.html"
+
+        return super().do_GET()
+
+
+    # ========================================================
+    # POST
+    # ========================================================
+
+    def do_POST(self):
+
+        if not verify_admin_pin(
+            self
+        ):
+
+            self.send_json({
+
+                "success":
+                    False,
+
+                "message":
+                    "Invalid admin PIN."
+            }, status=403)
+
+            return
+
+        body = (
+            read_json_body(
+                self
+            )
+        )
+
+        # ====================================================
+        # START BOT
+        # ====================================================
+
+        if self.path == "/api/bot/start":
+
+            account_id = (
+                body.get(
+                    "account_id"
+                )
+            )
+
+            bot = get_bot(
+                account_id
+            )
+
+            if bot is None:
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Account not found."
+                }, status=404)
+
+                return
+
+            try:
+
+                result = (
+                    bot.start_bot()
+                )
+
+                self.send_json(
+                    result,
+                    status=(
+                        200
+                        if result.get(
+                            "success"
+                        )
+                        else 409
+                    )
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"START API ERROR | {e}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Failed to start bot."
+                }, status=500)
+
+            return
+
+        # ====================================================
+        # STOP BOT
+        # ====================================================
+
+        if self.path == "/api/bot/stop":
+
+            account_id = (
+                body.get(
+                    "account_id"
+                )
+            )
+
+            bot = get_bot(
+                account_id
+            )
+
+            if bot is None:
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Account not found."
+                }, status=404)
+
+                return
+
+            try:
+
+                result = (
+                    bot.stop_bot()
+                )
+
+                self.send_json(
+                    result,
+                    status=(
+                        200
+                        if result.get(
+                            "success"
+                        )
+                        else 500
+                    )
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"STOP API ERROR | {e}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Failed to stop bot."
+                }, status=500)
+
+            return
+
+        # ====================================================
+        # ADD CLIENT
+        # ====================================================
+
+        if self.path == "/api/client/add":
+
+            name = str(
+                body.get(
+                    "name",
+                    ""
+                )
+            ).strip()
+
+            api_key = str(
+                body.get(
+                    "api_key",
+                    ""
+                )
+            ).strip()
+
+            api_secret = str(
+                body.get(
+                    "api_secret",
+                    ""
+                )
+            ).strip()
+
+            subscription_start = (
+                body.get(
+                    "subscription_start"
+                )
+            )
+
+            subscription_expiry = (
+                body.get(
+                    "subscription_expiry"
+                )
+            )
+
+            subscription_fee = (
+                body.get(
+                    "subscription_fee",
+                    0
+                )
+            )
+
+            if not name:
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Enter client name."
+                }, status=400)
+
+                return
+
+            if not api_key or not api_secret:
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Enter Delta API key and API secret."
+                }, status=400)
+
+                return
+
+            if (
+                not subscription_start
+                or
+                not subscription_expiry
+            ):
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Enter subscription start and expiry."
+                }, status=400)
+
+                return
+
+            # ------------------------------------------------
+            # Generate account ID.
+            # ------------------------------------------------
+
+            account_id = (
+                f"client_"
+                f"{int(time.time()*1000)}"
+            )
+
+            client_record = {
+
+                "account_id":
+                    account_id,
+
+                "name":
+                    name,
+
+                "api_key":
+                    api_key,
+
+                "api_secret":
+                    api_secret,
+
+                "subscription_start":
+                    subscription_start,
+
+                "subscription_expiry":
+                    subscription_expiry,
+
+                "subscription_fee":
+                    float(
+                        subscription_fee
+                        or 0
+                    )
+            }
+
+            try:
+
+                # ------------------------------------------------
+                # Verify credentials by loading product.
+                # ------------------------------------------------
+
+                test_client = DeltaClient(
+                    api_key,
+                    api_secret,
+                    name
+                )
+
+                test_product = (
+                    test_client.product()
+                )
+
+                product_id = int(
+                    test_product["id"]
+                )
+
+                test_client.set_leverage(
+                    product_id
+                )
+
+                # ------------------------------------------------
+                # Save account.
+                # ------------------------------------------------
+
+                clients = (
+                    load_client_accounts()
+                )
+
+                clients.append(
+                    client_record
+                )
+
+                save_client_accounts(
+                    clients
+                )
+
+                # ------------------------------------------------
+                # Create running account instance.
+                # ------------------------------------------------
+
+                bot = AccountBot(
+
+                    account_id=
+                        account_id,
+
+                    account_name=
+                        name,
+
+                    account_type=
+                        "client",
+
+                    api_key=
+                        api_key,
+
+                    api_secret=
+                        api_secret,
+
+                    subscription={
+
+                        "start":
+                            subscription_start,
+
+                        "expiry":
+                            subscription_expiry,
+
+                        "fee":
+                            float(
+                                subscription_fee
+                                or 0
+                            )
+                    }
+                )
+
+                bot.client.set_leverage(
+                    bot.product_id
+                )
+
+                with ACCOUNTS_LOCK:
+
+                    BOT_ACCOUNTS[
+                        account_id
+                    ] = bot
+
+                logging.warning(
+                    f"CLIENT ADDED | "
+                    f"{name} | "
+                    f"{account_id}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        True,
+
+                    "account_id":
+                        account_id,
+
+                    "message":
+                        "Client account added successfully."
+                })
+
+            except Exception as e:
+
+                logging.exception(
+                    f"ADD CLIENT ERROR | {e}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        (
+                            "Could not add client. "
+                            f"{e}"
+                        )
+                }, status=500)
+
+            return
+
+        # ====================================================
+        # UPDATE SUBSCRIPTION
+        # ====================================================
+
+        if self.path == "/api/client/subscription":
+
+            account_id = str(
+                body.get(
+                    "account_id",
+                    ""
+                )
+            ).strip()
+
+            bot = get_bot(
+                account_id
+            )
+
+            if bot is None:
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Account not found."
+                }, status=404)
+
+                return
+
+            if (
+                bot.account_type
+                == "primary"
+            ):
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Primary account subscription cannot be changed."
+                }, status=400)
+
+                return
+
+            start = body.get(
+                "subscription_start"
+            )
+
+            expiry = body.get(
+                "subscription_expiry"
+            )
+
+            fee = body.get(
+                "subscription_fee",
+                0
+            )
+
+            try:
+
+                clients = (
+                    load_client_accounts()
+                )
+
+                found = False
+
+                for client in clients:
+
+                    if str(
+                        client.get(
+                            "account_id"
+                        )
+                    ) == account_id:
+
+                        client[
+                            "subscription_start"
+                        ] = start
+
+                        client[
+                            "subscription_expiry"
+                        ] = expiry
+
+                        client[
+                            "subscription_fee"
+                        ] = float(
+                            fee or 0
+                        )
+
+                        found = True
+
+                        break
+
+                if not found:
+
+                    self.send_json({
+
+                        "success":
+                            False,
+
+                        "message":
+                            "Client account not found."
+                    }, status=404)
+
+                    return
+
+                save_client_accounts(
+                    clients
+                )
+
+                bot.subscription = {
+
+                    "start":
+                        start,
+
+                    "expiry":
+                        expiry,
+
+                    "fee":
+                        float(
+                            fee or 0
+                        )
+                }
+
+                # ------------------------------------------------
+                # If expired after update, don't automatically
+                # start. If currently running and now expired,
+                # stop new trading.
+                # ------------------------------------------------
+
+                if not bot.subscription_active():
+
+                    bot.bot_enabled = False
+
+                    bot.stop_reason = (
+                        "SUBSCRIPTION EXPIRED"
+                    )
+
+                    bot.save()
+
+                self.send_json({
+
+                    "success":
+                        True,
+
+                    "message":
+                        "Subscription updated successfully."
+                })
+
+            except Exception as e:
+
+                logging.exception(
+                    f"SUBSCRIPTION UPDATE ERROR | {e}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Failed to update subscription."
+                }, status=500)
+
+            return
+
+        # ====================================================
+        # DELETE CLIENT
+        # ====================================================
+
+        if self.path == "/api/client/delete":
+
+            account_id = str(
+                body.get(
+                    "account_id",
+                    ""
+                )
+            ).strip()
+
+            bot = get_bot(
+                account_id
+            )
+
+            if bot is None:
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Account not found."
+                }, status=404)
+
+                return
+
+            if (
+                bot.account_type
+                == "primary"
+            ):
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        "Primary account cannot be deleted."
+                }, status=400)
+
+                return
+
+            try:
+
+                # ------------------------------------------------
+                # If position exists, close it first.
+                # ------------------------------------------------
+
+                pos = (
+                    bot.refresh_position(
+                        force=True
+                    )
+                )
+
+                if int(
+                    pos.get(
+                        "size",
+                        0
+                    )
+                ) != 0:
+
+                    bot.bot_enabled = False
+
+                    bot.stop_reason = (
+                        "CLIENT DELETED"
+                    )
+
+                    bot.save()
+
+                    bot.client.close_position(
+                        bot.product_id,
+                        int(
+                            pos["size"]
+                        )
+                    )
+
+                    for _ in range(50):
+
+                        time.sleep(
+                            0.2
+                        )
+
+                        try:
+
+                            check = (
+                                bot.client.position(
+                                    bot.product_id
+                                )
+                            )
+
+                            if int(
+                                check.get(
+                                    "size",
+                                    0
+                                )
+                            ) == 0:
+
+                                break
+
+                        except Exception:
+
+                            pass
+
+                # ------------------------------------------------
+                # Remove from accounts.json.
+                # ------------------------------------------------
+
+                clients = (
+                    load_client_accounts()
+                )
+
+                clients = [
+
+                    client
+
+                    for client in clients
+
+                    if str(
+                        client.get(
+                            "account_id"
+                        )
+                    ) != account_id
+                ]
+
+                save_client_accounts(
+                    clients
+                )
+
+                # ------------------------------------------------
+                # Remove active instance.
+                # ------------------------------------------------
+
+                with ACCOUNTS_LOCK:
+
+                    BOT_ACCOUNTS.pop(
+                        account_id,
+                        None
+                    )
+
+                logging.warning(
+                    f"CLIENT DELETED | "
+                    f"{account_id}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        True,
+
+                    "message":
+                        "Client account deleted successfully."
+                })
+
+            except Exception as e:
+
+                logging.exception(
+                    f"DELETE CLIENT ERROR | {e}"
+                )
+
+                self.send_json({
+
+                    "success":
+                        False,
+
+                    "message":
+                        (
+                            "Could not delete client. "
+                            f"{e}"
+                        )
+                }, status=500)
+
+            return
+
+        # ====================================================
+        # UNKNOWN
+        # ====================================================
+
+        self.send_json({
+
+            "success":
+                False,
+
+            "message":
+                "Unknown endpoint."
+        }, status=404)
+
+
+    # ========================================================
+    # SEND JSON
+    # ========================================================
+
+    def send_json(
+        self,
+        data,
+        status=200
+    ):
+
+        raw = json.dumps(
+            data,
+            separators=(",", ":")
+        ).encode(
+            "utf-8"
+        )
+
+        self.send_response(
+            status
+        )
+
+        self.send_header(
+            "Content-Type",
+            "application/json; charset=utf-8"
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(
+                len(raw)
+            )
+        )
+
+        self.send_header(
+            "Cache-Control",
+            "no-store, no-cache, must-revalidate"
+        )
+
+        self.send_header(
+            "Pragma",
+            "no-cache"
+        )
+
+        self.end_headers()
+
+        self.wfile.write(
+            raw
+        )
+
+
+    # ========================================================
+    # LOG
+    # ========================================================
+
+    def log_message(
+        self,
+        format,
+        *args
+    ):
+
+        return
+
+
+# ============================================================
+# DASHBOARD SERVER
+# ============================================================
+
+def start_dashboard():
+
+    def server_thread():
+
+        try:
+
+            server = (
+                ThreadingHTTPServer(
+                    (
+                        "127.0.0.1",
+                        DASHBOARD_PORT
+                    ),
+                    DashboardHandler
+                )
+            )
+
+            logging.warning(
+                "========================================"
+            )
+
+            logging.warning(
+                "DASHBOARD STARTED"
+            )
+
+            logging.warning(
+                f"PORT = {DASHBOARD_PORT}"
+            )
+
+            logging.warning(
+                f"ACCOUNTS = {len(BOT_ACCOUNTS)}"
+            )
+
+            logging.warning(
+                "MULTI ACCOUNT = ENABLED"
+            )
+
+            logging.warning(
+                "START/STOP = ENABLED"
+            )
+
+            logging.warning(
+                "TRADE HISTORY = ENABLED"
+            )
+
+            logging.warning(
+                "========================================"
+            )
+
+            server.serve_forever()
+
+        except Exception as e:
+
+            logging.exception(
+                f"DASHBOARD SERVER ERROR | {e}"
+            )
+
+    thread = threading.Thread(
+        target=server_thread,
+        daemon=True,
+        name="dashboard-server"
+    )
+
+    thread.start()
+
+
+# ============================================================
+# WEBSOCKET
+# ============================================================
+
+def run_websocket():
+
+    while True:
+
+        try:
+
+            logging.warning(
+                f"CONNECTING WS | {WS_URL}"
+            )
+
+            def on_open(
+                ws
+            ):
+
+                with ACCOUNTS_LOCK:
+
+                    for bot in (
+                        BOT_ACCOUNTS.values()
+                    ):
+
+                        bot.websocket_connected = (
+                            True
+                        )
+
+                payload = {
+
+                    "type":
+                        "subscribe",
+
+                    "payload": {
+
+                        "channels": [
+
+                            {
+
+                                "name":
+                                    "trades",
+
+                                "symbols": [
+                                    SYMBOL
+                                ]
+                            }
+                        ]
+                    }
+                }
+
+                ws.send(
+                    json.dumps(
+                        payload
+                    )
+                )
+
+                logging.warning(
+                    f"TRADES SUBSCRIBED | {SYMBOL}"
+                )
+
+
+            def on_message(
+                ws,
+                message
+            ):
+
+                current_time = (
+                    now_ist().isoformat()
+                )
+
+                try:
+
+                    data = json.loads(
+                        message
+                    )
+
+                    with ACCOUNTS_LOCK:
+
+                        for bot in (
+                            BOT_ACCOUNTS.values()
+                        ):
+
+                            bot.last_ws_message_time = (
+                                current_time
+                            )
+
+                    if data.get(
+                        "type"
+                    ) != "trades":
+
+                        return
+
+                    symbol = (
+                        data.get(
+                            "sy"
+                        )
+                        or
+                        data.get(
+                            "symbol"
+                        )
+                    )
+
+                    price_value = data.get(
+                        "p"
+                    )
+
+                    if (
+                        symbol != SYMBOL
+                        or
+                        price_value is None
+                    ):
+
+                        return
+
+                    try:
+
+                        price = Decimal(
+                            str(
+                                price_value
+                            )
+                        )
+
+                    except Exception:
+
+                        return
+
+                    with ACCOUNTS_LOCK:
+
+                        bots = list(
+                            BOT_ACCOUNTS.values()
+                        )
+
+                    for bot in bots:
+
+                        try:
+
+                            bot.price_tick(
+                                price
+                            )
+
+                        except Exception as e:
+
+                            logging.exception(
+                                f"{bot.account_name} | "
+                                f"PRICE TICK ERROR | {e}"
+                            )
+
+                except Exception as e:
+
+                    logging.exception(
+                        f"WS MESSAGE ERROR | {e}"
+                    )
+
+
+            def on_error(
+                ws,
+                error
+            ):
+
+                with ACCOUNTS_LOCK:
+
+                    for bot in (
+                        BOT_ACCOUNTS.values()
+                    ):
+
+                        bot.websocket_connected = (
+                            False
+                        )
+
+                logging.error(
+                    f"WS ERROR | {error}"
+                )
+
+
+            def on_close(
+                ws,
+                code,
+                msg
+            ):
+
+                with ACCOUNTS_LOCK:
+
+                    for bot in (
+                        BOT_ACCOUNTS.values()
+                    ):
+
+                        bot.websocket_connected = (
+                            False
+                        )
+
+                logging.warning(
+                    f"WS CLOSED | {code} | {msg}"
+                )
+
+
+            ws = websocket.WebSocketApp(
+
+                WS_URL,
+
+                on_open=
+                    on_open,
+
+                on_message=
+                    on_message,
+
+                on_error=
+                    on_error,
+
+                on_close=
+                    on_close
+            )
+
+            ws.run_forever(
+                ping_interval=30,
+                ping_timeout=10
+            )
+
+        except Exception as e:
+
+            logging.exception(
+                f"WS CRASH | {e}"
+            )
+
+        logging.warning(
+            f"RECONNECTING IN "
+            f"{RECONNECT_SECONDS}s"
+        )
+
+        time.sleep(
+            RECONNECT_SECONDS
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    logging.warning(
+        "============================================"
+    )
+
+    logging.warning(
+        "XAUTUSD MULTI ACCOUNT BOT"
+    )
+
+    logging.warning(
+        f"SYMBOL = {SYMBOL}"
+    )
+
+    logging.warning(
+        f"LEVERAGE = {LEVERAGE}x"
+    )
+
+    logging.warning(
+        f"BALANCE = {BALANCE_FRACTION * 100}%"
+    )
+
+    logging.warning(
+        "STRATEGY = NEW HIGH / NEW LOW"
+    )
+
+    logging.warning(
+        "SESSION = 05:30 IST"
+    )
+
+    logging.warning(
+        "TRADING START = 05:45 IST"
+    )
+
+    logging.warning(
+        "START = MANUAL FROM DASHBOARD"
+    )
+
+    logging.warning(
+        "EXISTING POSITION = RECOVERED, NOT CLOSED"
+    )
+
+    logging.warning(
+        "STOP = CLOSE POSITION + STOP BOT"
+    )
+
+    logging.warning(
+        "SATURDAY = 05:00 SQUARE OFF"
+    )
+
+    logging.warning(
+        "MULTI ACCOUNT = ENABLED"
+    )
+
+    logging.warning(
+        "DASHBOARD = SAME BOT PROCESS"
+    )
+
+    logging.warning(
+        f"DASHBOARD PORT = {DASHBOARD_PORT}"
+    )
+
+    logging.warning(
+        f"BASE DIR = {BASE_DIR}"
+    )
+
+    logging.warning(
+        "============================================"
+    )
+
+    try:
+
+        # ----------------------------------------------------
+        # Load all accounts.
+        # ----------------------------------------------------
+
+        load_all_accounts()
+
+        # ----------------------------------------------------
+        # Start dashboard.
+        # ----------------------------------------------------
+
+        start_dashboard()
+
+        # ----------------------------------------------------
+        # One public WebSocket feeds all accounts.
+        # ----------------------------------------------------
+
+        run_websocket()
+
+    except KeyboardInterrupt:
+
+        logging.warning(
+            "BOT PROCESS STOPPED"
+        )
+
+    except Exception as e:
+
+        logging.exception(
+            f"FATAL ERROR | {e}"
+        )
