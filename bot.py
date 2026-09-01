@@ -23,6 +23,18 @@ from dotenv import load_dotenv
 # ------------------------------------------------------------
 # 05:45 IST = NEW TRADING SESSION
 #
+# IMPORTANT:
+#   BOT MUST BE MANUALLY STARTED FROM DASHBOARD.
+#
+# STOP BOT:
+#   - Closes existing position.
+#   - Saves completed trade as MANUAL_STOP.
+#   - Prevents all new entries.
+#
+# START BOT:
+#   - Enables trading.
+#   - Only then can a new position be taken.
+#
 # FLAT:
 #   price > HIGH -> LONG
 #   price < LOW  -> SHORT
@@ -53,7 +65,6 @@ from dotenv import load_dotenv
 #
 # DASHBOARD:
 #   Runs from THIS SAME bot.py process.
-#   No dashboard_api.py required.
 #
 # TRADE HISTORY:
 #   Completed trades are permanently stored in
@@ -1117,7 +1128,24 @@ class Bot:
 
         self.active_trade = None
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Bot ALWAYS starts in STOPPED state.
+        # User must manually press START BOT.
+        # ----------------------------------------------------
+
+        self.bot_enabled = False
+
+        self.stop_reason = "START REQUIRED"
+
         self.load_state()
+
+        # Never automatically resume trading after process restart.
+        self.bot_enabled = False
+
+        self.stop_reason = "START REQUIRED"
+
+        self.save()
 
 
     # ========================================================
@@ -1247,7 +1275,13 @@ class Bot:
                 ),
 
             "active_trade":
-                self.active_trade
+                self.active_trade,
+
+            "bot_enabled":
+                self.bot_enabled,
+
+            "stop_reason":
+                self.stop_reason
         }
 
         tmp = (
@@ -1270,6 +1304,362 @@ class Bot:
             tmp,
             STATE_FILE
         )
+
+
+    # ========================================================
+    # START BOT
+    # ========================================================
+
+    def start_bot(self):
+
+        with self.lock:
+
+            # ------------------------------------------------
+            # Check exchange first.
+            # We do not allow START if an old position
+            # somehow remains open after STOP.
+            # ------------------------------------------------
+
+            try:
+
+                pos = position(
+                    self.product_id
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"START CHECK ERROR | {e}"
+                )
+
+                return {
+                    "success": False,
+                    "message":
+                        "Could not verify exchange position."
+                }
+
+            if pos["size"] != 0:
+
+                self.bot_enabled = False
+
+                self.stop_reason = (
+                    "OPEN POSITION EXISTS"
+                )
+
+                self.save()
+
+                return {
+                    "success": False,
+                    "message":
+                        "Cannot start: an open position still exists. "
+                        "Close it first."
+                }
+
+            self.last_position = 0
+
+            self.active_trade = None
+            self.sl = None
+            self.trade_high = None
+            self.trade_low = None
+
+            self.bot_enabled = True
+            self.stop_reason = None
+
+            self.save()
+
+            logging.warning(
+                "========================================"
+            )
+
+            logging.warning(
+                "BOT MANUALLY STARTED"
+            )
+
+            logging.warning(
+                f"START TIME = {now_ist().isoformat()}"
+            )
+
+            logging.warning(
+                "BOT CAN NOW TAKE NEW POSITIONS"
+            )
+
+            logging.warning(
+                "========================================"
+            )
+
+            return {
+                "success": True,
+                "bot_enabled": True,
+                "message":
+                    "Bot started. It can now take new positions."
+            }
+
+
+    # ========================================================
+    # STOP BOT
+    # ========================================================
+
+    def stop_bot(self):
+
+        with self.lock:
+
+            # ------------------------------------------------
+            # Disable NEW entries immediately.
+            # ------------------------------------------------
+
+            self.bot_enabled = False
+            self.stop_reason = "MANUAL STOP"
+
+            self.save()
+
+            logging.warning(
+                "========================================"
+            )
+
+            logging.warning(
+                "BOT MANUALLY STOPPED"
+            )
+
+            logging.warning(
+                f"STOP TIME = {now_ist().isoformat()}"
+            )
+
+            # ------------------------------------------------
+            # Check live exchange position.
+            # ------------------------------------------------
+
+            try:
+
+                pos = position(
+                    self.product_id
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"STOP POSITION CHECK ERROR | {e}"
+                )
+
+                return {
+                    "success": False,
+                    "bot_enabled": False,
+                    "message":
+                        "Bot stopped, but exchange position "
+                        "could not be checked."
+                }
+
+            size = int(
+                pos.get(
+                    "size",
+                    0
+                )
+            )
+
+            # ------------------------------------------------
+            # Already flat.
+            # ------------------------------------------------
+
+            if size == 0:
+
+                self.last_position = 0
+                self.sl = None
+                self.active_trade = None
+                self.trade_high = None
+                self.trade_low = None
+
+                self.save()
+
+                logging.warning(
+                    "NO OPEN POSITION"
+                )
+
+                logging.warning(
+                    "BOT IS STOPPED"
+                )
+
+                logging.warning(
+                    "========================================"
+                )
+
+                return {
+                    "success": True,
+                    "bot_enabled": False,
+                    "position_closed": True,
+                    "message":
+                        "Bot stopped. No open position."
+                }
+
+            # ------------------------------------------------
+            # Position exists -> close it.
+            # ------------------------------------------------
+
+            try:
+
+                logging.warning(
+                    f"STOP -> CLOSING POSITION | SIZE={size}"
+                )
+
+                close_position(
+                    self.product_id,
+                    size
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"STOP CLOSE ERROR | {e}"
+                )
+
+                logging.warning(
+                    "BOT REMAINS STOPPED"
+                )
+
+                logging.warning(
+                    "========================================"
+                )
+
+                return {
+                    "success": False,
+                    "bot_enabled": False,
+                    "position_closed": False,
+                    "message":
+                        "Bot stopped, but closing the position failed. "
+                        "Please check the exchange."
+                }
+
+            # ------------------------------------------------
+            # Wait for exchange confirmation.
+            # ------------------------------------------------
+
+            closed = False
+            final_position = None
+
+            for _ in range(50):
+
+                time.sleep(
+                    0.2
+                )
+
+                try:
+
+                    final_position = position(
+                        self.product_id
+                    )
+
+                    if (
+                        int(
+                            final_position.get(
+                                "size",
+                                0
+                            )
+                        ) == 0
+                    ):
+
+                        closed = True
+                        break
+
+                except Exception as e:
+
+                    logging.warning(
+                        f"STOP CLOSE VERIFY ERROR | {e}"
+                    )
+
+            # ------------------------------------------------
+            # Could not confirm close.
+            # ------------------------------------------------
+
+            if not closed:
+
+                self.last_position = (
+                    int(
+                        final_position.get(
+                            "size",
+                            size
+                        )
+                    )
+                    if final_position
+                    else size
+                )
+
+                self.save()
+
+                logging.error(
+                    "STOP FAILED TO CONFIRM FLAT POSITION"
+                )
+
+                logging.warning(
+                    "BOT REMAINS STOPPED"
+                )
+
+                logging.warning(
+                    "========================================"
+                )
+
+                return {
+                    "success": False,
+                    "bot_enabled": False,
+                    "position_closed": False,
+                    "message":
+                        "Bot stopped, but the position could not "
+                        "be confirmed closed."
+                }
+
+            # ------------------------------------------------
+            # Record manually closed trade.
+            # ------------------------------------------------
+
+            exit_price = (
+                self.last_price
+                or final_position.get("entry")
+                if final_position
+                else self.last_price
+            )
+
+            if exit_price is None:
+
+                exit_price = (
+                    self.active_trade.get(
+                        "entry_price"
+                    )
+                    if self.active_trade
+                    else None
+                )
+
+            self.finish_active_trade(
+                exit_price,
+                "MANUAL_STOP"
+            )
+
+            self.last_position = 0
+            self.sl = None
+            self.trade_high = None
+            self.trade_low = None
+
+            self.save()
+
+            logging.warning(
+                "POSITION CLOSED BY MANUAL STOP"
+            )
+
+            logging.warning(
+                "BOT IS STOPPED"
+            )
+
+            logging.warning(
+                "NO NEW POSITION CAN BE TAKEN"
+            )
+
+            logging.warning(
+                "========================================"
+            )
+
+            return {
+                "success": True,
+                "bot_enabled": False,
+                "position_closed": True,
+                "message":
+                    "Bot stopped and open position was closed."
+            }
 
 
     # ========================================================
@@ -1311,6 +1701,14 @@ class Bot:
         self.trade_low = None
 
         self.ready = False
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # New day NEVER automatically enables the bot.
+        # ----------------------------------------------------
+
+        self.bot_enabled = False
+        self.stop_reason = "START REQUIRED"
 
         self.save()
 
@@ -1466,6 +1864,19 @@ class Bot:
         price,
         sl
     ):
+
+        # ----------------------------------------------------
+        # HARD SAFETY:
+        # No entry unless manually started.
+        # ----------------------------------------------------
+
+        if not self.bot_enabled:
+
+            logging.info(
+                f"ENTRY BLOCKED | BOT STOPPED | {direction}"
+            )
+
+            return False
 
         if self.last_position != 0:
 
@@ -1704,6 +2115,8 @@ class Bot:
 
                     self.last_position = 0
 
+                    self.sl = None
+
                 return
 
             # ------------------------------------------------
@@ -1723,7 +2136,12 @@ class Bot:
             )
 
             # ------------------------------------------------
-            # Before 05:45
+            # BEFORE 05:45
+            #
+            # We intentionally allow preparation/range
+            # recovery to happen while STOPPED.
+            #
+            # But NO ENTRY can happen until START BOT.
             # ------------------------------------------------
 
             if now < strategy_start(
@@ -1768,10 +2186,16 @@ class Bot:
 
                 # --------------------------------------------
                 # STOP LOSS
+                #
+                # Only reverse if BOT IS RUNNING.
+                #
+                # If bot is stopped, it must NEVER open
+                # another position.
                 # --------------------------------------------
 
                 if (
-                    self.sl is not None
+                    self.bot_enabled
+                    and self.sl is not None
                     and (
                         (
                             old > 0
@@ -1838,7 +2262,7 @@ class Bot:
                     return
 
                 # --------------------------------------------
-                # EXTERNAL CLOSE
+                # EXTERNAL CLOSE / MANUAL CLOSE
                 # --------------------------------------------
 
                 self.finish_active_trade(
@@ -1866,10 +2290,16 @@ class Bot:
 
                     self.trade_high = price
 
-                    self.high = max(
-                        self.high,
-                        price
-                    )
+                    if self.high is not None:
+
+                        self.high = max(
+                            self.high,
+                            price
+                        )
+
+                    else:
+
+                        self.high = price
 
                     self.save()
 
@@ -1890,10 +2320,16 @@ class Bot:
 
                     self.trade_low = price
 
-                    self.low = min(
-                        self.low,
-                        price
-                    )
+                    if self.low is not None:
+
+                        self.low = min(
+                            self.low,
+                            price
+                        )
+
+                    else:
+
+                        self.low = price
 
                     self.save()
 
@@ -1904,6 +2340,15 @@ class Bot:
             # ------------------------------------------------
 
             self.last_position = 0
+
+            # ------------------------------------------------
+            # CRITICAL:
+            # If BOT STOPPED, do not take ANY new position.
+            # ------------------------------------------------
+
+            if not self.bot_enabled:
+
+                return
 
             # ------------------------------------------------
             # NEW HIGH
@@ -2159,6 +2604,9 @@ def dashboard_data():
             "bot_running":
                 False,
 
+            "bot_enabled":
+                False,
+
             "message":
                 "Bot is starting..."
         }
@@ -2239,8 +2687,23 @@ def dashboard_data():
             "success":
                 True,
 
+            # Process/server status.
             "bot_running":
                 True,
+
+            # Trading status.
+            "bot_enabled":
+                bot.bot_enabled,
+
+            "bot_status":
+                (
+                    "RUNNING"
+                    if bot.bot_enabled
+                    else "STOPPED"
+                ),
+
+            "stop_reason":
+                bot.stop_reason,
 
             "symbol":
                 SYMBOL,
@@ -2360,13 +2823,22 @@ class DashboardHandler(
 
         if self.path == "/api/health":
 
+            bot = BOT_INSTANCE
+
             self.send_json({
 
                 "success":
                     True,
 
                 "bot_running":
-                    True,
+                    bot is not None,
+
+                "bot_enabled":
+                    (
+                        bot.bot_enabled
+                        if bot
+                        else False
+                    ),
 
                 "symbol":
                     SYMBOL
@@ -2390,9 +2862,124 @@ class DashboardHandler(
         return super().do_GET()
 
 
+    def do_POST(self):
+
+        # ----------------------------------------------------
+        # START BOT
+        # ----------------------------------------------------
+
+        if self.path == "/api/bot/start":
+
+            bot = BOT_INSTANCE
+
+            if bot is None:
+
+                self.send_json(
+                    {
+                        "success": False,
+                        "message":
+                            "Bot is not ready yet."
+                    },
+                    status=503
+                )
+
+                return
+
+            try:
+
+                result = bot.start_bot()
+
+                self.send_json(
+                    result,
+                    status=(
+                        200
+                        if result.get("success")
+                        else 409
+                    )
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"START API ERROR | {e}"
+                )
+
+                self.send_json(
+                    {
+                        "success": False,
+                        "message":
+                            "Failed to start bot."
+                    },
+                    status=500
+                )
+
+            return
+
+        # ----------------------------------------------------
+        # STOP BOT
+        # ----------------------------------------------------
+
+        if self.path == "/api/bot/stop":
+
+            bot = BOT_INSTANCE
+
+            if bot is None:
+
+                self.send_json(
+                    {
+                        "success": False,
+                        "message":
+                            "Bot is not ready yet."
+                    },
+                    status=503
+                )
+
+                return
+
+            try:
+
+                result = bot.stop_bot()
+
+                self.send_json(
+                    result,
+                    status=(
+                        200
+                        if result.get("success")
+                        else 500
+                    )
+                )
+
+            except Exception as e:
+
+                logging.exception(
+                    f"STOP API ERROR | {e}"
+                )
+
+                self.send_json(
+                    {
+                        "success": False,
+                        "message":
+                            "Failed to stop bot."
+                    },
+                    status=500
+                )
+
+            return
+
+        self.send_json(
+            {
+                "success": False,
+                "message":
+                    "Unknown endpoint."
+            },
+            status=404
+        )
+
+
     def send_json(
         self,
-        data
+        data,
+        status=200
     ):
 
         raw = json.dumps(
@@ -2403,7 +2990,7 @@ class DashboardHandler(
         )
 
         self.send_response(
-            200
+            status
         )
 
         self.send_header(
@@ -2461,6 +3048,10 @@ def start_dashboard():
 
             logging.warning(
                 f"PORT = {DASHBOARD_PORT}"
+            )
+
+            logging.warning(
+                "START/STOP CONTROL = ENABLED"
             )
 
             logging.warning(
@@ -2653,7 +3244,7 @@ if __name__ == "__main__":
     )
 
     logging.warning(
-        "START = 05:45 IST"
+        "START = MANUAL FROM DASHBOARD"
     )
 
     logging.warning(
@@ -2674,6 +3265,10 @@ if __name__ == "__main__":
 
     logging.warning(
         f"TRADE HISTORY FILE = {TRADE_HISTORY_FILE}"
+    )
+
+    logging.warning(
+        "BOT STARTUP STATE = STOPPED"
     )
 
     logging.warning(
@@ -2712,4 +3307,4 @@ if __name__ == "__main__":
 
         logging.exception(
             f"FATAL ERROR | {e}"
-        )
+    )
