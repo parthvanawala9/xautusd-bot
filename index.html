@@ -2,48 +2,221 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>XAUTUSD Delta Trading Dashboard</title>
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>XAUTUSD Live Dashboard</title>
+
   <link rel="stylesheet" href="./style.css" />
 </head>
+
 <body>
+
   <div class="container">
-    <header>
-      <h1>XAUTUSD Live Dashboard</h1>
-      <span id="bot-status" class="status-offline">Connecting...</span>
+
+    <header class="header">
+
+      <div>
+        <h1>XAUTUSD</h1>
+        <p>Simple New High / New Low Bot</p>
+      </div>
+
+      <div id="bot-status" class="status offline">
+        CONNECTING
+      </div>
+
     </header>
 
-    <div class="grid">
-      <div class="card">
-        <h3>Current Price</h3>
-        <p id="current-price">$0.00</p>
-      </div>
-      <div class="card">
-        <h3>Wallet Balance</h3>
-        <p id="wallet-balance">$0.00</p>
-      </div>
-      <div class="card">
-        <h3>Total Trades</h3>
-        <p id="total-trades">0</p>
-      </div>
-      <div class="card">
-        <h3>Win Rate</h3>
-        <p id="win-rate">0.0%</p>
-      </div>
-    </div>
 
-    <div class="card position-card">
-      <h2>Active Position</h2>
-      <div class="pos-details">
-        <p><strong>Direction:</strong> <span id="pos-direction">FLAT</span></p>
-        <p><strong>Size:</strong> <span id="pos-size">0</span></p>
-        <p><strong>Entry Price:</strong> <span id="pos-entry">$0.00</span></p>
-        <p><strong>Stop Loss:</strong> <span id="pos-sl">$0.00</span></p>
-        <p><strong>Unrealized PnL:</strong> <span id="pos-pnl">$0.00</span></p>
+    <section class="cards">
+
+      <div class="card">
+        <span>Current Price</span>
+        <strong id="current-price">--</strong>
       </div>
-    </div>
+
+      <div class="card">
+        <span>Wallet Balance</span>
+        <strong id="wallet-balance">--</strong>
+      </div>
+
+      <div class="card">
+        <span>Today's HIGH</span>
+        <strong id="day-high">--</strong>
+      </div>
+
+      <div class="card">
+        <span>Today's LOW</span>
+        <strong id="day-low">--</strong>
+      </div>
+
+    </section>
+
+
+    <section class="position card">
+
+      <div class="section-title">
+        <h2>Active Position</h2>
+
+        <span id="position-direction"
+              class="position-flat">
+          FLAT
+        </span>
+      </div>
+
+      <div class="position-grid">
+
+        <div>
+          <span>Size</span>
+          <strong id="pos-size">0</strong>
+        </div>
+
+        <div>
+          <span>Entry Price</span>
+          <strong id="pos-entry">--</strong>
+        </div>
+
+        <div>
+          <span>Stop Loss</span>
+          <strong id="pos-sl">--</strong>
+        </div>
+
+        <div>
+          <span>Unrealized P&L</span>
+          <strong id="pos-pnl">--</strong>
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <section class="cards">
+
+      <div class="card">
+        <span>Total Closed Trades</span>
+        <strong id="total-trades">0</strong>
+      </div>
+
+      <div class="card">
+        <span>Winning Trades</span>
+        <strong id="winning-trades">0</strong>
+      </div>
+
+      <div class="card">
+        <span>Losing Trades</span>
+        <strong id="losing-trades">0</strong>
+      </div>
+
+      <div class="card">
+        <span>Win Rate</span>
+        <strong id="win-rate">0%</strong>
+      </div>
+
+    </section>
+
+
+    <section class="card">
+
+      <div class="section-title">
+
+        <h2>Bot Information</h2>
+
+        <span id="last-update">
+          --
+        </span>
+
+      </div>
+
+      <div class="info-grid">
+
+        <div>
+          <span>Symbol</span>
+          <strong id="symbol">XAUTUSD</strong>
+        </div>
+
+        <div>
+          <span>WebSocket</span>
+          <strong id="websocket-status">
+            --
+          </strong>
+        </div>
+
+        <div>
+          <span>Session Start</span>
+          <strong id="session-start">
+            --
+          </strong>
+        </div>
+
+        <div>
+          <span>Total P&L</span>
+          <strong id="total-pnl">
+            --
+          </strong>
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <section class="card">
+
+      <div class="section-title">
+        <h2>Recent Trades</h2>
+      </div>
+
+      <div class="table-wrap">
+
+        <table>
+
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Size</th>
+              <th>P&L</th>
+            </tr>
+          </thead>
+
+          <tbody id="trade-history">
+
+            <tr>
+              <td colspan="6">
+                No closed trades yet
+              </td>
+            </tr>
+
+          </tbody>
+
+        </table>
+
+      </div>
+
+    </section>
+
+
+    <footer>
+
+      <span>
+        Auto refresh: 3 seconds
+      </span>
+
+      <span id="connection-text">
+        Connecting...
+      </span>
+
+    </footer>
+
   </div>
 
+
   <script src="./app.js"></script>
+
 </body>
 </html>
