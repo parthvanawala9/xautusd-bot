@@ -1,0 +1,85 @@
+name: Get Current Dashboard URL
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  get-url:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Prepare SSH
+        env:
+          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
+        run: |
+          set -e
+
+          mkdir -p ~/.ssh
+
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+
+          chmod 600 ~/.ssh/oracle.key
+
+      - name: Read Current Cloudflare URL
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "CURRENT CLOUDFLARE DASHBOARD URL"
+          echo "========================================"
+
+          timeout 90 ssh \
+            -4 \
+            -i ~/.ssh/oracle.key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
+            -o GSSAPIAuthentication=no \
+            -o PreferredAuthentications=publickey \
+            -o PubkeyAuthentication=yes \
+            -o IdentitiesOnly=yes \
+            -o AddressFamily=inet \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          echo
+          echo "===== CLOUDFLARE SERVICE ====="
+
+          sudo systemctl --no-pager status \
+            xautusd-cloudflared.service \
+            || true
+
+          echo
+          echo "===== CLOUDFLARED PROCESS ====="
+
+          pgrep -af cloudflared || true
+
+          echo
+          echo "===== CURRENT CLOUDFLARE LOG ====="
+
+          sudo tail -n 100 \
+            /home/opc/xautusd-bot/cloudflared.log \
+            || true
+
+          echo
+          echo "===== URL FOUND ====="
+
+          sudo grep -oE \
+            'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+            /home/opc/xautusd-bot/cloudflared.log \
+            | tail -n 1 \
+            || true
+
+          EOF
