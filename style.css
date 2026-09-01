@@ -2,212 +2,231 @@
   box-sizing: border-box;
 }
 
+
 body {
   margin: 0;
-  background: #0f1117;
-  color: #f5f7fa;
   font-family:
     Arial,
     Helvetica,
     sans-serif;
+
+  background: #f4f6f8;
+  color: #111827;
 }
 
+
 .container {
-  width: min(1200px, 100%);
-  margin: auto;
+  width: 100%;
+  max-width: 1100px;
+
+  margin: 0 auto;
+
   padding: 20px;
 }
 
+
 .header {
   display: flex;
-  align-items: center;
+
   justify-content: space-between;
-  gap: 20px;
+  align-items: center;
+
+  gap: 15px;
+
   margin-bottom: 20px;
 }
 
+
 .header h1 {
   margin: 0;
-  font-size: 30px;
+
+  font-size: 28px;
 }
 
+
 .header p {
-  margin: 5px 0 0;
-  color: #9ca3af;
+  margin: 6px 0 0;
+
+  color: #6b7280;
+
+  font-size: 14px;
 }
+
 
 .status {
   padding: 9px 14px;
+
   border-radius: 999px;
+
   font-size: 13px;
+
   font-weight: 700;
-  letter-spacing: 0.4px;
+
+  white-space: nowrap;
 }
+
 
 .status.online {
-  background: #123d29;
-  color: #55e69a;
+  background: #dcfce7;
+  color: #166534;
 }
 
-.status.warning {
-  background: #403516;
-  color: #ffd45c;
-}
 
 .status.offline {
-  background: #421b21;
-  color: #ff7784;
+  background: #fee2e2;
+  color: #991b1b;
 }
 
-.cards {
+
+.grid {
   display: grid;
+
   grid-template-columns:
-    repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 14px;
+    repeat(4, 1fr);
+
+  gap: 15px;
+
+  margin-bottom: 15px;
 }
+
 
 .card {
-  background: #181b23;
-  border: 1px solid #272b35;
-  border-radius: 16px;
-  padding: 18px;
+  background: white;
+
+  border: 1px solid #e5e7eb;
+
+  border-radius: 14px;
+
+  padding: 20px;
+
+  box-shadow:
+    0 2px 8px
+    rgba(0, 0, 0, 0.04);
 }
 
-.card > span,
-.position-grid span,
-.info-grid span {
-  display: block;
-  color: #9ca3af;
-  font-size: 13px;
-  margin-bottom: 8px;
+
+.card h2 {
+  margin-top: 0;
 }
 
-.card > strong {
-  display: block;
-  font-size: 25px;
+
+.card h3 {
+  margin: 0 0 10px;
+
+  font-size: 14px;
+
+  color: #6b7280;
 }
 
-.position {
-  margin-bottom: 14px;
-}
 
-.section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-  margin-bottom: 18px;
-}
-
-.section-title h2 {
+.card p {
   margin: 0;
-  font-size: 19px;
 }
+
+
+#current-price,
+#today-high,
+#today-low,
+#wallet-balance {
+  font-size: 25px;
+
+  font-weight: 700;
+}
+
+
+.position-card {
+  margin-bottom: 15px;
+}
+
 
 .position-grid,
 .info-grid {
   display: grid;
+
   grid-template-columns:
-    repeat(4, minmax(0, 1fr));
+    repeat(5, 1fr);
+
   gap: 15px;
 }
 
-.position-grid strong,
-.info-grid strong {
-  font-size: 18px;
+
+.position-grid div,
+.info-grid div {
+  display: flex;
+
+  flex-direction: column;
+
+  gap: 7px;
 }
 
-.position-flat {
-  color: #9ca3af;
-}
 
-.position-long {
-  color: #38e58a;
-}
+.position-grid span,
+.info-grid span {
+  color: #6b7280;
 
-.position-short {
-  color: #ff6470;
-}
-
-.profit {
-  color: #38e58a !important;
-}
-
-.loss {
-  color: #ff6470 !important;
-}
-
-.table-wrap {
-  width: 100%;
-  overflow-x: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 650px;
-}
-
-th,
-td {
-  padding: 12px 10px;
-  text-align: left;
-  border-bottom: 1px solid #292d37;
   font-size: 13px;
 }
 
-th {
-  color: #9ca3af;
-  font-weight: 600;
+
+.position-grid strong,
+.info-grid strong {
+  font-size: 17px;
 }
 
-footer {
-  display: flex;
-  justify-content: space-between;
-  gap: 15px;
-  color: #6f7682;
-  font-size: 12px;
-  padding: 18px 2px;
+
+@media (
+  max-width: 800px
+) {
+
+  .grid {
+    grid-template-columns:
+      repeat(2, 1fr);
+  }
+
+
+  .position-grid,
+  .info-grid {
+    grid-template-columns:
+      repeat(2, 1fr);
+  }
+
 }
 
-@media (max-width: 800px) {
+
+@media (
+  max-width: 520px
+) {
 
   .container {
     padding: 12px;
   }
 
-  .header h1 {
-    font-size: 24px;
-  }
-
-  .cards {
-    grid-template-columns:
-      repeat(2, minmax(0, 1fr));
-  }
-
-  .position-grid,
-  .info-grid {
-    grid-template-columns:
-      repeat(2, minmax(0, 1fr));
-  }
-
-}
-
-@media (max-width: 480px) {
 
   .header {
     align-items: flex-start;
+
     flex-direction: column;
   }
 
-  .cards {
+
+  .header h1 {
+    font-size: 23px;
+  }
+
+
+  .grid {
     grid-template-columns: 1fr;
   }
+
 
   .position-grid,
   .info-grid {
     grid-template-columns: 1fr;
+  }
+
+
+  .card {
+    padding: 16px;
   }
 
 }
