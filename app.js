@@ -6,6 +6,20 @@ let dashboardLoading = false;
 
 
 // ============================================================
+// XAUTUSD CONTRACT SETTINGS
+// ============================================================
+//
+// Delta XAUTUSD:
+// 1 lot = 0.001 XAUT
+//
+// If the backend sends contract_value, we use it.
+// Otherwise XAUTUSD fallback is 0.001.
+//
+
+const DEFAULT_XAUT_CONTRACT_VALUE = 0.001;
+
+
+// ============================================================
 // FORMATTERS
 // ============================================================
 
@@ -49,6 +63,206 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#039;");
+}
+
+
+// ============================================================
+// P&L HELPERS
+// ============================================================
+
+function getContractValue(account) {
+
+  const possibleValues = [
+
+    account?.contract_value,
+
+    account?.contract_value_usd,
+
+    account?.contract_unit_value,
+
+    account?.position?.contract_value,
+
+    account?.position?.contract_value_usd,
+
+    account?.position?.contract_unit_value
+
+  ];
+
+
+  for (const value of possibleValues) {
+
+    const n = Number(value);
+
+    if (
+      Number.isFinite(n) &&
+      n > 0
+    ) {
+
+      return n;
+    }
+  }
+
+
+  return DEFAULT_XAUT_CONTRACT_VALUE;
+}
+
+
+function calculateFallbackUnrealizedPnl(
+  account
+) {
+
+  const position =
+    account?.position || {};
+
+
+  const direction =
+    String(
+      position.direction || ""
+    ).toUpperCase();
+
+
+  const size =
+    Number(
+      position.size || 0
+    );
+
+
+  const entry =
+    Number(
+      position.entry_price
+    );
+
+
+  const current =
+    Number(
+      account.current_price
+    );
+
+
+  if (
+    !Number.isFinite(size) ||
+    size === 0
+  ) {
+
+    return 0;
+  }
+
+
+  if (
+    direction !== "LONG" &&
+    direction !== "SHORT"
+  ) {
+
+    return 0;
+  }
+
+
+  if (
+    !Number.isFinite(entry) ||
+    !Number.isFinite(current)
+  ) {
+
+    return 0;
+  }
+
+
+  const contractValue =
+    getContractValue(account);
+
+
+  let pnl = 0;
+
+
+  if (
+    direction === "LONG"
+  ) {
+
+    pnl =
+      (
+        current -
+        entry
+      ) *
+      Math.abs(size) *
+      contractValue;
+
+  } else {
+
+    pnl =
+      (
+        entry -
+        current
+      ) *
+      Math.abs(size) *
+      contractValue;
+  }
+
+
+  if (
+    !Number.isFinite(pnl)
+  ) {
+
+    return 0;
+  }
+
+
+  return pnl;
+}
+
+
+function getLiveUnrealizedPnl(
+  account
+) {
+
+  const position =
+    account?.position || {};
+
+
+  const size =
+    Number(
+      position.size || 0
+    );
+
+
+  if (
+    !Number.isFinite(size) ||
+    size === 0
+  ) {
+
+    return 0;
+  }
+
+
+  /*
+   * First try the value supplied by the bot.
+   *
+   * IMPORTANT:
+   * Delta can sometimes return 0 while the position
+   * is still open. In that case we calculate it locally.
+   */
+
+  const exchangePnl =
+    Number(
+      position.unrealized_pnl
+    );
+
+
+  if (
+    Number.isFinite(exchangePnl) &&
+    exchangePnl !== 0
+  ) {
+
+    return exchangePnl;
+  }
+
+
+  /*
+   * Backend value is missing/zero.
+   * Calculate from entry/current/size.
+   */
+
+  return calculateFallbackUnrealizedPnl(
+    account
+  );
 }
 
 
@@ -651,17 +865,24 @@ function renderRunningTrade(
         <div class="running-trade-header">
 
           <div>
-            <h3>Running Trade</h3>
+
+            <h3>
+              Running Trade
+            </h3>
 
             <span class="running-trade-status">
               NO OPEN TRADE
             </span>
+
           </div>
 
         </div>
 
+
         <div class="running-trade-empty">
+
           No trade is currently running on this account.
+
         </div>
 
       </div>
@@ -680,6 +901,20 @@ function renderRunningTrade(
     direction === "LONG"
       ? "running-long"
       : "running-short";
+
+
+  const unrealizedPnl =
+    getLiveUnrealizedPnl(
+      account
+    );
+
+
+  const pnlClass =
+    unrealizedPnl > 0
+      ? "trade-profit"
+      : unrealizedPnl < 0
+        ? "trade-loss"
+        : "trade-flat";
 
 
   return `
@@ -713,63 +948,95 @@ function renderRunningTrade(
       <div class="running-trade-grid">
 
         <div>
-          <span>Direction</span>
+
+          <span>
+            Direction
+          </span>
+
           <strong class="${directionClass}">
             ${escapeHtml(
               direction
             )}
           </strong>
+
         </div>
 
 
         <div>
-          <span>Size</span>
+
+          <span>
+            Size
+          </span>
+
           <strong>
             ${number(
               size,
               0
             )}
           </strong>
+
         </div>
 
 
         <div>
-          <span>Entry Price</span>
+
+          <span>
+            Entry Price
+          </span>
+
           <strong>
             ${number(
               position.entry_price
             )}
           </strong>
+
         </div>
 
 
         <div>
-          <span>Current Price</span>
+
+          <span>
+            Current Price
+          </span>
+
           <strong>
             ${number(
               account.current_price
             )}
           </strong>
+
         </div>
 
 
         <div>
-          <span>Stop Loss</span>
+
+          <span>
+            Stop Loss
+          </span>
+
           <strong>
             ${number(
               position.stop_loss
             )}
           </strong>
+
         </div>
 
 
         <div>
-          <span>Unrealized P&amp;L</span>
-          <strong>
+
+          <span>
+            Unrealized P&amp;L
+          </span>
+
+          <strong class="${pnlClass}">
+
             ${money(
-              position.unrealized_pnl
+              unrealizedPnl
             )}
+
           </strong>
+
         </div>
 
       </div>
@@ -814,53 +1081,80 @@ function renderPerformance(
 
         <div class="performance-card">
 
-          <h4>Today</h4>
+          <h4>
+            Today
+          </h4>
 
 
           <div class="performance-stats">
 
             <div>
-              <span>Total Trades</span>
+
+              <span>
+                Total Trades
+              </span>
+
               <strong>
                 ${today.total_trades ?? 0}
               </strong>
+
             </div>
 
 
             <div>
-              <span>Winning Trades</span>
+
+              <span>
+                Winning Trades
+              </span>
+
               <strong>
                 ${today.winning_trades ?? 0}
               </strong>
+
             </div>
 
 
             <div>
-              <span>Losing Trades</span>
+
+              <span>
+                Losing Trades
+              </span>
+
               <strong>
                 ${today.losing_trades ?? 0}
               </strong>
+
             </div>
 
 
             <div>
-              <span>Win Rate</span>
+
+              <span>
+                Win Rate
+              </span>
+
               <strong>
                 ${number(
                   today.win_rate,
                   1
                 )}%
               </strong>
+
             </div>
 
 
             <div>
-              <span>Today P&amp;L</span>
+
+              <span>
+                Today P&amp;L
+              </span>
+
               <strong>
                 ${money(
                   today.pnl
                 )}
               </strong>
+
             </div>
 
           </div>
@@ -870,53 +1164,80 @@ function renderPerformance(
 
         <div class="performance-card">
 
-          <h4>All Time</h4>
+          <h4>
+            All Time
+          </h4>
 
 
           <div class="performance-stats">
 
             <div>
-              <span>Total Trades</span>
+
+              <span>
+                Total Trades
+              </span>
+
               <strong>
                 ${allTime.total_trades ?? 0}
               </strong>
+
             </div>
 
 
             <div>
-              <span>Winning Trades</span>
+
+              <span>
+                Winning Trades
+              </span>
+
               <strong>
                 ${allTime.winning_trades ?? 0}
               </strong>
+
             </div>
 
 
             <div>
-              <span>Losing Trades</span>
+
+              <span>
+                Losing Trades
+              </span>
+
               <strong>
                 ${allTime.losing_trades ?? 0}
               </strong>
+
             </div>
 
 
             <div>
-              <span>Win Rate</span>
+
+              <span>
+                Win Rate
+              </span>
+
               <strong>
                 ${number(
                   allTime.win_rate,
                   1
                 )}%
               </strong>
+
             </div>
 
 
             <div>
-              <span>All-Time P&amp;L</span>
+
+              <span>
+                All-Time P&amp;L
+              </span>
+
               <strong>
                 ${money(
                   allTime.pnl
                 )}
               </strong>
+
             </div>
 
           </div>
@@ -986,70 +1307,105 @@ function renderTradeHistory(
               <div class="trade-history-row">
 
                 <div>
-                  <span>Date</span>
+
+                  <span>
+                    Date
+                  </span>
+
                   <strong>
                     ${escapeHtml(
                       trade.date || "--"
                     )}
                   </strong>
+
                 </div>
 
 
                 <div>
-                  <span>Direction</span>
+
+                  <span>
+                    Direction
+                  </span>
+
                   <strong>
                     ${escapeHtml(
                       trade.direction || "--"
                     )}
                   </strong>
+
                 </div>
 
 
                 <div>
-                  <span>Entry</span>
+
+                  <span>
+                    Entry
+                  </span>
+
                   <strong>
                     ${number(
                       trade.entry_price
                     )}
                   </strong>
+
                 </div>
 
 
                 <div>
-                  <span>Exit</span>
+
+                  <span>
+                    Exit
+                  </span>
+
                   <strong>
                     ${number(
                       trade.exit_price
                     )}
                   </strong>
+
                 </div>
 
 
                 <div>
-                  <span>Size</span>
+
+                  <span>
+                    Size
+                  </span>
+
                   <strong>
                     ${trade.size ?? 0}
                   </strong>
+
                 </div>
 
 
                 <div>
-                  <span>Reason</span>
+
+                  <span>
+                    Reason
+                  </span>
+
                   <strong>
                     ${escapeHtml(
                       trade.reason || "--"
                     )}
                   </strong>
+
                 </div>
 
 
                 <div>
-                  <span>P&amp;L</span>
+
+                  <span>
+                    P&amp;L
+                  </span>
+
                   <strong class="${pnlClass}">
                     ${money(
                       pnl
                     )}
                   </strong>
+
                 </div>
 
               </div>
@@ -1073,6 +1429,77 @@ function renderTradeHistory(
   }
 
 
+  let runningTradeBanner = "";
+
+
+  if (
+    hasRunningTrade
+  ) {
+
+    const runningPnl =
+      getLiveUnrealizedPnl(
+        account
+      );
+
+
+    const runningPnlClass =
+      runningPnl > 0
+        ? "trade-profit"
+        : runningPnl < 0
+          ? "trade-loss"
+          : "trade-flat";
+
+
+    runningTradeBanner = `
+
+      <div class="running-history-banner">
+
+        <strong>
+          ● RUNNING TRADE
+        </strong>
+
+
+        <span>
+
+          ${escapeHtml(
+            position.direction ||
+            "POSITION"
+          )}
+
+          • Entry
+
+          ${number(
+            position.entry_price
+          )}
+
+          • Size
+
+          ${position.size ?? 0}
+
+          • Current
+
+          ${number(
+            account.current_price
+          )}
+
+          • Unrealized
+
+          <strong class="${runningPnlClass}">
+
+            ${money(
+              runningPnl
+            )}
+
+          </strong>
+
+        </span>
+
+      </div>
+
+    `;
+  }
+
+
   return `
 
     <div class="trade-history-section">
@@ -1084,59 +1511,21 @@ function renderTradeHistory(
         </h3>
 
         <span>
-          ${history.length} closed trade${
+
+          ${history.length}
+
+          closed trade${
             history.length === 1
               ? ""
               : "s"
           }
+
         </span>
 
       </div>
 
 
-      ${
-        hasRunningTrade
-          ? `
-
-            <div class="running-history-banner">
-
-              <strong>
-                ● RUNNING TRADE
-              </strong>
-
-              <span>
-                ${
-                  escapeHtml(
-                    position.direction ||
-                    "POSITION"
-                  )
-                }
-                •
-                Entry
-                ${
-                  number(
-                    position.entry_price
-                  )
-                }
-                •
-                Size
-                ${
-                  position.size ?? 0
-                }
-                •
-                Unrealized
-                ${
-                  money(
-                    position.unrealized_pnl
-                  )
-                }
-              </span>
-
-            </div>
-
-          `
-          : ""
-      }
+      ${runningTradeBanner}
 
 
       <div class="trade-history-list">
@@ -1173,6 +1562,20 @@ function renderAccount(
 
   const position =
     account.position || {};
+
+
+  const unrealizedPnl =
+    getLiveUnrealizedPnl(
+      account
+    );
+
+
+  const unrealizedPnlClass =
+    unrealizedPnl > 0
+      ? "trade-profit"
+      : unrealizedPnl < 0
+        ? "trade-loss"
+        : "trade-flat";
 
 
   let subscriptionText =
@@ -1227,16 +1630,20 @@ function renderAccount(
 
 
           <h2>
+
             ${escapeHtml(
               account.account_name
             )}
+
           </h2>
 
 
           <p>
+
             ${escapeHtml(
               account.account_id
             )}
+
           </p>
 
         </div>
@@ -1262,9 +1669,11 @@ function renderAccount(
       <div class="subscription-bar">
 
         <span>
+
           ${escapeHtml(
             subscriptionText
           )}
+
         </span>
 
 
@@ -1275,9 +1684,11 @@ function renderAccount(
             ? `
 
               <strong>
+
                 Fee: $${number(
                   subscription.fee
                 )}
+
               </strong>
 
             `
@@ -1323,9 +1734,11 @@ function renderAccount(
           </span>
 
           <strong>
+
             ${number(
               account.current_price
             )}
+
           </strong>
 
         </div>
@@ -1338,10 +1751,12 @@ function renderAccount(
           </span>
 
           <strong>
+
             ${escapeHtml(
               position.direction ||
               "FLAT"
             )}
+
           </strong>
 
         </div>
@@ -1354,7 +1769,9 @@ function renderAccount(
           </span>
 
           <strong>
+
             ${position.size ?? 0}
+
           </strong>
 
         </div>
@@ -1367,9 +1784,11 @@ function renderAccount(
           </span>
 
           <strong>
+
             ${number(
               position.entry_price
             )}
+
           </strong>
 
         </div>
@@ -1382,9 +1801,11 @@ function renderAccount(
           </span>
 
           <strong>
+
             ${number(
               position.stop_loss
             )}
+
           </strong>
 
         </div>
@@ -1396,10 +1817,12 @@ function renderAccount(
             Unrealized P&amp;L
           </span>
 
-          <strong>
+          <strong class="${unrealizedPnlClass}">
+
             ${money(
-              position.unrealized_pnl
+              unrealizedPnl
             )}
+
           </strong>
 
         </div>
@@ -1412,11 +1835,13 @@ function renderAccount(
           </span>
 
           <strong>
+
             ${money(
               account.statistics
                 ?.all_time
                 ?.pnl
             )}
+
           </strong>
 
         </div>
@@ -1451,7 +1876,9 @@ function renderAccount(
                   account.account_id
                 )}')"
               >
+
                 ■ STOP BOT
+
               </button>
 
             `
@@ -1464,7 +1891,9 @@ function renderAccount(
                   account.account_id
                 )}')"
               >
+
                 ▶ START BOT
+
               </button>
 
             `
@@ -1482,7 +1911,9 @@ function renderAccount(
                   account.account_id
                 )}')"
               >
+
                 EDIT SUBSCRIPTION
+
               </button>
 
 
@@ -1492,7 +1923,9 @@ function renderAccount(
                   account.account_id
                 )}')"
               >
+
                 DELETE CLIENT
+
               </button>
 
             `
@@ -1518,11 +1951,11 @@ function renderAccount(
                 </span>
 
                 <strong>
-                  ${
-                    formatDate(
-                      subscription.start
-                    )
-                  }
+
+                  ${formatDate(
+                    subscription.start
+                  )}
+
                 </strong>
 
               </div>
@@ -1535,11 +1968,11 @@ function renderAccount(
                 </span>
 
                 <strong>
-                  ${
-                    formatDate(
-                      subscription.expiry
-                    )
-                  }
+
+                  ${formatDate(
+                    subscription.expiry
+                  )}
+
                 </strong>
 
               </div>
