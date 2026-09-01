@@ -63,11 +63,15 @@ async function apiFetch(
 
   const requestOptions = {
     ...options,
+
     headers: {
       ...(options.headers || {}),
-      "Content-Type": "application/json",
-      "Accept": "application/json",
-      "X-Admin-Pin": adminPin
+      "Content-Type":
+        "application/json",
+      "Accept":
+        "application/json",
+      "X-Admin-Pin":
+        adminPin
     }
   };
 
@@ -80,19 +84,17 @@ async function apiFetch(
       requestOptions
     );
 
-  } catch (error) {
+  } catch {
 
     throw new Error(
       "Dashboard server is unreachable."
     );
   }
 
-
   const contentType =
     response.headers.get(
       "content-type"
     ) || "";
-
 
   let data = null;
 
@@ -139,7 +141,6 @@ async function apiFetch(
     );
   }
 
-
   if (
     !response.ok ||
     data?.success === false
@@ -150,7 +151,6 @@ async function apiFetch(
       `Request failed (HTTP ${response.status}).`
     );
   }
-
 
   return data;
 }
@@ -200,6 +200,7 @@ async function startBot(
       "/api/bot/start",
       {
         method: "POST",
+
         body: JSON.stringify({
           account_id:
             accountId
@@ -238,6 +239,7 @@ async function stopBot(
       "/api/bot/stop",
       {
         method: "POST",
+
         body: JSON.stringify({
           account_id:
             accountId
@@ -368,33 +370,51 @@ async function addClient() {
       $("client-form");
 
     if (form) {
+
       form.style.display =
         "none";
     }
 
 
     if ($("client-name")) {
-      $("client-name").value = "";
+
+      $("client-name").value =
+        "";
     }
+
 
     if ($("client-api-key")) {
-      $("client-api-key").value = "";
+
+      $("client-api-key").value =
+        "";
     }
+
 
     if ($("client-api-secret")) {
-      $("client-api-secret").value = "";
+
+      $("client-api-secret").value =
+        "";
     }
+
 
     if ($("client-start")) {
-      $("client-start").value = "";
+
+      $("client-start").value =
+        "";
     }
+
 
     if ($("client-expiry")) {
-      $("client-expiry").value = "";
+
+      $("client-expiry").value =
+        "";
     }
 
+
     if ($("client-fee")) {
-      $("client-fee").value = "";
+
+      $("client-fee").value =
+        "";
     }
 
 
@@ -561,6 +581,7 @@ function renderAccount(
   let subscriptionText =
     "PRIMARY ACCOUNT";
 
+
   if (!primary) {
 
     if (subscription.expired) {
@@ -645,11 +666,13 @@ function renderAccount(
         ${
           !primary &&
           subscription.fee !== undefined
-            ? `<strong>
+            ? `
+              <strong>
                 Fee: $${number(
                   subscription.fee
                 )}
-              </strong>`
+              </strong>
+            `
             : ""
         }
 
@@ -660,6 +683,7 @@ function renderAccount(
 
         <div>
           <span>Balance</span>
+
           <strong>
             ${
               account.balance === null ||
@@ -676,6 +700,7 @@ function renderAccount(
 
         <div>
           <span>Price</span>
+
           <strong>
             ${number(
               account.current_price
@@ -686,6 +711,7 @@ function renderAccount(
 
         <div>
           <span>Position</span>
+
           <strong>
             ${escapeHtml(
               position.direction ||
@@ -697,6 +723,7 @@ function renderAccount(
 
         <div>
           <span>Size</span>
+
           <strong>
             ${position.size ?? 0}
           </strong>
@@ -705,6 +732,7 @@ function renderAccount(
 
         <div>
           <span>Entry</span>
+
           <strong>
             ${number(
               position.entry_price
@@ -715,6 +743,7 @@ function renderAccount(
 
         <div>
           <span>Stop Loss</span>
+
           <strong>
             ${number(
               position.stop_loss
@@ -725,6 +754,7 @@ function renderAccount(
 
         <div>
           <span>Unrealized P&L</span>
+
           <strong>
             ${money(
               position.unrealized_pnl
@@ -735,6 +765,7 @@ function renderAccount(
 
         <div>
           <span>All-Time P&L</span>
+
           <strong>
             ${money(
               account.statistics
@@ -751,7 +782,9 @@ function renderAccount(
 
         ${
           running
+
             ? `
+
               <button
                 class="danger-button"
                 onclick="stopBot('${escapeHtml(
@@ -760,8 +793,11 @@ function renderAccount(
               >
                 ■ STOP BOT
               </button>
+
             `
+
             : `
+
               <button
                 class="success-button"
                 onclick="startBot('${escapeHtml(
@@ -770,13 +806,16 @@ function renderAccount(
               >
                 ▶ START BOT
               </button>
+
             `
         }
 
 
         ${
           !primary
+
             ? `
+
               <button
                 class="secondary-button"
                 onclick="updateSubscription('${escapeHtml(
@@ -786,6 +825,7 @@ function renderAccount(
                 EDIT SUBSCRIPTION
               </button>
 
+
               <button
                 class="delete-button"
                 onclick="deleteClient('${escapeHtml(
@@ -794,7 +834,9 @@ function renderAccount(
               >
                 DELETE CLIENT
               </button>
+
             `
+
             : ""
         }
 
@@ -803,11 +845,15 @@ function renderAccount(
 
       ${
         !primary
+
           ? `
+
             <div class="subscription-details">
 
               <div>
+
                 <span>Start</span>
+
                 <strong>
                   ${
                     formatDate(
@@ -815,10 +861,14 @@ function renderAccount(
                     )
                   }
                 </strong>
+
               </div>
 
+
               <div>
+
                 <span>Expiry</span>
+
                 <strong>
                   ${
                     formatDate(
@@ -826,14 +876,18 @@ function renderAccount(
                     )
                   }
                 </strong>
+
               </div>
 
             </div>
+
           `
+
           : ""
       }
 
     </section>
+
   `;
 }
 
@@ -860,6 +914,7 @@ function formatDate(
         date.getTime()
       )
     ) {
+
       return String(value);
     }
 
@@ -880,14 +935,11 @@ async function loadDashboard(
   force = false
 ) {
 
-  // ----------------------------------------------------------
-  // Prevent overlapping 3-second requests.
-  // ----------------------------------------------------------
-
   if (
     dashboardLoading &&
     !force
   ) {
+
     return;
   }
 
@@ -895,6 +947,7 @@ async function loadDashboard(
   if (
     dashboardLoading
   ) {
+
     return;
   }
 
@@ -950,9 +1003,13 @@ async function loadDashboard(
 
       $("bot-status").textContent =
         data.server_online === false
+
           ? "OFFLINE"
+
           : primary?.bot_enabled
+
             ? "SYSTEM ONLINE"
+
             : "SYSTEM ONLINE • BOT STOPPED";
     }
 
