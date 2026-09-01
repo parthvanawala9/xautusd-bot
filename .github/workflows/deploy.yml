@@ -1,13 +1,20 @@
-name: XAUTUSD SSH Diagnostic
+name: Deploy XAUTUSD Bot + Dashboard
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
 
 permissions:
   contents: read
 
+
 jobs:
-  ssh-diagnostic:
+
+  deploy:
+
     runs-on: ubuntu-latest
 
     steps:
@@ -21,7 +28,7 @@ jobs:
 
 
       # =====================================================
-      # PREPARE SSH KEY
+      # PREPARE SSH
       # =====================================================
 
       - name: Prepare SSH
@@ -29,11 +36,8 @@ jobs:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
 
         run: |
-          set -e
 
-          echo "========================================"
-          echo "PREPARING SSH KEY"
-          echo "========================================"
+          set -e
 
           mkdir -p ~/.ssh
 
@@ -45,207 +49,669 @@ jobs:
           ssh-keygen \
             -y \
             -f ~/.ssh/oracle.key \
-            > ~/.ssh/oracle_public.key
+            > /dev/null
 
-          echo "SSH_KEY_FILE_OK"
-          echo "SSH_PRIVATE_KEY_VALID"
+          echo "SSH KEY OK"
 
 
       # =====================================================
-      # CHECK HOST / PORT
+      # CHECK BOT PYTHON SYNTAX
+      #
+      # This happens BEFORE touching Oracle.
       # =====================================================
 
-      - name: Test Oracle Port 22
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-
+      - name: Check bot.py Syntax
         run: |
+
           set -e
 
-          echo "========================================"
-          echo "TESTING ORACLE PORT 22"
-          echo "========================================"
+          python3 -m py_compile bot.py
 
-          echo "Checking TCP connection..."
-
-          timeout 20 bash -c \
-            "cat < /dev/null > /dev/tcp/$ORACLE_HOST/22"
-
-          echo
-          echo "ORACLE_PORT_22_REACHABLE"
+          echo "BOT_PY_SYNTAX_OK"
 
 
       # =====================================================
-      # SHOW SSH CLIENT VERSION
+      # UPLOAD BOT + DASHBOARD FILES
+      #
+      # Upload goes to temporary directory first.
+      #
+      # Existing running application is not touched
+      # until upload is completely successful.
       # =====================================================
 
-      - name: Check SSH Client
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "SSH CLIENT"
-          echo "========================================"
-
-          ssh -V
-
-          echo
-          echo "OPENSSH_CLIENT_OK"
-
-
-      # =====================================================
-      # SSH CONFIG TEST
-      # =====================================================
-
-      - name: Test SSH Configuration
+      - name: Upload Bot And Dashboard
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
 
         run: |
+
           set -e
 
           echo "========================================"
-          echo "TESTING SSH CONFIGURATION"
+          echo "CONNECTING TO ORACLE"
           echo "========================================"
+
+
+          echo
+          echo "Testing Oracle SSH..."
+
 
           ssh \
-            -G \
-            -4 \
             -i ~/.ssh/oracle.key \
-            -o BatchMode=yes \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=15 \
-            -o ConnectionAttempts=1 \
-            -o GSSAPIAuthentication=no \
-            -o PreferredAuthentications=publickey \
-            -o PubkeyAuthentication=yes \
-            -o IdentitiesOnly=yes \
-            -o AddressFamily=inet \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            > /tmp/ssh-config.txt
-
-          echo "SSH_CONFIGURATION_VALID"
-
-          echo
-          echo "Resolved SSH configuration:"
-
-          grep -E \
-            '^(hostname|user|port|identityfile|identitiesonly|preferredauthentications|pubkeyauthentication|addressfamily|connecttimeout)' \
-            /tmp/ssh-config.txt \
-            || true
-
-
-      # =====================================================
-      # SSH TCP + BANNER DIAGNOSTIC
-      # =====================================================
-
-      - name: Diagnose SSH Handshake
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
-        run: |
-          set +e
-
-          echo "========================================"
-          echo "SSH HANDSHAKE DIAGNOSTIC"
-          echo "========================================"
-
-          echo
-          echo "Running verbose SSH connection..."
-
-          timeout 45 ssh \
-            -vvv \
-            -4 \
-            -i ~/.ssh/oracle.key \
-            -o BatchMode=yes \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=30 \
-            -o ConnectionAttempts=1 \
-            -o ServerAliveInterval=5 \
-            -o ServerAliveCountMax=2 \
-            -o TCPKeepAlive=yes \
-            -o GSSAPIAuthentication=no \
-            -o PreferredAuthentications=publickey \
-            -o PubkeyAuthentication=yes \
-            -o IdentitiesOnly=yes \
-            -o AddressFamily=inet \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "echo ORACLE_SSH_OK"
 
-          SSH_RESULT=$?
 
           echo
-          echo "========================================"
-          echo "SSH EXIT CODE: $SSH_RESULT"
-          echo "========================================"
+          echo "Creating temporary deployment directory..."
 
-          if [ "$SSH_RESULT" -eq 0 ]; then
-            echo "ORACLE_SSH_OK"
-          else
-            echo "ORACLE_SSH_FAILED"
-          fi
 
-          exit 0
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot/.deploy_tmp"
+
+
+          echo
+          echo "Uploading files..."
+
+
+          scp \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            bot.py \
+            index.html \
+            app.js \
+            style.css \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/.deploy_tmp/"
+
+
+          echo
+          echo "UPLOAD_OK"
 
 
       # =====================================================
-      # SSH KEY AUTHENTICATION TEST
+      # INSTALL NEW FILES
+      #
+      # IMPORTANT:
+      # accounts.json
+      # account_states/
+      # account_history/
+      #
+      # are NOT touched.
       # =====================================================
 
-      - name: Test Public Key Authentication
+      - name: Install New Files
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
 
         run: |
-          set +e
 
-          echo "========================================"
-          echo "PUBLIC KEY AUTHENTICATION TEST"
-          echo "========================================"
+          set -e
 
-          timeout 45 ssh \
-            -vv \
-            -4 \
+          ssh \
             -i ~/.ssh/oracle.key \
-            -o BatchMode=yes \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
-            -o ConnectTimeout=30 \
-            -o ConnectionAttempts=1 \
-            -o PreferredAuthentications=publickey \
-            -o PubkeyAuthentication=yes \
-            -o IdentitiesOnly=yes \
-            -o GSSAPIAuthentication=no \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "echo PUBLIC_KEY_AUTH_OK"
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          RESULT=$?
+          set -e
+
+
+          BOT_DIR="/home/opc/xautusd-bot"
+
+          TMP_DIR="$BOT_DIR/.deploy_tmp"
+
+
+          echo "========================================"
+          echo "INSTALLING NEW FILES"
+          echo "========================================"
+
+
+          test -f "$TMP_DIR/bot.py"
+
+          test -f "$TMP_DIR/index.html"
+
+          test -f "$TMP_DIR/app.js"
+
+          test -f "$TMP_DIR/style.css"
+
 
           echo
-          echo "PUBLIC_KEY_TEST_EXIT_CODE: $RESULT"
+          echo "Uploaded files verified."
 
-          exit 0
+
+          echo
+          echo "Checking Python syntax on Oracle..."
+
+
+          python3 -m py_compile \
+            "$TMP_DIR/bot.py"
+
+
+          echo "ORACLE_BOT_SYNTAX_OK"
+
+
+          echo
+          echo "Replacing application files..."
+
+
+          cp \
+            "$TMP_DIR/bot.py" \
+            "$BOT_DIR/bot.py"
+
+
+          cp \
+            "$TMP_DIR/index.html" \
+            "$BOT_DIR/index.html"
+
+
+          cp \
+            "$TMP_DIR/app.js" \
+            "$BOT_DIR/app.js"
+
+
+          cp \
+            "$TMP_DIR/style.css" \
+            "$BOT_DIR/style.css"
+
+
+          rm -rf \
+            "$TMP_DIR"
+
+
+          echo
+          echo "FILES_INSTALLED_OK"
+
+
+          EOF
 
 
       # =====================================================
-      # FINAL RESULT
+      # RESTART BOT + DASHBOARD
+      #
+      # bot.py starts the dashboard on port 8000.
       # =====================================================
 
-      - name: Diagnostic Complete
+      - name: Restart XAUTUSD Bot
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
         run: |
-          echo
-          echo "========================================"
-          echo "SSH DIAGNOSTIC COMPLETE"
+
+          set -e
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+
           echo "========================================"
 
-          echo
-          echo "No Oracle application files were changed."
+          echo "RESTART XAUTUSD BOT + DASHBOARD"
+
+          echo "========================================"
+
+
+          sudo systemctl restart \
+            xautusd-bot.service
+
 
           echo
-          echo "Check the previous diagnostic steps"
-          echo "for the exact SSH failure point."
+
+          echo "Waiting for service startup..."
+
+
+          sleep 10
+
+
+          echo
+
+          echo "===== SERVICE STATUS ====="
+
+
+          sudo systemctl --no-pager status \
+            xautusd-bot.service || true
+
+
+          EOF
+
+
+      # =====================================================
+      # VERIFY BOT
+      # =====================================================
+
+      - name: Verify XAUTUSD Bot
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          set -e
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+
+          echo "========================================"
+
+          echo "BOT VERIFICATION"
+
+          echo "========================================"
+
+
+          if sudo systemctl is-active --quiet \
+            xautusd-bot.service; then
+
+
+            echo "XAUTUSD_BOT_ACTIVE"
+
+
+          else
+
+
+            echo "XAUTUSD_BOT_FAILED"
+
+
+            echo
+
+            echo "===== SERVICE STATUS ====="
+
+
+            sudo systemctl --no-pager status \
+              xautusd-bot.service || true
+
+
+            echo
+
+            echo "===== RECENT BOT LOGS ====="
+
+
+            sudo journalctl \
+              -u xautusd-bot.service \
+              -n 80 \
+              --no-pager
+
+
+            exit 1
+
+
+          fi
+
+
+          echo
+
+          echo "===== BOT PROCESS ====="
+
+
+          pgrep -af \
+            "/home/opc/xautusd-bot/bot.py" \
+            || true
+
+
+          echo
+
+          echo "===== RECENT BOT LOGS ====="
+
+
+          sudo journalctl \
+            -u xautusd-bot.service \
+            -n 40 \
+            --no-pager
+
+
+          EOF
+
+
+      # =====================================================
+      # VERIFY DASHBOARD
+      # =====================================================
+
+      - name: Verify Dashboard
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          set -e
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+
+          echo "========================================"
+
+          echo "DASHBOARD VERIFICATION"
+
+          echo "========================================"
+
+
+          echo
+
+          echo "===== PORT 8000 ====="
+
+
+          if ss -lnt | grep -q ':8000'; then
+
+
+            echo "DASHBOARD_PORT_8000_OK"
+
+
+          else
+
+
+            echo "DASHBOARD_PORT_8000_FAILED"
+
+
+            echo
+
+            echo "===== BOT LOGS ====="
+
+
+            sudo journalctl \
+              -u xautusd-bot.service \
+              -n 80 \
+              --no-pager
+
+
+            exit 1
+
+
+          fi
+
+
+          echo
+
+          echo "===== LOCAL HEALTH ====="
+
+
+          curl \
+            --max-time 20 \
+            -fsS \
+            http://127.0.0.1:8000/api/health
+
+
+          echo
+
+
+          echo
+
+          echo "===== LOCAL DASHBOARD DATA ====="
+
+
+          curl \
+            --max-time 20 \
+            -fsS \
+            http://127.0.0.1:8000/api/dashboard
+
+
+          echo
+
+
+          echo
+
+          echo "===== LOCAL DASHBOARD PAGE ====="
+
+
+          curl \
+            --max-time 20 \
+            -fsS \
+            http://127.0.0.1:8000/ \
+            > /dev/null
+
+
+          echo "DASHBOARD_PAGE_OK"
+
+
+          EOF
+
+
+      # =====================================================
+      # CLOUDFLARE QUICK TUNNEL
+      #
+      # IMPORTANT:
+      # We do NOT curl the trycloudflare URL from Oracle.
+      #
+      # The previous workflow failed here because Oracle
+      # could not resolve the temporary Cloudflare hostname.
+      #
+      # We only verify that the tunnel started and obtain
+      # its public URL.
+      # =====================================================
+
+      - name: Start Cloudflare Quick Tunnel
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          set -e
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+
+          set -e
+
+
+          echo "========================================"
+
+          echo "START CLOUDFLARE QUICK TUNNEL"
+
+          echo "========================================"
+
+
+          CLOUDFLARED=$(command -v cloudflared || true)
+
+
+          if [ -z "$CLOUDFLARED" ]; then
+
+
+            echo "ERROR: cloudflared not installed"
+
+
+            exit 1
+
+
+          fi
+
+
+          BOT_DIR="/home/opc/xautusd-bot"
+
+
+          PID_FILE="$BOT_DIR/quick-tunnel.pid"
+
+          LOG_FILE="$BOT_DIR/quick-tunnel.log"
+
+
+          mkdir -p "$BOT_DIR"
+
+
+          echo
+
+          echo "Stopping previous Quick Tunnel..."
+
+
+          if [ -f "$PID_FILE" ]; then
+
+
+            OLD_PID=$(cat \
+              "$PID_FILE" \
+              2>/dev/null \
+              || true)
+
+
+            if [ -n "$OLD_PID" ] && \
+               kill -0 "$OLD_PID" 2>/dev/null; then
+
+
+              kill "$OLD_PID" \
+                2>/dev/null \
+                || true
+
+
+              sleep 3
+
+
+            fi
+
+
+          fi
+
+
+          rm -f "$PID_FILE"
+
+
+          : > "$LOG_FILE"
+
+
+          echo
+
+          echo "Starting new Quick Tunnel..."
+
+
+          nohup "$CLOUDFLARED" tunnel \
+            --url http://127.0.0.1:8000 \
+            > "$LOG_FILE" 2>&1 &
+
+
+          TUNNEL_PID=$!
+
+
+          echo "$TUNNEL_PID" \
+            > "$PID_FILE"
+
+
+          echo "Tunnel PID: $TUNNEL_PID"
+
+
+          URL=""
+
+
+          for i in $(seq 1 40); do
+
+
+            sleep 2
+
+
+            URL=$(grep -oE \
+              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+              "$LOG_FILE" \
+              | tail -n 1 \
+              || true)
+
+
+            if [ -n "$URL" ]; then
+
+              break
+
+            fi
+
+
+          done
+
+
+          if [ -z "$URL" ]; then
+
+
+            echo "ERROR: Cloudflare URL not found"
+
+
+            echo
+
+            echo "===== CLOUDFLARE LOG ====="
+
+
+            cat "$LOG_FILE" \
+              || true
+
+
+            exit 1
+
+
+          fi
+
+
+          echo
+
+          echo "========================================"
+
+          echo "CLOUDFLARE TUNNEL STARTED"
+
+          echo "========================================"
+
+
+          echo
+
+          echo "DASHBOARD URL"
+
+          echo "$URL"
+
+
+          echo
+
+          echo "TUNNEL PID"
+
+          echo "$TUNNEL_PID"
+
+
+          echo
+
+          echo "========================================"
+
+          echo "DEPLOYMENT SUCCESS"
+
+          echo "========================================"
+
+
+          EOF
