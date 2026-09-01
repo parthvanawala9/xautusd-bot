@@ -10,16 +10,23 @@ on:
 permissions:
   contents: read
 
+
 jobs:
 
   deploy:
+
     runs-on: ubuntu-latest
+
 
     steps:
 
       - name: Checkout
         uses: actions/checkout@v4
 
+
+      # =====================================================
+      # SSH
+      # =====================================================
 
       - name: Prepare SSH
         env:
@@ -29,8 +36,7 @@ jobs:
 
           mkdir -p ~/.ssh
 
-          printf '%s\n' \
-            "$ORACLE_PRIVATE_KEY" \
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" \
             > ~/.ssh/oracle.key
 
           chmod 600 ~/.ssh/oracle.key
@@ -46,15 +52,17 @@ jobs:
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            -o ConnectionAttempts=2 \
-            -o ServerAliveInterval=10 \
-            -o ServerAliveCountMax=3 \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "echo ORACLE_SSH_OK"
 
 
-      - name: Copy Bot
+      # =====================================================
+      # COPY BOT + DASHBOARD FILES
+      # =====================================================
+
+      - name: Copy Bot And Dashboard
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -64,58 +72,17 @@ jobs:
           scp \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o ConnectTimeout=15 \
             bot.py \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/bot.py"
+            index.html \
+            app.js \
+            style.css \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/"
 
 
-      - name: Copy Dashboard
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
-        run: |
-
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            "$ORACLE_USER@$ORACLE_HOST" \
-            "mkdir -p /home/opc/xautusd-bot/dashboard"
-
-          scp \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            dashboard/index.html \
-            dashboard/app.js \
-            dashboard/style.css \
-            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/"
-
-
-      - name: Install Python Dependencies
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
-        run: |
-
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
-          cd /home/opc/xautusd-bot
-
-          python3 -m pip install \
-            --user \
-            requests \
-            websocket-client \
-            python-dotenv
-
-          EOF
-
+      # =====================================================
+      # RESTART EXISTING BOT SERVICE
+      # =====================================================
 
       - name: Restart XAUTUSD Bot
         env:
@@ -127,10 +94,12 @@ jobs:
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o ConnectTimeout=15 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo "===== RESTART BOT ====="
+          echo "========================================"
+          echo "RESTART XAUTUSD BOT"
+          echo "========================================"
 
           sudo systemctl restart xautusd-bot.service
 
@@ -140,38 +109,21 @@ jobs:
           echo "===== SERVICE STATUS ====="
 
           sudo systemctl --no-pager status \
-            xautusd-bot.service \
-            || true
+            xautusd-bot.service || true
 
           echo
-          echo "===== PORT 8000 ====="
+          echo "===== BOT PROCESS ====="
 
-          ss -lntp | grep ':8000' || true
-
-          echo
-          echo "===== DASHBOARD HEALTH ====="
-
-          curl \
-            --max-time 10 \
-            -fsS \
-            http://127.0.0.1:8000/api/health
-
-          echo
-
-          echo
-          echo "===== DASHBOARD DATA ====="
-
-          curl \
-            --max-time 15 \
-            -fsS \
-            http://127.0.0.1:8000/api/dashboard
-
-          echo
+          pgrep -af "xautusd-bot/bot.py" || true
 
           EOF
 
 
-      - name: Final Bot Check
+      # =====================================================
+      # VERIFY BOT
+      # =====================================================
+
+      - name: Verify XAUTUSD Bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -181,37 +133,231 @@ jobs:
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
+            -o ConnectTimeout=15 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo
           echo "========================================"
-          echo "FINAL XAUTUSD BOT CHECK"
+          echo "BOT VERIFICATION"
           echo "========================================"
 
-          sudo systemctl is-active \
-            xautusd-bot.service
+          if sudo systemctl is-active --quiet \
+            xautusd-bot.service; then
+
+            echo "XAUTUSD_BOT_ACTIVE"
+
+          else
+
+            echo "XAUTUSD_BOT_FAILED"
+            exit 1
+
+          fi
+
 
           echo
-          echo "===== BOT PROCESS ====="
+          echo "===== RECENT BOT LOGS ====="
 
-          pgrep -af \
-            "/home/opc/xautusd-bot/bot.py" \
-            || true
+          sudo journalctl \
+            -u xautusd-bot.service \
+            -n 40 \
+            --no-pager
+
+          EOF
+
+
+      # =====================================================
+      # VERIFY DASHBOARD PORT
+      # =====================================================
+
+      - name: Verify Dashboard
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          echo "========================================"
+          echo "DASHBOARD VERIFICATION"
+          echo "========================================"
+
 
           echo
-          echo "===== DASHBOARD PORT ====="
+          echo "===== PORT 8000 ====="
 
-          ss -lntp | grep ':8000' \
-            || true
+          ss -lntp | grep ':8000' || true
+
 
           echo
-          echo "===== HEALTH ====="
+          echo "===== LOCAL HEALTH ====="
 
           curl \
-            --max-time 10 \
+            --max-time 15 \
             -fsS \
             http://127.0.0.1:8000/api/health
+
+
+          echo
+
+
+          echo
+          echo "===== DASHBOARD DATA ====="
+
+          curl \
+            --max-time 15 \
+            -fsS \
+            http://127.0.0.1:8000/api/dashboard
+
+
+          echo
+
+
+          echo
+          echo "===== DASHBOARD PAGE ====="
+
+          curl \
+            --max-time 15 \
+            -fsS \
+            http://127.0.0.1:8000/ \
+            > /dev/null
+
+          echo "DASHBOARD_PAGE_OK"
+
+          EOF
+
+
+      # =====================================================
+      # CLOUDFLARE QUICK TUNNEL
+      # =====================================================
+
+      - name: Start Cloudflare Quick Tunnel
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          CLOUDFLARED=$(command -v cloudflared || true)
+
+
+          if [ -z "$CLOUDFLARED" ]; then
+
+            echo "cloudflared not installed"
+
+            exit 1
+
+          fi
+
+
+          PID_FILE="/home/opc/xautusd-bot/quick-tunnel.pid"
+
+          LOG_FILE="/home/opc/xautusd-bot/quick-tunnel.log"
+
+
+          if [ -f "$PID_FILE" ]; then
+
+            OLD_PID=$(cat "$PID_FILE" 2>/dev/null || true)
+
+            if [ -n "$OLD_PID" ] && \
+               kill -0 "$OLD_PID" 2>/dev/null; then
+
+              kill "$OLD_PID" 2>/dev/null || true
+
+              sleep 2
+
+            fi
+
+          fi
+
+
+          rm -f "$PID_FILE"
+
+          : > "$LOG_FILE"
+
+
+          nohup "$CLOUDFLARED" tunnel \
+            --url http://127.0.0.1:8000 \
+            > "$LOG_FILE" 2>&1 &
+
+
+          TUNNEL_PID=$!
+
+
+          echo "$TUNNEL_PID" \
+            > "$PID_FILE"
+
+
+          echo "Tunnel PID: $TUNNEL_PID"
+
+
+          URL=""
+
+
+          for i in $(seq 1 30); do
+
+            sleep 2
+
+            URL=$(grep -oE \
+              'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' \
+              "$LOG_FILE" \
+              | tail -n 1 || true)
+
+
+            if [ -n "$URL" ]; then
+              break
+            fi
+
+          done
+
+
+          if [ -z "$URL" ]; then
+
+            echo "ERROR: Cloudflare URL not found"
+
+            cat "$LOG_FILE" || true
+
+            exit 1
+
+          fi
+
+
+          echo
+          echo "========================================"
+          echo "DASHBOARD URL"
+          echo "$URL"
+          echo "========================================"
+
+
+          echo
+          echo "REMOTE HEALTH"
+
+          curl \
+            --max-time 20 \
+            -fsS \
+            "$URL/api/health"
+
+
+          echo
+
+
+          echo
+          echo "REMOTE DASHBOARD"
+
+          curl \
+            --max-time 20 \
+            -fsS \
+            "$URL/api/dashboard"
+
 
           echo
 
