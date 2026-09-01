@@ -54,6 +54,9 @@ from dotenv import load_dotenv
 # DASHBOARD:
 #   Runs from THIS SAME bot.py process.
 #   No dashboard_api.py required.
+#
+# TRADE HISTORY:
+#   Completed trades are stored in trade_history.json.
 # ============================================================
 
 
@@ -101,6 +104,11 @@ BALANCE_FRACTION = Decimal(
 STATE_FILE = os.getenv(
     "STATE_FILE",
     os.path.join(BASE_DIR, "xautusd_state.json")
+)
+
+TRADE_HISTORY_FILE = os.getenv(
+    "TRADE_HISTORY_FILE",
+    os.path.join(BASE_DIR, "trade_history.json")
 )
 
 DASHBOARD_PORT = int(
@@ -714,6 +722,280 @@ def historical_high_low(
 
 
 # ============================================================
+# TRADE HISTORY
+# ============================================================
+
+def load_trade_history():
+
+    if not os.path.exists(
+        TRADE_HISTORY_FILE
+    ):
+        return []
+
+    try:
+
+        with open(
+            TRADE_HISTORY_FILE,
+            "r"
+        ) as f:
+
+            data = json.load(f)
+
+        if isinstance(data, list):
+            return data
+
+    except Exception as e:
+
+        logging.warning(
+            f"TRADE HISTORY LOAD ERROR | {e}"
+        )
+
+    return []
+
+
+def save_trade_history(
+    history
+):
+
+    tmp = TRADE_HISTORY_FILE + ".tmp"
+
+    with open(
+        tmp,
+        "w"
+    ) as f:
+
+        json.dump(
+            history,
+            f,
+            indent=2
+        )
+
+    os.replace(
+        tmp,
+        TRADE_HISTORY_FILE
+    )
+
+
+def contract_value_from_product(
+    product_info
+):
+
+    value = (
+        product_info.get(
+            "contract_value"
+        )
+        or product_info.get(
+            "contract_value_usd"
+        )
+        or "1"
+    )
+
+    try:
+
+        value = Decimal(
+            str(value)
+        )
+
+        if value <= 0:
+            return Decimal("1")
+
+        return value
+
+    except Exception:
+
+        return Decimal("1")
+
+
+def calculate_trade_pnl(
+    direction,
+    entry_price,
+    exit_price,
+    size,
+    product_info
+):
+
+    try:
+
+        entry = Decimal(
+            str(entry_price)
+        )
+
+        exit_price = Decimal(
+            str(exit_price)
+        )
+
+        qty = Decimal(
+            str(abs(size))
+        )
+
+        contract_value = (
+            contract_value_from_product(
+                product_info
+            )
+        )
+
+        if direction == "LONG":
+
+            pnl = (
+                exit_price
+                - entry
+            ) * qty * contract_value
+
+        else:
+
+            pnl = (
+                entry
+                - exit_price
+            ) * qty * contract_value
+
+        return pnl
+
+    except Exception as e:
+
+        logging.warning(
+            f"P&L CALCULATION ERROR | {e}"
+        )
+
+        return Decimal("0")
+
+
+def record_completed_trade(
+    bot,
+    direction,
+    entry_price,
+    exit_price,
+    size,
+    reason
+):
+
+    try:
+
+        if entry_price is None:
+            return
+
+        if exit_price is None:
+            return
+
+        if not size:
+            return
+
+        entry = Decimal(
+            str(entry_price)
+        )
+
+        exit_value = Decimal(
+            str(exit_price)
+        )
+
+        quantity = abs(
+            int(size)
+        )
+
+        pnl = calculate_trade_pnl(
+            direction,
+            entry,
+            exit_value,
+            quantity,
+            bot.product
+        )
+
+        entry_time = (
+            bot.active_trade.get(
+                "entry_time"
+            )
+            if bot.active_trade
+            else None
+        )
+
+        if not entry_time:
+            entry_time = now_ist().isoformat()
+
+        trade = {
+
+            "id":
+                f"trade_{int(time.time()*1000)}",
+
+            "symbol":
+                SYMBOL,
+
+            "date":
+                now_ist().strftime(
+                    "%Y-%m-%d"
+                ),
+
+            "direction":
+                direction,
+
+            "entry_time":
+                entry_time,
+
+            "exit_time":
+                now_ist().isoformat(),
+
+            "entry_price":
+                float(entry),
+
+            "exit_price":
+                float(exit_value),
+
+            "size":
+                quantity,
+
+            "stop_loss":
+                (
+                    float(
+                        bot.sl
+                    )
+                    if bot.sl is not None
+                    else None
+                ),
+
+            "pnl":
+                float(
+                    pnl
+                ),
+
+            "reason":
+                reason
+        }
+
+        history = load_trade_history()
+
+        history.append(
+            trade
+        )
+
+        save_trade_history(
+            history
+        )
+
+        logging.warning(
+            "========================================"
+        )
+
+        logging.warning(
+            "TRADE HISTORY SAVED"
+        )
+
+        logging.warning(
+            f"{direction} | "
+            f"ENTRY={entry} | "
+            f"EXIT={exit_value} | "
+            f"P&L={pnl}"
+        )
+
+        logging.warning(
+            "========================================"
+        )
+
+    except Exception as e:
+
+        logging.exception(
+            f"TRADE HISTORY ERROR | {e}"
+        )
+
+
+# ============================================================
 # SIMPLE BOT
 # ============================================================
 
@@ -747,6 +1029,8 @@ class Bot:
         self.ready = False
 
         self.lock = threading.RLock()
+
+        self.active_trade = None
 
         self.load_state()
 
@@ -807,6 +1091,12 @@ class Bot:
                     str(s["trade_low"])
                 )
 
+            if s.get("active_trade"):
+
+                self.active_trade = (
+                    s["active_trade"]
+                )
+
             logging.info(
                 f"STATE | HIGH={self.high} "
                 f"| LOW={self.low} "
@@ -864,7 +1154,10 @@ class Bot:
                     str(self.trade_low)
                     if self.trade_low is not None
                     else None
-                )
+                ),
+
+            "active_trade":
+                self.active_trade
         }
 
         tmp = STATE_FILE + ".tmp"
@@ -943,6 +1236,60 @@ class Bot:
             return False
 
         if self.ready:
+
+            # Recover active trade information after restart.
+            if (
+                self.last_position != 0
+                and self.active_trade is None
+            ):
+
+                try:
+
+                    pos = position(
+                        self.product_id
+                    )
+
+                    if pos["size"] != 0:
+
+                        direction = (
+                            "LONG"
+                            if pos["size"] > 0
+                            else "SHORT"
+                        )
+
+                        entry = pos.get(
+                            "entry"
+                        )
+
+                        if entry is not None:
+
+                            self.active_trade = {
+
+                                "direction":
+                                    direction,
+
+                                "entry_price":
+                                    float(entry),
+
+                                "entry_time":
+                                    now_ist().isoformat(),
+
+                                "size":
+                                    abs(
+                                        int(
+                                            pos["size"]
+                                        )
+                                    )
+                            }
+
+                            self.save()
+
+                except Exception as e:
+
+                    logging.warning(
+                        f"ACTIVE TRADE RECOVERY ERROR | {e}"
+                    )
+
             return True
 
         pos = position(
@@ -1126,6 +1473,29 @@ class Bot:
             self.trade_low = price
             self.trade_high = None
 
+        # ----------------------------------------------------
+        # START ACTIVE TRADE RECORD
+        # ----------------------------------------------------
+
+        self.active_trade = {
+
+            "direction":
+                direction,
+
+            "entry_price":
+                float(price),
+
+            "entry_time":
+                now_ist().isoformat(),
+
+            "size":
+                abs(
+                    int(
+                        self.last_position
+                    )
+                )
+        }
+
         self.save()
 
         logging.warning(
@@ -1136,6 +1506,50 @@ class Bot:
         )
 
         return True
+
+
+    # ========================================================
+    # FINISH TRADE
+    # ========================================================
+
+    def finish_active_trade(
+        self,
+        exit_price,
+        reason
+    ):
+
+        if not self.active_trade:
+            return
+
+        direction = self.active_trade.get(
+            "direction"
+        )
+
+        entry_price = self.active_trade.get(
+            "entry_price"
+        )
+
+        trade_size = self.active_trade.get(
+            "size",
+            abs(
+                int(
+                    self.last_position
+                )
+            )
+        )
+
+        record_completed_trade(
+            self,
+            direction,
+            entry_price,
+            exit_price,
+            trade_size,
+            reason
+        )
+
+        self.active_trade = None
+
+        self.save()
 
 
     # ========================================================
@@ -1163,6 +1577,10 @@ class Bot:
 
             now = now_ist()
 
+            # ------------------------------------------------
+            # Saturday square-off
+            # ------------------------------------------------
+
             if saturday_squareoff(now):
 
                 pos = position(
@@ -1176,29 +1594,62 @@ class Bot:
                         pos["size"]
                     )
 
+                    self.finish_active_trade(
+                        price,
+                        "SATURDAY_SQUAREOFF"
+                    )
+
+                    self.last_position = 0
+
                 return
+
+            # ------------------------------------------------
+            # Weekend
+            # ------------------------------------------------
 
             if weekend(now):
                 return
 
+            # ------------------------------------------------
+            # Day
+            # ------------------------------------------------
+
             self.new_day(now)
+
+            # ------------------------------------------------
+            # Before 05:45
+            # ------------------------------------------------
 
             if now < strategy_start(
                 self.day
             ):
+
                 return
+
+            # ------------------------------------------------
+            # Prepare
+            # ------------------------------------------------
 
             if not self.prepare(
                 now,
                 price
             ):
+
                 return
+
+            # ------------------------------------------------
+            # Current exchange position
+            # ------------------------------------------------
 
             pos = position(
                 self.product_id
             )
 
             size = pos["size"]
+
+            # ------------------------------------------------
+            # POSITION CLOSED
+            # ------------------------------------------------
 
             if (
                 size == 0
@@ -1207,6 +1658,7 @@ class Bot:
 
                 old = self.last_position
 
+                # If SL was hit, reverse.
                 if (
                     self.sl is not None
                     and (
@@ -1233,6 +1685,11 @@ class Bot:
                             "LONG SL -> SHORT"
                         )
 
+                        self.finish_active_trade(
+                            price,
+                            "STOP_LOSS"
+                        )
+
                         self.last_position = 0
                         self.sl = None
 
@@ -1253,6 +1710,11 @@ class Bot:
                             "SHORT SL -> LONG"
                         )
 
+                        self.finish_active_trade(
+                            price,
+                            "STOP_LOSS"
+                        )
+
                         self.last_position = 0
                         self.sl = None
 
@@ -1264,10 +1726,20 @@ class Bot:
 
                     return
 
+                # Manual/external close.
+                self.finish_active_trade(
+                    price,
+                    "EXTERNAL_CLOSE"
+                )
+
                 self.last_position = 0
                 self.sl = None
 
                 return
+
+            # ------------------------------------------------
+            # LONG
+            # ------------------------------------------------
 
             if size > 0:
 
@@ -1289,6 +1761,10 @@ class Bot:
 
                 return
 
+            # ------------------------------------------------
+            # SHORT
+            # ------------------------------------------------
+
             if size < 0:
 
                 self.last_position = size
@@ -1309,7 +1785,15 @@ class Bot:
 
                 return
 
+            # ------------------------------------------------
+            # FLAT
+            # ------------------------------------------------
+
             self.last_position = 0
+
+            # ------------------------------------------------
+            # NEW HIGH
+            # ------------------------------------------------
 
             if price > self.high:
 
@@ -1332,6 +1816,10 @@ class Bot:
                     self.save()
 
                 return
+
+            # ------------------------------------------------
+            # NEW LOW
+            # ------------------------------------------------
 
             if price < self.low:
 
@@ -1372,8 +1860,11 @@ def decimal_json(value):
         return float(value)
 
     try:
+
         return float(value)
+
     except Exception:
+
         return value
 
 
@@ -1431,12 +1922,88 @@ def dashboard_data():
 
         if size > 0:
             direction = "LONG"
+
         elif size < 0:
             direction = "SHORT"
+
         else:
             direction = "FLAT"
 
+        history = load_trade_history()
+
+        total_pnl = sum(
+            float(
+                trade.get(
+                    "pnl",
+                    0
+                )
+            )
+            for trade in history
+        )
+
+        today = now_ist().strftime(
+            "%Y-%m-%d"
+        )
+
+        today_trades = [
+            trade
+            for trade in history
+            if trade.get("date") == today
+        ]
+
+        today_pnl = sum(
+            float(
+                trade.get(
+                    "pnl",
+                    0
+                )
+            )
+            for trade in today_trades
+        )
+
+        winning_trades = sum(
+            1
+            for trade in today_trades
+            if float(
+                trade.get(
+                    "pnl",
+                    0
+                )
+            ) > 0
+        )
+
+        losing_trades = sum(
+            1
+            for trade in today_trades
+            if float(
+                trade.get(
+                    "pnl",
+                    0
+                )
+            ) < 0
+        )
+
+        today_count = len(
+            today_trades
+        )
+
+        win_rate = (
+            (
+                winning_trades
+                / today_count
+                * 100
+            )
+            if today_count > 0
+            else 0
+        )
+
+        # Latest trades first.
+        history_for_dashboard = list(
+            reversed(history)
+        )
+
         return {
+
             "success": True,
 
             "bot_running": True,
@@ -1469,6 +2036,7 @@ def dashboard_data():
                 ),
 
             "position": {
+
                 "direction":
                     direction,
 
@@ -1499,7 +2067,41 @@ def dashboard_data():
                     )
             },
 
+            "statistics": {
+
+                "total_trades":
+                    today_count,
+
+                "winning_trades":
+                    winning_trades,
+
+                "losing_trades":
+                    losing_trades,
+
+                "win_rate":
+                    round(
+                        win_rate,
+                        1
+                    ),
+
+                "today_pnl":
+                    round(
+                        today_pnl,
+                        2
+                    ),
+
+                "total_pnl":
+                    round(
+                        total_pnl,
+                        2
+                    )
+            },
+
+            "trade_history":
+                history_for_dashboard,
+
             "session": {
+
                 "day":
                     (
                         bot.day.isoformat()
@@ -1544,9 +2146,16 @@ class DashboardHandler(
         if self.path == "/api/health":
 
             self.send_json({
-                "success": True,
-                "bot_running": True,
-                "symbol": SYMBOL
+
+                "success":
+                    True,
+
+                "bot_running":
+                    True,
+
+                "symbol":
+                    SYMBOL
+
             })
 
             return
@@ -1595,7 +2204,9 @@ class DashboardHandler(
 
         self.end_headers()
 
-        self.wfile.write(raw)
+        self.wfile.write(
+            raw
+        )
 
 
     def log_message(
@@ -1671,21 +2282,35 @@ def run_websocket(bot):
             def on_open(ws):
 
                 payload = {
-                    "type": "subscribe",
+
+                    "type":
+                        "subscribe",
+
                     "payload": {
+
                         "channels": [
+
                             {
-                                "name": "trades",
+
+                                "name":
+                                    "trades",
+
                                 "symbols": [
                                     SYMBOL
                                 ]
+
                             }
+
                         ]
+
                     }
+
                 }
 
                 ws.send(
-                    json.dumps(payload)
+                    json.dumps(
+                        payload
+                    )
                 )
 
                 logging.warning(
@@ -1823,6 +2448,10 @@ if __name__ == "__main__":
     )
 
     logging.warning(
+        "TRADE HISTORY = ENABLED"
+    )
+
+    logging.warning(
         "============================================"
     )
 
@@ -1831,7 +2460,9 @@ if __name__ == "__main__":
         product_info = product()
 
         set_leverage(
-            int(product_info["id"])
+            int(
+                product_info["id"]
+            )
         )
 
         bot = Bot(
@@ -1857,4 +2488,4 @@ if __name__ == "__main__":
 
         logging.exception(
             f"FATAL ERROR | {e}"
-    )
+        )
