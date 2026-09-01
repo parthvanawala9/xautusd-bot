@@ -19,42 +19,36 @@ from dotenv import load_dotenv
 # ============================================================
 # XAUTUSD SIMPLE NEW HIGH / NEW LOW BOT
 #
-# TRADING RULES
+# IMPORTANT BEHAVIOUR
 # ------------------------------------------------------------
 # 05:45 IST = NEW TRADING SESSION
 #
-# IMPORTANT:
-#   BOT MUST BE MANUALLY STARTED FROM DASHBOARD.
+# BOT START:
+#   - Manual START from dashboard.
+#   - If no position exists -> normal trading starts.
+#   - If position already exists -> position is RECOVERED.
+#   - Existing position is NEVER closed by START.
 #
-# START BOT:
-#   - If no position exists:
-#       Starts normally.
-#
-#   - If a position already exists:
-#       DOES NOT CLOSE IT.
-#       Recovers the existing position.
-#       Continues managing that position.
-#
-# STOP BOT:
-#   - Closes existing position.
+# BOT STOP:
+#   - Immediately disables new entries.
+#   - If position exists -> closes it.
 #   - Saves completed trade as MANUAL_STOP.
-#   - Prevents all new entries.
 #
 # FLAT:
-#   price > HIGH -> LONG
-#   price < LOW  -> SHORT
+#   price > session HIGH -> LONG
+#   price < session LOW  -> SHORT
 #
 # LONG:
-#   new HIGH -> update HIGH only
+#   new HIGH -> update HIGH
 #   no second LONG
 #
 # SHORT:
-#   new LOW -> update LOW only
+#   new LOW -> update LOW
 #   no second SHORT
 #
-# SL:
-#   LONG  SL = LOW at entry
-#   SHORT SL = HIGH at entry
+# STOP LOSS:
+#   LONG  -> session LOW at entry
+#   SHORT -> session HIGH at entry
 #
 # If SL closes position:
 #   LONG -> SHORT
@@ -62,27 +56,34 @@ from dotenv import load_dotenv
 #
 # One position at a time.
 #
-# Restart after 05:45:
-#   Recover today's historical 1-minute HIGH/LOW.
+# RESTART:
+#   - Existing exchange position is NOT closed.
+#   - START BOT recovers it.
+#   - Session HIGH/LOW is recovered from history if needed.
 #
-# Existing position on restart:
-#   Recover from Delta exchange.
-#   Position is NOT closed.
-#
-# Saturday 05:00:
-#   Close position.
+# SATURDAY:
+#   05:00 IST -> close any position.
 #
 # DASHBOARD:
-#   Runs from THIS SAME bot.py process.
+#   Runs inside this same bot.py process.
 #
 # TRADE HISTORY:
-#   Completed trades are permanently stored in
-#   trade_history.json.
+#   Permanently stored in trade_history.json.
 #
-#   Dashboard shows:
-#   - Today's statistics
-#   - All-time statistics
-#   - All completed trades
+# Dashboard API includes:
+#   - online/offline
+#   - bot running/stopped
+#   - start/stop
+#   - account name
+#   - balance
+#   - price
+#   - position
+#   - entry
+#   - stop loss
+#   - unrealized PnL
+#   - today's statistics
+#   - all-time statistics
+#   - complete trade history
 # ============================================================
 
 
@@ -114,6 +115,11 @@ SYMBOL = os.getenv(
     "XAUTUSD"
 ).strip()
 
+ACCOUNT_NAME = os.getenv(
+    "ACCOUNT_NAME",
+    "Primary Account"
+).strip()
+
 API_KEY = os.getenv(
     "DELTA_API_KEY",
     ""
@@ -125,11 +131,17 @@ API_SECRET = os.getenv(
 ).strip()
 
 LEVERAGE = Decimal(
-    os.getenv("LEVERAGE", "50")
+    os.getenv(
+        "LEVERAGE",
+        "50"
+    )
 )
 
 BALANCE_FRACTION = Decimal(
-    os.getenv("BALANCE_FRACTION", "0.10")
+    os.getenv(
+        "BALANCE_FRACTION",
+        "0.10"
+    )
 )
 
 STATE_FILE = os.getenv(
@@ -156,6 +168,22 @@ DASHBOARD_PORT = int(
 )
 
 RECONNECT_SECONDS = 3
+
+# Do NOT call private REST position endpoint
+# on every single market trade.
+POSITION_CACHE_SECONDS = float(
+    os.getenv(
+        "POSITION_CACHE_SECONDS",
+        "1.0"
+    )
+)
+
+BALANCE_CACHE_SECONDS = float(
+    os.getenv(
+        "BALANCE_CACHE_SECONDS",
+        "3.0"
+    )
+)
 
 
 if not API_KEY or not API_SECRET:
@@ -184,7 +212,7 @@ session = requests.Session()
 session.headers.update({
     "Accept": "application/json",
     "Content-Type": "application/json",
-    "User-Agent": "XAUTUSD-Simple-Bot/1.0"
+    "User-Agent": "XAUTUSD-Simple-Bot/2.0"
 })
 
 
@@ -253,7 +281,7 @@ def saturday_squareoff(dt=None):
 
 
 # ============================================================
-# AUTH
+# AUTHENTICATION
 # ============================================================
 
 def sign(
@@ -289,7 +317,7 @@ def sign(
 
 
 # ============================================================
-# REST
+# REST API
 # ============================================================
 
 def api(
@@ -398,7 +426,7 @@ def position(product_id):
         return {
             "size": 0,
             "entry": None,
-            "stop_loss": 0,
+            "stop_loss": None,
             "unrealized_pnl": 0
         }
 
@@ -409,12 +437,17 @@ def position(product_id):
                 0
             )
         ),
+
         "entry": result.get(
             "entry_price"
         ),
+
+        # These may not be returned by every
+        # version of Delta's position response.
         "stop_loss": result.get(
             "stop_loss"
         ),
+
         "unrealized_pnl": result.get(
             "unrealized_pnl",
             0
@@ -455,10 +488,13 @@ def balance():
                 wallet.get(
                     "available_balance"
                 )
-                or wallet.get(
+            )
+
+            if value is None:
+
+                value = wallet.get(
                     "balance"
                 )
-            )
 
             if value is not None:
 
@@ -593,6 +629,7 @@ def order_size(
     logging.info(
         f"SIZE | Balance={bal} "
         f"| Margin={margin} "
+        f"| Notional={notional} "
         f"| Size={size}"
     )
 
@@ -600,7 +637,7 @@ def order_size(
 
 
 # ============================================================
-# ENTRY
+# ENTRY ORDER
 # ============================================================
 
 def market_entry(
@@ -650,7 +687,7 @@ def market_entry(
     )
 
     logging.warning(
-        f"SL   = {sl}"
+        f"SL = {sl}"
     )
 
     logging.warning(
@@ -666,7 +703,7 @@ def market_entry(
 
 
 # ============================================================
-# CLOSE
+# CLOSE POSITION
 # ============================================================
 
 def close_position(
@@ -869,6 +906,10 @@ def save_trade_history(
     )
 
 
+# ============================================================
+# PNL
+# ============================================================
+
 def contract_value_from_product(
     product_info
 ):
@@ -1020,6 +1061,9 @@ def record_completed_trade(
             "id":
                 f"trade_{int(time.time()*1000)}",
 
+            "account":
+                ACCOUNT_NAME,
+
             "symbol":
                 SYMBOL,
 
@@ -1101,7 +1145,7 @@ def record_completed_trade(
 
 
 # ============================================================
-# SIMPLE BOT
+# BOT
 # ============================================================
 
 class Bot:
@@ -1137,37 +1181,68 @@ class Bot:
 
         self.active_trade = None
 
-        # ----------------------------------------------------
-        # IMPORTANT:
-        # Bot ALWAYS starts in STOPPED state.
-        # User must manually press START BOT.
-        #
-        # But an existing exchange position is NOT closed.
-        # START will recover it.
-        # ----------------------------------------------------
-
+        # Manual trading state.
         self.bot_enabled = False
 
-        self.stop_reason = "START REQUIRED"
+        self.stop_reason = (
+            "START REQUIRED"
+        )
+
+        # ----------------------------------------------------
+        # Cached exchange position.
+        # ----------------------------------------------------
+
+        self.cached_position = {
+            "size": 0,
+            "entry": None,
+            "stop_loss": None,
+            "unrealized_pnl": 0
+        }
+
+        self.position_cache_time = 0
+
+        # ----------------------------------------------------
+        # Cached balance.
+        # ----------------------------------------------------
+
+        self.cached_balance = None
+
+        self.balance_cache_time = 0
+
+        # ----------------------------------------------------
+        # Connection state.
+        # ----------------------------------------------------
+
+        self.websocket_connected = False
+
+        self.last_ws_message_time = None
+
+        self.last_api_ok_time = None
+
+        self.api_error = None
 
         self.load_state()
 
-        # Never automatically resume trading after process restart.
-        #
+        # ----------------------------------------------------
         # IMPORTANT:
-        # We only disable the bot.
-        # We DO NOT erase active_trade / SL / trade range.
         #
+        # Bot starts STOPPED after process restart.
+        #
+        # Existing exchange position is NOT closed.
+        # User can press START and recover it.
+        # ----------------------------------------------------
 
         self.bot_enabled = False
 
-        self.stop_reason = "START REQUIRED"
+        self.stop_reason = (
+            "START REQUIRED"
+        )
 
         self.save()
 
 
     # ========================================================
-    # STATE
+    # STATE LOAD
     # ========================================================
 
     def load_state(self):
@@ -1185,52 +1260,66 @@ class Bot:
                 "r"
             ) as f:
 
-                s = json.load(f)
+                state = json.load(f)
 
-            if s.get("day"):
+            if state.get("day"):
 
                 self.day = (
                     datetime.fromisoformat(
-                        s["day"]
+                        state["day"]
                     )
                 )
 
-            if s.get("high") is not None:
+            if state.get("high") is not None:
 
                 self.high = Decimal(
-                    str(s["high"])
+                    str(
+                        state["high"]
+                    )
                 )
 
-            if s.get("low") is not None:
+            if state.get("low") is not None:
 
                 self.low = Decimal(
-                    str(s["low"])
+                    str(
+                        state["low"]
+                    )
                 )
 
-            if s.get("sl") is not None:
+            if state.get("sl") is not None:
 
                 self.sl = Decimal(
-                    str(s["sl"])
+                    str(
+                        state["sl"]
+                    )
                 )
 
-            if s.get("trade_high") is not None:
+            if state.get(
+                "trade_high"
+            ) is not None:
 
                 self.trade_high = Decimal(
-                    str(s["trade_high"])
+                    str(
+                        state["trade_high"]
+                    )
                 )
 
-            if s.get("trade_low") is not None:
+            if state.get(
+                "trade_low"
+            ) is not None:
 
                 self.trade_low = Decimal(
-                    str(s["trade_low"])
+                    str(
+                        state["trade_low"]
+                    )
                 )
 
-            if s.get(
+            if state.get(
                 "active_trade"
             ):
 
                 self.active_trade = (
-                    s["active_trade"]
+                    state["active_trade"]
                 )
 
             logging.info(
@@ -1246,9 +1335,19 @@ class Bot:
             )
 
 
+    # ========================================================
+    # STATE SAVE
+    # ========================================================
+
     def save(self):
 
         data = {
+
+            "account_name":
+                ACCOUNT_NAME,
+
+            "symbol":
+                SYMBOL,
 
             "day":
                 (
@@ -1325,6 +1424,111 @@ class Bot:
 
 
     # ========================================================
+    # LIVE POSITION REFRESH
+    # ========================================================
+
+    def refresh_position(
+        self,
+        force=False
+    ):
+
+        current = time.time()
+
+        if (
+            not force
+            and (
+                current
+                - self.position_cache_time
+            )
+            < POSITION_CACHE_SECONDS
+        ):
+
+            return self.cached_position
+
+        try:
+
+            pos = position(
+                self.product_id
+            )
+
+            self.cached_position = pos
+
+            self.position_cache_time = (
+                current
+            )
+
+            self.last_api_ok_time = (
+                now_ist().isoformat()
+            )
+
+            self.api_error = None
+
+            return pos
+
+        except Exception as e:
+
+            self.api_error = str(e)
+
+            logging.warning(
+                f"POSITION API ERROR | {e}"
+            )
+
+            return self.cached_position
+
+
+    # ========================================================
+    # LIVE BALANCE REFRESH
+    # ========================================================
+
+    def refresh_balance(
+        self,
+        force=False
+    ):
+
+        current = time.time()
+
+        if (
+            not force
+            and self.cached_balance is not None
+            and (
+                current
+                - self.balance_cache_time
+            )
+            < BALANCE_CACHE_SECONDS
+        ):
+
+            return self.cached_balance
+
+        try:
+
+            value = balance()
+
+            self.cached_balance = value
+
+            self.balance_cache_time = (
+                current
+            )
+
+            self.last_api_ok_time = (
+                now_ist().isoformat()
+            )
+
+            self.api_error = None
+
+            return value
+
+        except Exception as e:
+
+            self.api_error = str(e)
+
+            logging.warning(
+                f"BALANCE API ERROR | {e}"
+            )
+
+            return self.cached_balance
+
+
+    # ========================================================
     # START BOT
     # ========================================================
 
@@ -1332,24 +1536,30 @@ class Bot:
 
         with self.lock:
 
+            logging.warning(
+                "========================================"
+            )
+
+            logging.warning(
+                "START BOT REQUEST"
+            )
+
             # ------------------------------------------------
-            # Check exchange position.
+            # FIRST: check exchange.
             #
-            # IMPORTANT:
             # Existing position is NOT an error.
-            # We recover it instead.
             # ------------------------------------------------
 
             try:
 
-                pos = position(
-                    self.product_id
+                pos = self.refresh_position(
+                    force=True
                 )
 
             except Exception as e:
 
                 logging.exception(
-                    f"START CHECK ERROR | {e}"
+                    f"START POSITION ERROR | {e}"
                 )
 
                 return {
@@ -1357,7 +1567,6 @@ class Bot:
                     "message":
                         "Could not verify exchange position."
                 }
-
 
             size = int(
                 pos.get(
@@ -1379,35 +1588,28 @@ class Bot:
                     else "SHORT"
                 )
 
-
-                # ------------------------------------------------
-                # Exchange entry price
-                # ------------------------------------------------
-
-                exchange_entry = pos.get(
-                    "entry"
+                exchange_entry = (
+                    pos.get("entry")
                 )
 
-
                 recovered_entry = None
-
 
                 if exchange_entry is not None:
 
                     try:
 
                         recovered_entry = Decimal(
-                            str(exchange_entry)
+                            str(
+                                exchange_entry
+                            )
                         )
 
                     except Exception:
 
                         recovered_entry = None
 
-
                 # ------------------------------------------------
-                # If exchange entry unavailable,
-                # use saved active trade entry.
+                # Fallback to saved trade entry.
                 # ------------------------------------------------
 
                 if recovered_entry is None:
@@ -1425,16 +1627,17 @@ class Bot:
                             try:
 
                                 recovered_entry = Decimal(
-                                    str(saved_entry)
+                                    str(
+                                        saved_entry
+                                    )
                                 )
 
                             except Exception:
 
                                 recovered_entry = None
 
-
                 # ------------------------------------------------
-                # Last fallback = current price
+                # Last fallback = last price.
                 # ------------------------------------------------
 
                 if (
@@ -1446,47 +1649,67 @@ class Bot:
                         self.last_price
                     )
 
-
                 # ------------------------------------------------
-                # Recover exchange stop loss
+                # Exchange SL if available.
                 # ------------------------------------------------
 
-                exchange_sl = pos.get(
-                    "stop_loss"
+                exchange_sl = (
+                    pos.get(
+                        "stop_loss"
+                    )
                 )
 
-
                 recovered_sl = None
-
 
                 if exchange_sl is not None:
 
                     try:
 
                         recovered_sl = Decimal(
-                            str(exchange_sl)
+                            str(
+                                exchange_sl
+                            )
                         )
 
                     except Exception:
 
                         recovered_sl = None
 
-
                 # ------------------------------------------------
-                # If exchange does not return SL,
-                # preserve saved bot SL.
+                # Saved SL fallback.
                 # ------------------------------------------------
 
                 if recovered_sl is None:
 
                     recovered_sl = self.sl
 
+                # ------------------------------------------------
+                # Session range fallback.
+                #
+                # If an old state file lost the SL, use the
+                # opposite session extreme.
+                # ------------------------------------------------
+
+                if recovered_sl is None:
+
+                    if direction == "LONG":
+
+                        if self.low is not None:
+
+                            recovered_sl = (
+                                self.low
+                            )
+
+                    else:
+
+                        if self.high is not None:
+
+                            recovered_sl = (
+                                self.high
+                            )
 
                 # ------------------------------------------------
-                # Recover active trade
-                #
-                # Do NOT create a fresh trade if one already
-                # exists. Preserve original entry time.
+                # Existing active trade.
                 # ------------------------------------------------
 
                 if self.active_trade is None:
@@ -1537,23 +1760,16 @@ class Bot:
                             recovered_entry
                         )
 
-
                 # ------------------------------------------------
-                # Recover SL
+                # Recover SL.
                 # ------------------------------------------------
 
                 if recovered_sl is not None:
 
                     self.sl = recovered_sl
 
-
                 # ------------------------------------------------
-                # Recover trade high / low
-                #
-                # Preserve already saved values.
-                #
-                # If unavailable, use current session
-                # high/low as fallback.
+                # Recover trade extreme.
                 # ------------------------------------------------
 
                 if direction == "LONG":
@@ -1574,7 +1790,6 @@ class Bot:
 
                     self.trade_low = None
 
-
                 else:
 
                     if self.trade_low is None:
@@ -1593,22 +1808,12 @@ class Bot:
 
                     self.trade_high = None
 
-
                 # ------------------------------------------------
-                # IMPORTANT:
+                # CRITICAL:
                 #
-                # DO NOT:
+                # NO close_position() HERE.
                 #
-                #   close_position()
-                #
-                # DO NOT reset:
-                #
-                #   active_trade
-                #   sl
-                #   trade_high
-                #   trade_low
-                #
-                # Existing position remains LIVE.
+                # Existing position stays live.
                 # ------------------------------------------------
 
                 self.last_position = size
@@ -1619,29 +1824,17 @@ class Bot:
 
                 self.save()
 
-
                 logging.warning(
-                    "========================================"
+                    f"EXISTING POSITION RECOVERED | "
+                    f"{direction} | SIZE={size}"
                 )
 
                 logging.warning(
-                    "BOT STARTED WITH EXISTING POSITION"
+                    f"ENTRY={recovered_entry}"
                 )
 
                 logging.warning(
-                    f"DIRECTION = {direction}"
-                )
-
-                logging.warning(
-                    f"SIZE = {size}"
-                )
-
-                logging.warning(
-                    f"ENTRY = {recovered_entry}"
-                )
-
-                logging.warning(
-                    f"SL = {self.sl}"
+                    f"SL={self.sl}"
                 )
 
                 logging.warning(
@@ -1649,13 +1842,12 @@ class Bot:
                 )
 
                 logging.warning(
-                    "BOT WILL CONTINUE FROM CURRENT POSITION"
+                    "BOT IS NOW RUNNING"
                 )
 
                 logging.warning(
                     "========================================"
                 )
-
 
                 return {
 
@@ -1703,14 +1895,8 @@ class Bot:
 
 
             # =================================================
-            # NO EXISTING POSITION
+            # NO POSITION
             # =================================================
-
-            # ------------------------------------------------
-            # There is no live position.
-            #
-            # Clear any stale trade information.
-            # ------------------------------------------------
 
             self.last_position = 0
 
@@ -1726,30 +1912,14 @@ class Bot:
 
             self.stop_reason = None
 
-            # ------------------------------------------------
-            # IMPORTANT:
-            # Do NOT reset self.high / self.low here.
-            #
-            # Today's session range must remain intact.
-            # ------------------------------------------------
-
             self.save()
 
-
             logging.warning(
-                "========================================"
+                "NO EXISTING POSITION"
             )
 
             logging.warning(
                 "BOT MANUALLY STARTED"
-            )
-
-            logging.warning(
-                f"START TIME = {now_ist().isoformat()}"
-            )
-
-            logging.warning(
-                "NO EXISTING POSITION"
             )
 
             logging.warning(
@@ -1759,7 +1929,6 @@ class Bot:
             logging.warning(
                 "========================================"
             )
-
 
             return {
 
@@ -1786,11 +1955,14 @@ class Bot:
         with self.lock:
 
             # ------------------------------------------------
-            # Disable NEW entries immediately.
+            # Disable entries FIRST.
             # ------------------------------------------------
 
             self.bot_enabled = False
-            self.stop_reason = "MANUAL STOP"
+
+            self.stop_reason = (
+                "MANUAL STOP"
+            )
 
             self.save()
 
@@ -1802,32 +1974,35 @@ class Bot:
                 "BOT MANUALLY STOPPED"
             )
 
-            logging.warning(
-                f"STOP TIME = {now_ist().isoformat()}"
-            )
-
             # ------------------------------------------------
-            # Check live exchange position.
+            # Check exchange.
             # ------------------------------------------------
 
             try:
 
-                pos = position(
-                    self.product_id
+                pos = self.refresh_position(
+                    force=True
                 )
 
             except Exception as e:
 
                 logging.exception(
-                    f"STOP POSITION CHECK ERROR | {e}"
+                    f"STOP POSITION ERROR | {e}"
                 )
 
                 return {
-                    "success": False,
-                    "bot_enabled": False,
+
+                    "success":
+                        False,
+
+                    "bot_enabled":
+                        False,
+
                     "message":
-                        "Bot stopped, but exchange position "
-                        "could not be checked."
+                        (
+                            "Bot stopped, but exchange "
+                            "position could not be checked."
+                        )
                 }
 
             size = int(
@@ -1844,9 +2019,13 @@ class Bot:
             if size == 0:
 
                 self.last_position = 0
+
                 self.sl = None
+
                 self.active_trade = None
+
                 self.trade_high = None
+
                 self.trade_low = None
 
                 self.save()
@@ -1864,24 +2043,27 @@ class Bot:
                 )
 
                 return {
-                    "success": True,
-                    "bot_enabled": False,
-                    "position_closed": True,
+
+                    "success":
+                        True,
+
+                    "bot_enabled":
+                        False,
+
+                    "position_closed":
+                        True,
+
                     "message":
                         "Bot stopped. No open position."
                 }
 
             # ------------------------------------------------
-            # Position exists -> close it.
+            # Position exists.
             #
-            # STOP BOT intentionally closes position.
+            # STOP intentionally closes it.
             # ------------------------------------------------
 
             try:
-
-                logging.warning(
-                    f"STOP -> CLOSING POSITION | SIZE={size}"
-                )
 
                 close_position(
                     self.product_id,
@@ -1894,28 +2076,30 @@ class Bot:
                     f"STOP CLOSE ERROR | {e}"
                 )
 
-                logging.warning(
-                    "BOT REMAINS STOPPED"
-                )
-
-                logging.warning(
-                    "========================================"
-                )
-
                 return {
-                    "success": False,
-                    "bot_enabled": False,
-                    "position_closed": False,
+
+                    "success":
+                        False,
+
+                    "bot_enabled":
+                        False,
+
+                    "position_closed":
+                        False,
+
                     "message":
-                        "Bot stopped, but closing the position failed. "
-                        "Please check the exchange."
+                        (
+                            "Bot stopped, but closing the "
+                            "position failed. Check Delta."
+                        )
                 }
 
             # ------------------------------------------------
-            # Wait for exchange confirmation.
+            # Verify close.
             # ------------------------------------------------
 
             closed = False
+
             final_position = None
 
             for _ in range(50):
@@ -1930,31 +2114,34 @@ class Bot:
                         self.product_id
                     )
 
-                    if (
-                        int(
-                            final_position.get(
-                                "size",
-                                0
-                            )
-                        ) == 0
-                    ):
+                    self.cached_position = (
+                        final_position
+                    )
+
+                    self.position_cache_time = (
+                        time.time()
+                    )
+
+                    if int(
+                        final_position.get(
+                            "size",
+                            0
+                        )
+                    ) == 0:
 
                         closed = True
+
                         break
 
                 except Exception as e:
 
                     logging.warning(
-                        f"STOP CLOSE VERIFY ERROR | {e}"
+                        f"STOP VERIFY ERROR | {e}"
                     )
-
-            # ------------------------------------------------
-            # Could not confirm close.
-            # ------------------------------------------------
 
             if not closed:
 
-                self.last_position = (
+                remaining = (
                     int(
                         final_position.get(
                             "size",
@@ -1965,40 +2152,34 @@ class Bot:
                     else size
                 )
 
+                self.last_position = remaining
+
                 self.save()
 
-                logging.error(
-                    "STOP FAILED TO CONFIRM FLAT POSITION"
-                )
-
-                logging.warning(
-                    "BOT REMAINS STOPPED"
-                )
-
-                logging.warning(
-                    "========================================"
-                )
-
                 return {
-                    "success": False,
-                    "bot_enabled": False,
-                    "position_closed": False,
+
+                    "success":
+                        False,
+
+                    "bot_enabled":
+                        False,
+
+                    "position_closed":
+                        False,
+
                     "message":
-                        "Bot stopped, but the position could not "
-                        "be confirmed closed."
+                        (
+                            "Bot stopped, but position "
+                            "could not be confirmed closed."
+                        )
                 }
 
             # ------------------------------------------------
-            # Record manually closed trade.
+            # Record trade.
             # ------------------------------------------------
 
             exit_price = (
                 self.last_price
-                or (
-                    final_position.get("entry")
-                    if final_position
-                    else None
-                )
             )
 
             if exit_price is None:
@@ -2017,9 +2198,19 @@ class Bot:
             )
 
             self.last_position = 0
+
             self.sl = None
+
             self.trade_high = None
+
             self.trade_low = None
+
+            self.cached_position = {
+                "size": 0,
+                "entry": None,
+                "stop_loss": None,
+                "unrealized_pnl": 0
+            }
 
             self.save()
 
@@ -2032,17 +2223,20 @@ class Bot:
             )
 
             logging.warning(
-                "NO NEW POSITION CAN BE TAKEN"
-            )
-
-            logging.warning(
                 "========================================"
             )
 
             return {
-                "success": True,
-                "bot_enabled": False,
-                "position_closed": True,
+
+                "success":
+                    True,
+
+                "bot_enabled":
+                    False,
+
+                "position_closed":
+                    True,
+
                 "message":
                     "Bot stopped and open position was closed."
             }
@@ -2070,7 +2264,7 @@ class Bot:
         )
 
         logging.warning(
-            f"NEW DAY | {day}"
+            f"NEW SESSION DAY | {day}"
         )
 
         logging.warning(
@@ -2079,28 +2273,71 @@ class Bot:
 
         self.day = day
 
-        self.high = None
-        self.low = None
-        self.sl = None
+        # ----------------------------------------------------
+        # New session range resets.
+        # ----------------------------------------------------
 
-        self.trade_high = None
-        self.trade_low = None
+        self.high = None
+
+        self.low = None
 
         self.ready = False
 
         # ----------------------------------------------------
-        # IMPORTANT:
-        # New day NEVER automatically enables the bot.
+        # If no live position exists, clear trade state.
+        #
+        # If a position somehow exists, preserve its SL/trade
+        # information. We NEVER blindly erase live trade state.
+        # ----------------------------------------------------
+
+        live_size = (
+            self.last_position
+        )
+
+        if live_size == 0:
+
+            try:
+
+                pos = self.refresh_position(
+                    force=True
+                )
+
+                live_size = int(
+                    pos.get(
+                        "size",
+                        0
+                    )
+                )
+
+            except Exception:
+
+                live_size = 0
+
+        if live_size == 0:
+
+            self.sl = None
+
+            self.trade_high = None
+
+            self.trade_low = None
+
+            self.active_trade = None
+
+        # ----------------------------------------------------
+        # New session never automatically starts a stopped bot.
         # ----------------------------------------------------
 
         self.bot_enabled = False
-        self.stop_reason = "START REQUIRED"
+
+        self.stop_reason = (
+            "START REQUIRED"
+        )
 
         self.save()
 
 
     # ========================================================
-    # PREPARE
+    # PREPARE SESSION
     # ========================================================
 
     def prepare(
@@ -2117,122 +2354,53 @@ class Bot:
 
             return False
 
+        # ----------------------------------------------------
+        # Already prepared.
+        # ----------------------------------------------------
+
         if self.ready:
 
-            if (
-                self.last_position != 0
-                and self.active_trade is None
-            ):
-
-                try:
-
-                    pos = position(
-                        self.product_id
-                    )
-
-                    if pos["size"] != 0:
-
-                        direction = (
-                            "LONG"
-                            if pos["size"] > 0
-                            else "SHORT"
-                        )
-
-                        entry = pos.get(
-                            "entry"
-                        )
-
-                        if entry is not None:
-
-                            self.active_trade = {
-
-                                "direction":
-                                    direction,
-
-                                "entry_price":
-                                    float(entry),
-
-                                "entry_time":
-                                    now_ist().isoformat(),
-
-                                "size":
-                                    abs(
-                                        int(
-                                            pos["size"]
-                                        )
-                                    )
-                            }
-
-                            exchange_sl = pos.get(
-                                "stop_loss"
-                            )
-
-                            if exchange_sl is not None:
-
-                                try:
-
-                                    self.sl = Decimal(
-                                        str(exchange_sl)
-                                    )
-
-                                except Exception:
-
-                                    pass
-
-                            self.save()
-
-                except Exception as e:
-
-                    logging.warning(
-                        f"ACTIVE TRADE RECOVERY ERROR | {e}"
-                    )
-
             return True
 
-        pos = position(
-            self.product_id
+        # ----------------------------------------------------
+        # First check current position.
+        # ----------------------------------------------------
+
+        try:
+
+            pos = self.refresh_position(
+                force=True
+            )
+
+        except Exception:
+
+            pos = {
+                "size": self.last_position,
+                "entry": None,
+                "stop_loss": None
+            }
+
+        self.last_position = int(
+            pos.get(
+                "size",
+                0
+            )
         )
 
-        self.last_position = pos[
-            "size"
-        ]
-
         # ----------------------------------------------------
-        # If position already exists, recover its SL.
+        # Recover historical session range.
         # ----------------------------------------------------
 
-        if pos.get("stop_loss") is not None:
+        if now > (
+            start
+            + timedelta(seconds=5)
+        ):
 
-            try:
-
-                self.sl = Decimal(
-                    str(
-                        pos.get(
-                            "stop_loss"
-                        )
-                    )
+            high, low = (
+                historical_high_low(
+                    start,
+                    now
                 )
-
-            except Exception:
-
-                pass
-
-        if (
-            self.high is not None
-            and self.low is not None
-        ):
-
-            self.ready = True
-
-            return True
-
-        if now > start + timedelta(
-            seconds=5
-        ):
-
-            high, low = historical_high_low(
-                start,
-                now
             )
 
             if (
@@ -2241,6 +2409,7 @@ class Bot:
             ):
 
                 self.high = high
+
                 self.low = low
 
                 logging.warning(
@@ -2261,7 +2430,12 @@ class Bot:
 
                 return True
 
+        # ----------------------------------------------------
+        # If history unavailable, initialize with current price.
+        # ----------------------------------------------------
+
         self.high = price
+
         self.low = price
 
         self.ready = True
@@ -2277,7 +2451,7 @@ class Bot:
 
 
     # ========================================================
-    # ENTER
+    # ENTER POSITION
     # ========================================================
 
     def enter(
@@ -2286,11 +2460,6 @@ class Bot:
         price,
         sl
     ):
-
-        # ----------------------------------------------------
-        # HARD SAFETY:
-        # No entry unless manually started.
-        # ----------------------------------------------------
 
         if not self.bot_enabled:
 
@@ -2304,19 +2473,35 @@ class Bot:
 
             return False
 
-        pos = position(
-            self.product_id
+        # ----------------------------------------------------
+        # Verify exchange position.
+        # ----------------------------------------------------
+
+        pos = self.refresh_position(
+            force=True
         )
 
         if pos["size"] != 0:
 
-            self.last_position = pos[
-                "size"
-            ]
+            self.last_position = (
+                pos["size"]
+            )
 
             return False
 
+        # ----------------------------------------------------
+        # Validate SL.
+        # ----------------------------------------------------
+
         if direction == "LONG":
+
+            if sl is None:
+
+                logging.error(
+                    "LONG BLOCKED | SL IS NONE"
+                )
+
+                return False
 
             if sl >= price:
 
@@ -2331,6 +2516,14 @@ class Bot:
 
         else:
 
+            if sl is None:
+
+                logging.error(
+                    "SHORT BLOCKED | SL IS NONE"
+                )
+
+                return False
+
             if sl <= price:
 
                 logging.error(
@@ -2342,10 +2535,18 @@ class Bot:
 
             side = "sell"
 
+        # ----------------------------------------------------
+        # Calculate size.
+        # ----------------------------------------------------
+
         size = order_size(
             self.product,
             price
         )
+
+        # ----------------------------------------------------
+        # Place market entry + bracket SL.
+        # ----------------------------------------------------
 
         market_entry(
             self.product_id,
@@ -2353,6 +2554,12 @@ class Bot:
             size,
             sl
         )
+
+        # ----------------------------------------------------
+        # Wait for position confirmation.
+        # ----------------------------------------------------
+
+        confirmed = False
 
         for _ in range(50):
 
@@ -2364,6 +2571,14 @@ class Bot:
                 self.product_id
             )
 
+            self.cached_position = (
+                pos
+            )
+
+            self.position_cache_time = (
+                time.time()
+            )
+
             if direction == "LONG":
 
                 if pos["size"] > 0:
@@ -2371,6 +2586,8 @@ class Bot:
                     self.last_position = (
                         pos["size"]
                     )
+
+                    confirmed = True
 
                     break
 
@@ -2382,9 +2599,11 @@ class Bot:
                         pos["size"]
                     )
 
+                    confirmed = True
+
                     break
 
-        if self.last_position == 0:
+        if not confirmed:
 
             logging.error(
                 "ENTRY NOT CONFIRMED"
@@ -2399,11 +2618,13 @@ class Bot:
         if direction == "LONG":
 
             self.trade_high = price
+
             self.trade_low = None
 
         else:
 
             self.trade_low = price
+
             self.trade_high = None
 
         self.active_trade = {
@@ -2489,7 +2710,7 @@ class Bot:
 
 
     # ========================================================
-    # PRICE
+    # PRICE TICK
     # ========================================================
 
     def price_tick(
@@ -2514,13 +2735,13 @@ class Bot:
             now = now_ist()
 
             # ------------------------------------------------
-            # Saturday square-off
+            # Saturday square-off.
             # ------------------------------------------------
 
             if saturday_squareoff(now):
 
-                pos = position(
-                    self.product_id
+                pos = self.refresh_position(
+                    force=True
                 )
 
                 if pos["size"] != 0:
@@ -2539,10 +2760,19 @@ class Bot:
 
                     self.sl = None
 
+                    self.cached_position = {
+                        "size": 0,
+                        "entry": None,
+                        "stop_loss": None,
+                        "unrealized_pnl": 0
+                    }
+
+                    self.save()
+
                 return
 
             # ------------------------------------------------
-            # Weekend
+            # Weekend.
             # ------------------------------------------------
 
             if weekend(now):
@@ -2550,7 +2780,7 @@ class Bot:
                 return
 
             # ------------------------------------------------
-            # Day
+            # New session.
             # ------------------------------------------------
 
             self.new_day(
@@ -2558,10 +2788,7 @@ class Bot:
             )
 
             # ------------------------------------------------
-            # BEFORE 05:45
-            #
-            # Preparation can happen while stopped.
-            # No entry can happen until START BOT.
+            # Before 05:45.
             # ------------------------------------------------
 
             if now < strategy_start(
@@ -2571,7 +2798,7 @@ class Bot:
                 return
 
             # ------------------------------------------------
-            # Prepare
+            # Prepare session.
             # ------------------------------------------------
 
             if not self.prepare(
@@ -2582,20 +2809,23 @@ class Bot:
                 return
 
             # ------------------------------------------------
-            # Current exchange position
+            # Get current exchange position.
+            #
+            # Cached for rate-limit protection.
             # ------------------------------------------------
 
-            pos = position(
-                self.product_id
+            pos = self.refresh_position()
+
+            size = int(
+                pos.get(
+                    "size",
+                    0
+                )
             )
 
-            size = pos[
-                "size"
-            ]
-
-            # ------------------------------------------------
+            # =================================================
             # POSITION CLOSED
-            # ------------------------------------------------
+            # =================================================
 
             if (
                 size == 0
@@ -2605,12 +2835,7 @@ class Bot:
                 old = self.last_position
 
                 # --------------------------------------------
-                # STOP LOSS
-                #
-                # Only reverse if BOT IS RUNNING.
-                #
-                # If bot is stopped, it must NEVER open
-                # another position.
+                # STOP LOSS / REVERSAL
                 # --------------------------------------------
 
                 if (
@@ -2646,13 +2871,21 @@ class Bot:
                         )
 
                         self.last_position = 0
+
                         self.sl = None
 
-                        self.enter(
-                            "SHORT",
-                            price,
-                            peak
-                        )
+                        # ------------------------------------
+                        # New SHORT SL must be previous LONG
+                        # trade/session high.
+                        # ------------------------------------
+
+                        if peak is not None:
+
+                            self.enter(
+                                "SHORT",
+                                price,
+                                peak
+                            )
 
                     else:
 
@@ -2671,18 +2904,21 @@ class Bot:
                         )
 
                         self.last_position = 0
+
                         self.sl = None
 
-                        self.enter(
-                            "LONG",
-                            price,
-                            trough
-                        )
+                        if trough is not None:
+
+                            self.enter(
+                                "LONG",
+                                price,
+                                trough
+                            )
 
                     return
 
                 # --------------------------------------------
-                # EXTERNAL CLOSE / MANUAL CLOSE
+                # External/manual close.
                 # --------------------------------------------
 
                 self.finish_active_trade(
@@ -2691,34 +2927,27 @@ class Bot:
                 )
 
                 self.last_position = 0
+
                 self.sl = None
+
+                self.cached_position = {
+                    "size": 0,
+                    "entry": None,
+                    "stop_loss": None,
+                    "unrealized_pnl": 0
+                }
+
+                self.save()
 
                 return
 
-            # ------------------------------------------------
+            # =================================================
             # LONG
-            # ------------------------------------------------
+            # =================================================
 
             if size > 0:
 
                 self.last_position = size
-
-                # Recover exchange SL if available.
-                if pos.get("stop_loss") is not None:
-
-                    try:
-
-                        self.sl = Decimal(
-                            str(
-                                pos.get(
-                                    "stop_loss"
-                                )
-                            )
-                        )
-
-                    except Exception:
-
-                        pass
 
                 if (
                     self.trade_high is None
@@ -2742,30 +2971,13 @@ class Bot:
 
                 return
 
-            # ------------------------------------------------
+            # =================================================
             # SHORT
-            # ------------------------------------------------
+            # =================================================
 
             if size < 0:
 
                 self.last_position = size
-
-                # Recover exchange SL if available.
-                if pos.get("stop_loss") is not None:
-
-                    try:
-
-                        self.sl = Decimal(
-                            str(
-                                pos.get(
-                                    "stop_loss"
-                                )
-                            )
-                        )
-
-                    except Exception:
-
-                        pass
 
                 if (
                     self.trade_low is None
@@ -2789,15 +3001,14 @@ class Bot:
 
                 return
 
-            # ------------------------------------------------
+            # =================================================
             # FLAT
-            # ------------------------------------------------
+            # =================================================
 
             self.last_position = 0
 
             # ------------------------------------------------
-            # CRITICAL:
-            # If BOT STOPPED, do not take ANY new position.
+            # Bot stopped = absolutely no new position.
             # ------------------------------------------------
 
             if not self.bot_enabled:
@@ -2805,12 +3016,16 @@ class Bot:
                 return
 
             # ------------------------------------------------
-            # NEW HIGH
+            # NEW HIGH -> LONG
             # ------------------------------------------------
 
-            if price > self.high:
+            if (
+                self.high is not None
+                and price > self.high
+            ):
 
                 old_high = self.high
+
                 sl = self.low
 
                 logging.warning(
@@ -2831,12 +3046,16 @@ class Bot:
                 return
 
             # ------------------------------------------------
-            # NEW LOW
+            # NEW LOW -> SHORT
             # ------------------------------------------------
 
-            if price < self.low:
+            if (
+                self.low is not None
+                and price < self.low
+            ):
 
                 old_low = self.low
+
                 sl = self.high
 
                 logging.warning(
@@ -2858,11 +3077,15 @@ class Bot:
 
 
 # ============================================================
-# DASHBOARD
+# GLOBAL BOT INSTANCE
 # ============================================================
 
 BOT_INSTANCE = None
 
+
+# ============================================================
+# JSON HELPERS
+# ============================================================
 
 def decimal_json(value):
 
@@ -2885,6 +3108,10 @@ def decimal_json(value):
 
         return value
 
+
+# ============================================================
+# HISTORY STATISTICS
+# ============================================================
 
 def history_statistics(
     history
@@ -3044,6 +3271,10 @@ def history_statistics(
     }
 
 
+# ============================================================
+# DASHBOARD DATA
+# ============================================================
+
 def dashboard_data():
 
     bot = BOT_INSTANCE
@@ -3055,11 +3286,17 @@ def dashboard_data():
             "success":
                 True,
 
+            "online":
+                False,
+
             "bot_running":
                 False,
 
             "bot_enabled":
                 False,
+
+            "account_name":
+                ACCOUNT_NAME,
 
             "message":
                 "Bot is starting..."
@@ -3067,44 +3304,21 @@ def dashboard_data():
 
     with bot.lock:
 
-        try:
+        # ----------------------------------------------------
+        # Live position.
+        # ----------------------------------------------------
 
-            live_position = position(
-                bot.product_id
-            )
+        live_position = bot.refresh_position(
+            force=False
+        )
 
-        except Exception as e:
+        # ----------------------------------------------------
+        # Live balance.
+        # ----------------------------------------------------
 
-            logging.warning(
-                f"DASHBOARD POSITION ERROR | {e}"
-            )
-
-            live_position = {
-
-                "size":
-                    0,
-
-                "entry":
-                    None,
-
-                "stop_loss":
-                    None,
-
-                "unrealized_pnl":
-                    0
-            }
-
-        try:
-
-            live_balance = balance()
-
-        except Exception as e:
-
-            logging.warning(
-                f"DASHBOARD BALANCE ERROR | {e}"
-            )
-
-            live_balance = None
+        live_balance = bot.refresh_balance(
+            force=False
+        )
 
         size = int(
             live_position.get(
@@ -3125,9 +3339,84 @@ def dashboard_data():
 
             direction = "FLAT"
 
+        # ----------------------------------------------------
+        # Unrealized PnL.
+        #
+        # Delta's documented /v2/positions response does not
+        # guarantee this field, so calculate a useful local
+        # value when possible.
+        # ----------------------------------------------------
+
+        unrealized_pnl = (
+            live_position.get(
+                "unrealized_pnl"
+            )
+        )
+
+        if unrealized_pnl is None:
+
+            try:
+
+                if (
+                    size != 0
+                    and live_position.get(
+                        "entry"
+                    ) is not None
+                    and bot.last_price is not None
+                ):
+
+                    entry = Decimal(
+                        str(
+                            live_position.get(
+                                "entry"
+                            )
+                        )
+                    )
+
+                    qty = Decimal(
+                        str(
+                            abs(size)
+                        )
+                    )
+
+                    contract_value = (
+                        contract_value_from_product(
+                            bot.product
+                        )
+                    )
+
+                    if size > 0:
+
+                        unrealized_pnl = (
+                            bot.last_price
+                            - entry
+                        ) * qty * contract_value
+
+                    else:
+
+                        unrealized_pnl = (
+                            entry
+                            - bot.last_price
+                        ) * qty * contract_value
+
+                else:
+
+                    unrealized_pnl = Decimal(
+                        "0"
+                    )
+
+            except Exception:
+
+                unrealized_pnl = Decimal(
+                    "0"
+                )
+
+        # ----------------------------------------------------
+        # History.
+        # ----------------------------------------------------
+
         history = load_trade_history()
 
-        # Newest first.
         history_for_dashboard = list(
             reversed(history)
         )
@@ -3136,16 +3425,29 @@ def dashboard_data():
             history
         )
 
+        # ----------------------------------------------------
+        # Online state.
+        # ----------------------------------------------------
+
+        online = (
+            bot.websocket_connected
+            or bot.last_price is not None
+        )
+
         return {
 
             "success":
                 True,
 
-            # Process/server status.
+            "online":
+                online,
+
             "bot_running":
                 True,
 
-            # Trading status.
+            "server_online":
+                True,
+
             "bot_enabled":
                 bot.bot_enabled,
 
@@ -3159,8 +3461,19 @@ def dashboard_data():
             "stop_reason":
                 bot.stop_reason,
 
+            "account_name":
+                ACCOUNT_NAME,
+
             "symbol":
                 SYMBOL,
+
+            "leverage":
+                float(LEVERAGE),
+
+            "balance_fraction":
+                float(
+                    BALANCE_FRACTION
+                ),
 
             "current_price":
                 decimal_json(
@@ -3203,19 +3516,15 @@ def dashboard_data():
                     ),
 
                 "stop_loss":
-                    decimal_json(
-                        live_position.get(
-                            "stop_loss"
+                    (
+                        decimal_json(
+                            bot.sl
                         )
-                        or bot.sl
                     ),
 
                 "unrealized_pnl":
                     decimal_json(
-                        live_position.get(
-                            "unrealized_pnl",
-                            0
-                        )
+                        unrealized_pnl
                     )
             },
 
@@ -3227,6 +3536,21 @@ def dashboard_data():
 
             "history_count":
                 len(history),
+
+            "connection": {
+
+                "websocket":
+                    bot.websocket_connected,
+
+                "last_message":
+                    bot.last_ws_message_time,
+
+                "last_api_ok":
+                    bot.last_api_ok_time,
+
+                "api_error":
+                    bot.api_error
+            },
 
             "session": {
 
@@ -3273,6 +3597,10 @@ class DashboardHandler(
         )
 
 
+    # ========================================================
+    # GET
+    # ========================================================
+
     def do_GET(self):
 
         if self.path == "/api/health":
@@ -3284,6 +3612,9 @@ class DashboardHandler(
                 "success":
                     True,
 
+                "online":
+                    bot is not None,
+
                 "bot_running":
                     bot is not None,
 
@@ -3294,9 +3625,11 @@ class DashboardHandler(
                         else False
                     ),
 
+                "account_name":
+                    ACCOUNT_NAME,
+
                 "symbol":
                     SYMBOL
-
             })
 
             return
@@ -3316,10 +3649,14 @@ class DashboardHandler(
         return super().do_GET()
 
 
+    # ========================================================
+    # POST
+    # ========================================================
+
     def do_POST(self):
 
         # ----------------------------------------------------
-        # START BOT
+        # START
         # ----------------------------------------------------
 
         if self.path == "/api/bot/start":
@@ -3347,7 +3684,9 @@ class DashboardHandler(
                     result,
                     status=(
                         200
-                        if result.get("success")
+                        if result.get(
+                            "success"
+                        )
                         else 409
                     )
                 )
@@ -3370,7 +3709,7 @@ class DashboardHandler(
             return
 
         # ----------------------------------------------------
-        # STOP BOT
+        # STOP
         # ----------------------------------------------------
 
         if self.path == "/api/bot/stop":
@@ -3398,7 +3737,9 @@ class DashboardHandler(
                     result,
                     status=(
                         200
-                        if result.get("success")
+                        if result.get(
+                            "success"
+                        )
                         else 500
                     )
                 )
@@ -3420,6 +3761,10 @@ class DashboardHandler(
 
             return
 
+        # ----------------------------------------------------
+        # UNKNOWN
+        # ----------------------------------------------------
+
         self.send_json(
             {
                 "success": False,
@@ -3429,6 +3774,10 @@ class DashboardHandler(
             status=404
         )
 
+
+    # ========================================================
+    # SEND JSON
+    # ========================================================
 
     def send_json(
         self,
@@ -3478,6 +3827,10 @@ class DashboardHandler(
         return
 
 
+# ============================================================
+# START DASHBOARD
+# ============================================================
+
 def start_dashboard():
 
     def server_thread():
@@ -3505,11 +3858,19 @@ def start_dashboard():
             )
 
             logging.warning(
+                f"ACCOUNT = {ACCOUNT_NAME}"
+            )
+
+            logging.warning(
                 "START/STOP CONTROL = ENABLED"
             )
 
             logging.warning(
                 "EXISTING POSITION RECOVERY = ENABLED"
+            )
+
+            logging.warning(
+                "TRADE HISTORY = ENABLED"
             )
 
             logging.warning(
@@ -3548,6 +3909,8 @@ def run_websocket(bot):
             )
 
             def on_open(ws):
+
+                bot.websocket_connected = True
 
                 payload = {
 
@@ -3591,6 +3954,10 @@ def run_websocket(bot):
                 message
             ):
 
+                bot.last_ws_message_time = (
+                    now_ist().isoformat()
+                )
+
                 try:
 
                     data = json.loads(
@@ -3631,6 +3998,8 @@ def run_websocket(bot):
                 error
             ):
 
+                bot.websocket_connected = False
+
                 logging.error(
                     f"WS ERROR | {error}"
                 )
@@ -3641,6 +4010,8 @@ def run_websocket(bot):
                 code,
                 msg
             ):
+
+                bot.websocket_connected = False
 
                 logging.warning(
                     f"WS CLOSED | {code} | {msg}"
@@ -3661,6 +4032,8 @@ def run_websocket(bot):
             )
 
         except Exception as e:
+
+            bot.websocket_connected = False
 
             logging.exception(
                 f"WS CRASH | {e}"
@@ -3690,6 +4063,10 @@ if __name__ == "__main__":
     )
 
     logging.warning(
+        f"ACCOUNT = {ACCOUNT_NAME}"
+    )
+
+    logging.warning(
         f"SYMBOL = {SYMBOL}"
     )
 
@@ -3706,6 +4083,14 @@ if __name__ == "__main__":
     )
 
     logging.warning(
+        "EXISTING POSITION = RECOVERED, NOT CLOSED"
+    )
+
+    logging.warning(
+        "STOP = CLOSE POSITION + STOP BOT"
+    )
+
+    logging.warning(
         "FEED = TRADES WEBSOCKET"
     )
 
@@ -3718,19 +4103,11 @@ if __name__ == "__main__":
     )
 
     logging.warning(
-        "TRADE HISTORY = ALL-TIME ENABLED"
+        "TODAY + ALL-TIME HISTORY = ENABLED"
     )
 
     logging.warning(
         f"TRADE HISTORY FILE = {TRADE_HISTORY_FILE}"
-    )
-
-    logging.warning(
-        "EXISTING POSITION RECOVERY = ENABLED"
-    )
-
-    logging.warning(
-        "BOT STARTUP STATE = STOPPED"
     )
 
     logging.warning(
@@ -3739,7 +4116,15 @@ if __name__ == "__main__":
 
     try:
 
+        # ----------------------------------------------------
+        # Product
+        # ----------------------------------------------------
+
         product_info = product()
+
+        # ----------------------------------------------------
+        # Leverage
+        # ----------------------------------------------------
 
         set_leverage(
             int(
@@ -3747,13 +4132,58 @@ if __name__ == "__main__":
             )
         )
 
+        # ----------------------------------------------------
+        # Create bot
+        # ----------------------------------------------------
+
         bot = Bot(
             product_info
         )
 
         BOT_INSTANCE = bot
 
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Immediately read live exchange position once.
+        #
+        # This does NOT enable trading.
+        # It only lets dashboard show the real position.
+        # ----------------------------------------------------
+
+        try:
+
+            live_pos = bot.refresh_position(
+                force=True
+            )
+
+            bot.last_position = int(
+                live_pos.get(
+                    "size",
+                    0
+                )
+            )
+
+            logging.warning(
+                f"STARTUP EXCHANGE POSITION = "
+                f"{bot.last_position}"
+            )
+
+        except Exception as e:
+
+            logging.warning(
+                f"STARTUP POSITION READ ERROR | {e}"
+            )
+
+        # ----------------------------------------------------
+        # Dashboard
+        # ----------------------------------------------------
+
         start_dashboard()
+
+        # ----------------------------------------------------
+        # WebSocket
+        # ----------------------------------------------------
 
         run_websocket(
             bot
@@ -3769,4 +4199,4 @@ if __name__ == "__main__":
 
         logging.exception(
             f"FATAL ERROR | {e}"
-                )
+        )
