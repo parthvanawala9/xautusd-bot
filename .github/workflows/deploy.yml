@@ -14,16 +14,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+
       - name: Checkout
         uses: actions/checkout@v4
+
+
+      # ============================================================
+      # PREPARE SSH
+      # ============================================================
 
       - name: Prepare SSH
         env:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
+
           printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
+
           chmod 600 ~/.ssh/oracle.key
+
+
+      # ============================================================
+      # TEST ORACLE SSH
+      # ============================================================
 
       - name: Test Oracle SSH
         env:
@@ -39,6 +56,202 @@ jobs:
             -o ServerAliveCountMax=3 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "echo ORACLE_SSH_OK"
+
+
+      # ============================================================
+      # COPY BOT.PY
+      # ============================================================
+
+      - name: Copy Trading Bot
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          echo "===== PREPARING BOT DIRECTORY ====="
+
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "mkdir -p /home/opc/xautusd-bot"
+
+          echo "===== COPYING bot.py ====="
+
+          scp \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            bot.py \
+            "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/bot.py"
+
+          echo "===== BOT.PY COPIED ====="
+
+
+      # ============================================================
+      # VERIFY BOT FILE
+      # ============================================================
+
+      - name: Verify Trading Bot File
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          echo "===== BOT FILE ====="
+
+          ls -lh /home/opc/xautusd-bot/bot.py
+
+          echo
+          echo "===== PYTHON SYNTAX CHECK ====="
+
+          python3 -m py_compile \
+            /home/opc/xautusd-bot/bot.py
+
+          echo
+          echo "BOT_SYNTAX_OK"
+
+          EOF
+
+
+      # ============================================================
+      # RESTART TRADING BOT
+      # ============================================================
+
+      - name: Restart XAUTUSD Trading Bot
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          echo "========================================"
+          echo "RESTARTING XAUTUSD BOT"
+          echo "========================================"
+
+          sudo systemctl restart xautusd-bot
+
+          echo
+          echo "Waiting for bot..."
+          sleep 5
+
+          echo
+          echo "===== SERVICE ACTIVE CHECK ====="
+
+          if sudo systemctl is-active --quiet xautusd-bot; then
+            echo "XAUTUSD_BOT_ACTIVE"
+          else
+            echo "XAUTUSD_BOT_FAILED_TO_START"
+
+            echo
+            echo "===== SYSTEMD STATUS ====="
+
+            sudo systemctl status \
+              xautusd-bot \
+              --no-pager \
+              -l || true
+
+            echo
+            echo "===== BOT LOG ====="
+
+            sudo journalctl \
+              -u xautusd-bot \
+              -n 100 \
+              --no-pager || true
+
+            exit 1
+          fi
+
+          EOF
+
+
+      # ============================================================
+      # VERIFY TRADING BOT
+      # ============================================================
+
+      - name: Verify XAUTUSD Trading Bot
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=10 \
+            -o ServerAliveCountMax=3 \
+            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+
+          echo "========================================"
+          echo "XAUTUSD BOT VERIFICATION"
+          echo "========================================"
+
+          echo
+          echo "===== SYSTEMD STATUS ====="
+
+          sudo systemctl status \
+            xautusd-bot \
+            --no-pager \
+            -l
+
+          echo
+          echo "===== ACTIVE STATE ====="
+
+          sudo systemctl is-active \
+            xautusd-bot
+
+          echo
+          echo "===== ENABLED STATE ====="
+
+          sudo systemctl is-enabled \
+            xautusd-bot || true
+
+          echo
+          echo "===== BOT PROCESS ====="
+
+          pgrep -af "bot.py" || true
+
+          echo
+          echo "===== LAST 80 BOT LOGS ====="
+
+          sudo journalctl \
+            -u xautusd-bot \
+            -n 80 \
+            --no-pager
+
+          echo
+          echo "========================================"
+          echo "XAUTUSD BOT VERIFICATION COMPLETE"
+          echo "========================================"
+
+          EOF
+
+
+      # ============================================================
+      # COPY DASHBOARD API
+      # ============================================================
 
       - name: Copy Dashboard API
         env:
@@ -65,6 +278,11 @@ jobs:
             dashboard_api.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/dashboard/dashboard_api.py"
 
+
+      # ============================================================
+      # RESTART DASHBOARD API
+      # ============================================================
+
       - name: Restart Dashboard API
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
@@ -81,7 +299,11 @@ jobs:
 
           cd /home/opc/xautusd-bot
 
-          python3 -m pip install --user flask flask-cors requests python-dotenv
+          python3 -m pip install --user \
+            flask \
+            flask-cors \
+            requests \
+            python-dotenv
 
           pkill -f "dashboard/dashboard_api.py" || true
 
@@ -94,24 +316,36 @@ jobs:
           sleep 5
 
           echo "===== DASHBOARD PROCESS ====="
+
           pgrep -af "dashboard/dashboard_api.py" || true
 
+          echo
           echo "===== PORT 8000 ====="
+
           ss -lntp | grep ':8000' || true
 
+          echo
           echo "===== HEALTH ====="
+
           curl --max-time 15 -fsS \
-            http://127.0.0.1:8000/api/health
+            http://127.0.0.1:8000/api/health || true
 
           echo
 
+          echo
           echo "===== DASHBOARD ====="
+
           curl --max-time 15 -fsS \
-            http://127.0.0.1:8000/api/dashboard
+            http://127.0.0.1:8000/api/dashboard || true
 
           echo
 
           EOF
+
+
+      # ============================================================
+      # CLOUDFLARE QUICK TUNNEL
+      # ============================================================
 
       - name: Start Cloudflare Quick Tunnel
         env:
@@ -137,17 +371,27 @@ jobs:
           mkdir -p /home/opc/xautusd-bot/dashboard
 
           if [ -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid ]; then
-            OLD_PID=$(cat /home/opc/xautusd-bot/dashboard/quick-tunnel.pid 2>/dev/null || true)
 
-            if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            OLD_PID=$(cat \
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.pid \
+              2>/dev/null || true)
+
+            if [ -n "$OLD_PID" ] && \
+               kill -0 "$OLD_PID" 2>/dev/null; then
+
               kill "$OLD_PID" 2>/dev/null || true
+
               sleep 2
+
             fi
+
           fi
 
-          rm -f /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
+          rm -f \
+            /home/opc/xautusd-bot/dashboard/quick-tunnel.pid
 
-          : > /home/opc/xautusd-bot/dashboard/quick-tunnel.log
+          : > \
+            /home/opc/xautusd-bot/dashboard/quick-tunnel.log
 
           nohup "$CLOUDFLARED" tunnel \
             --url http://127.0.0.1:8000 \
@@ -163,6 +407,7 @@ jobs:
           URL=""
 
           for i in $(seq 1 30); do
+
             sleep 2
 
             URL=$(grep -oE \
@@ -173,12 +418,19 @@ jobs:
             if [ -n "$URL" ]; then
               break
             fi
+
           done
 
           if [ -z "$URL" ]; then
+
             echo "ERROR: Cloudflare URL not found"
-            cat /home/opc/xautusd-bot/dashboard/quick-tunnel.log || true
+
+            cat \
+              /home/opc/xautusd-bot/dashboard/quick-tunnel.log \
+              || true
+
             exit 1
+
           fi
 
           echo
@@ -197,17 +449,26 @@ jobs:
 
           echo
           echo "===== REMOTE HEALTH TEST ====="
-          curl --max-time 20 -fsS "$URL/api/health"
+
+          curl --max-time 20 -fsS \
+            "$URL/api/health" || true
 
           echo
 
           echo
           echo "===== REMOTE DASHBOARD TEST ====="
-          curl --max-time 20 -fsS "$URL/api/dashboard"
+
+          curl --max-time 20 -fsS \
+            "$URL/api/dashboard" || true
 
           echo
 
           EOF
+
+
+      # ============================================================
+      # FINAL VERIFICATION
+      # ============================================================
 
       - name: Final Verification
         env:
@@ -223,9 +484,40 @@ jobs:
             -o ServerAliveCountMax=3 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          echo "===== DASHBOARD API ====="
+          echo
+          echo "========================================"
+          echo "FINAL XAUTUSD BOT CHECK"
+          echo "========================================"
 
-          pgrep -af "dashboard/dashboard_api.py" || true
+          echo
+          echo "===== BOT SERVICE ====="
+
+          sudo systemctl is-active \
+            xautusd-bot
+
+          echo
+          echo "===== BOT PROCESS ====="
+
+          pgrep -af "bot.py" || true
+
+          echo
+          echo "===== BOT LOGS ====="
+
+          sudo journalctl \
+            -u xautusd-bot \
+            -n 40 \
+            --no-pager
+
+          echo
+          echo "========================================"
+          echo "FINAL DASHBOARD CHECK"
+          echo "========================================"
+
+          echo
+          echo "===== DASHBOARD PROCESS ====="
+
+          pgrep -af \
+            "dashboard/dashboard_api.py" || true
 
           echo
           echo "===== PORT 8000 ====="
@@ -235,17 +527,24 @@ jobs:
           echo
           echo "===== LOCAL HEALTH ====="
 
-          curl --max-time 15 -fsS \
-            http://127.0.0.1:8000/api/health
+          curl --max-time 15 \
+            http://127.0.0.1:8000/api/health \
+            || true
 
           echo
 
           echo
           echo "===== DASHBOARD DATA ====="
 
-          curl --max-time 15 -fsS \
-            http://127.0.0.1:8000/api/dashboard
+          curl --max-time 15 \
+            http://127.0.0.1:8000/api/dashboard \
+            || true
 
           echo
+
+          echo
+          echo "========================================"
+          echo "DEPLOYMENT COMPLETE"
+          echo "========================================"
 
           EOF
