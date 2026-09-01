@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
 
+
 jobs:
 
   deploy:
@@ -27,7 +28,7 @@ jobs:
 
 
       # =====================================================
-      # SSH
+      # PREPARE SSH
       # =====================================================
 
       - name: Prepare SSH
@@ -43,6 +44,10 @@ jobs:
 
           chmod 600 ~/.ssh/oracle.key
 
+
+      # =====================================================
+      # TEST ORACLE SSH
+      # =====================================================
 
       - name: Test Oracle SSH
         env:
@@ -63,8 +68,11 @@ jobs:
 
 
       # =====================================================
-      # COPY BOT + DASHBOARD
-      # ROOT FOLDER
+      # COPY BOT + DASHBOARD FILES
+      #
+      # ALL FILES ARE IN ROOT FOLDER
+      #
+      # bot.py itself starts the dashboard.
       # =====================================================
 
       - name: Copy Bot And Dashboard
@@ -86,7 +94,6 @@ jobs:
             -o StrictHostKeyChecking=no \
             -o ConnectTimeout=20 \
             bot.py \
-            dashboard_api.py \
             index.html \
             app.js \
             style.css \
@@ -94,10 +101,14 @@ jobs:
 
 
       # =====================================================
-      # INSTALL DASHBOARD DEPENDENCIES
+      # RESTART EXISTING BOT
+      #
+      # bot.py now starts BOTH:
+      # 1. XAUTUSD trading bot
+      # 2. Dashboard on 127.0.0.1:8000
       # =====================================================
 
-      - name: Install Dashboard Dependencies
+      - name: Restart XAUTUSD Bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -110,82 +121,19 @@ jobs:
             -o ConnectTimeout=20 \
             "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
 
-          cd /home/opc/xautusd-bot
-
           echo "========================================"
-          echo "INSTALL DASHBOARD"
+          echo "RESTART XAUTUSD BOT + DASHBOARD"
           echo "========================================"
 
-          python3 -m venv dashboard_venv
+          sudo systemctl restart xautusd-bot.service
 
-          /home/opc/xautusd-bot/dashboard_venv/bin/python \
-            -m pip install --upgrade pip
+          sleep 8
 
-          /home/opc/xautusd-bot/dashboard_venv/bin/pip \
-            install flask flask-cors requests python-dotenv
-
-          echo "DASHBOARD_DEPENDENCIES_OK"
-
-          EOF
-
-
-      # =====================================================
-      # CREATE DASHBOARD SYSTEMD SERVICE
-      # =====================================================
-
-      - name: Create Dashboard Service
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
-        run: |
-
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=20 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
-          sudo tee /etc/systemd/system/xautusd-dashboard.service > /dev/null << 'SERVICE'
-
-          [Unit]
-          Description=XAUTUSD Trading Dashboard
-          After=network.target xautusd-bot.service
-
-          [Service]
-          Type=simple
-          User=opc
-          WorkingDirectory=/home/opc/xautusd-bot
-
-          EnvironmentFile=/home/opc/xautusd-bot/.env
-
-          ExecStart=/home/opc/xautusd-bot/dashboard_venv/bin/python /home/opc/xautusd-bot/dashboard_api.py
-
-          Restart=always
-          RestartSec=5
-
-          StandardOutput=journal
-          StandardError=journal
-
-          [Install]
-          WantedBy=multi-user.target
-
-          SERVICE
-
-          sudo systemctl daemon-reload
-
-          sudo systemctl enable xautusd-dashboard.service
-
-          sudo systemctl restart xautusd-dashboard.service
-
-          sleep 5
-
-          echo "========================================"
-          echo "DASHBOARD SERVICE STATUS"
-          echo "========================================"
+          echo
+          echo "===== BOT SERVICE STATUS ====="
 
           sudo systemctl --no-pager status \
-            xautusd-dashboard.service || true
+            xautusd-bot.service || true
 
           EOF
 
@@ -227,17 +175,29 @@ jobs:
 
           fi
 
+
           echo
           echo "===== BOT PROCESS ====="
 
           pgrep -af \
             "/home/opc/xautusd-bot/bot.py" || true
 
+
+          echo
+          echo "===== RECENT BOT LOGS ====="
+
+          sudo journalctl \
+            -u xautusd-bot.service \
+            -n 30 \
+            --no-pager
+
           EOF
 
 
       # =====================================================
       # VERIFY DASHBOARD
+      #
+      # Dashboard is running INSIDE bot.py
       # =====================================================
 
       - name: Verify Dashboard
@@ -257,22 +217,30 @@ jobs:
           echo "DASHBOARD VERIFICATION"
           echo "========================================"
 
-          echo
-          echo "===== DASHBOARD SERVICE ====="
-
-          sudo systemctl is-active \
-            xautusd-dashboard.service
-
-          echo
-          echo "===== DASHBOARD PROCESS ====="
-
-          pgrep -af \
-            "dashboard_api.py" || true
 
           echo
           echo "===== PORT 8000 ====="
 
-          ss -lntp | grep ':8000'
+          if ss -lnt | grep -q ':8000'; then
+
+            echo "DASHBOARD_PORT_8000_OK"
+
+          else
+
+            echo "DASHBOARD_PORT_8000_FAILED"
+
+            echo
+            echo "===== BOT LOGS ====="
+
+            sudo journalctl \
+              -u xautusd-bot.service \
+              -n 50 \
+              --no-pager
+
+            exit 1
+
+          fi
+
 
           echo
           echo "===== HEALTH ====="
@@ -284,6 +252,7 @@ jobs:
 
           echo
 
+
           echo
           echo "===== DASHBOARD DATA ====="
 
@@ -293,6 +262,7 @@ jobs:
             http://127.0.0.1:8000/api/dashboard
 
           echo
+
 
           echo
           echo "===== DASHBOARD PAGE ====="
@@ -327,6 +297,7 @@ jobs:
 
           CLOUDFLARED=$(command -v cloudflared || true)
 
+
           if [ -z "$CLOUDFLARED" ]; then
 
             echo "ERROR: cloudflared not installed"
@@ -336,15 +307,17 @@ jobs:
           fi
 
 
-          DASHBOARD_DIR="/home/opc/xautusd-bot"
+          BOT_DIR="/home/opc/xautusd-bot"
 
-          PID_FILE="$DASHBOARD_DIR/quick-tunnel.pid"
+          PID_FILE="$BOT_DIR/quick-tunnel.pid"
 
-          LOG_FILE="$DASHBOARD_DIR/quick-tunnel.log"
+          LOG_FILE="$BOT_DIR/quick-tunnel.log"
 
 
-          mkdir -p "$DASHBOARD_DIR"
+          mkdir -p "$BOT_DIR"
 
+
+          # Stop previous Quick Tunnel if running.
 
           if [ -f "$PID_FILE" ]; then
 
@@ -366,6 +339,9 @@ jobs:
 
           : > "$LOG_FILE"
 
+
+          # Start tunnel to dashboard
+          # running inside bot.py.
 
           nohup "$CLOUDFLARED" tunnel \
             --url http://127.0.0.1:8000 \
@@ -394,7 +370,9 @@ jobs:
               | tail -n 1 || true)
 
             if [ -n "$URL" ]; then
+
               break
+
             fi
 
           done
@@ -438,5 +416,11 @@ jobs:
             "$URL/api/dashboard"
 
           echo
+
+
+          echo
+          echo "========================================"
+          echo "DEPLOYMENT SUCCESS"
+          echo "========================================"
 
           EOF
