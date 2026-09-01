@@ -39,7 +39,7 @@ jobs:
 
 
       # ============================================================
-      # TEST ORACLE SSH
+      # TEST ORACLE
       # ============================================================
 
       - name: Test Oracle SSH
@@ -67,8 +67,6 @@ jobs:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
         run: |
-          echo "===== PREPARING BOT DIRECTORY ====="
-
           ssh \
             -i ~/.ssh/oracle.key \
             -o StrictHostKeyChecking=no \
@@ -78,8 +76,6 @@ jobs:
             -o ServerAliveCountMax=3 \
             "$ORACLE_USER@$ORACLE_HOST" \
             "mkdir -p /home/opc/xautusd-bot"
-
-          echo "===== COPYING bot.py ====="
 
           scp \
             -i ~/.ssh/oracle.key \
@@ -91,14 +87,14 @@ jobs:
             bot.py \
             "$ORACLE_USER@$ORACLE_HOST:/home/opc/xautusd-bot/bot.py"
 
-          echo "===== BOT.PY COPIED ====="
+          echo "BOT.PY COPIED"
 
 
       # ============================================================
-      # VERIFY BOT FILE
+      # INSTALL DEPENDENCIES + CREATE SYSTEMD SERVICE
       # ============================================================
 
-      - name: Verify Trading Bot File
+      - name: Install Bot And Create Service
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
@@ -110,65 +106,110 @@ jobs:
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" << 'REMOTE_EOF'
 
-          echo "===== BOT FILE ====="
+          set -e
 
-          ls -lh /home/opc/xautusd-bot/bot.py
+          BOT_DIR="/home/opc/xautusd-bot"
+          BOT_FILE="$BOT_DIR/bot.py"
+
+          echo "========================================"
+          echo "INSTALLING BOT DEPENDENCIES"
+          echo "========================================"
+
+          python3 -m pip install --user --upgrade \
+            requests \
+            websocket-client \
+            python-dotenv
 
           echo
-          echo "===== PYTHON SYNTAX CHECK ====="
-
-          python3 -m py_compile \
-            /home/opc/xautusd-bot/bot.py
+          echo "===== PYTHON VERSION ====="
+          python3 --version
 
           echo
+          echo "===== BOT SYNTAX CHECK ====="
+
+          python3 -m py_compile "$BOT_FILE"
+
           echo "BOT_SYNTAX_OK"
 
-          EOF
-
-
-      # ============================================================
-      # RESTART TRADING BOT
-      # ============================================================
-
-      - name: Restart XAUTUSD Trading Bot
-        env:
-          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
-          ORACLE_USER: ${{ secrets.ORACLE_USER }}
-        run: |
-          ssh \
-            -i ~/.ssh/oracle.key \
-            -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=15 \
-            -o ConnectionAttempts=1 \
-            -o ServerAliveInterval=10 \
-            -o ServerAliveCountMax=3 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
-
+          echo
           echo "========================================"
-          echo "RESTARTING XAUTUSD BOT"
+          echo "CREATING SYSTEMD SERVICE"
           echo "========================================"
 
-          sudo systemctl restart xautusd-bot
+          sudo tee /etc/systemd/system/xautusd-bot.service > /dev/null << 'SERVICE_EOF'
+          [Unit]
+          Description=XAUTUSD Delta Exchange Trading Bot
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=opc
+          WorkingDirectory=/home/opc/xautusd-bot
+
+          ExecStart=/usr/bin/python3 /home/opc/xautusd-bot/bot.py
+
+          Restart=always
+          RestartSec=5
+
+          Environment=PYTHONUNBUFFERED=1
+
+          StandardOutput=journal
+          StandardError=journal
+
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE_EOF
 
           echo
-          echo "Waiting for bot..."
-          sleep 5
+          echo "SYSTEMD FILE CREATED"
 
           echo
-          echo "===== SERVICE ACTIVE CHECK ====="
+          echo "===== STOP OLD BOT PROCESS ====="
 
-          if sudo systemctl is-active --quiet xautusd-bot; then
+          sudo systemctl stop xautusd-bot.service 2>/dev/null || true
+
+          pkill -f "/home/opc/xautusd-bot/bot.py" 2>/dev/null || true
+
+          sleep 2
+
+          echo
+          echo "===== RELOAD SYSTEMD ====="
+
+          sudo systemctl daemon-reload
+
+          echo
+          echo "===== ENABLE BOT ====="
+
+          sudo systemctl enable xautusd-bot.service
+
+          echo
+          echo "===== START BOT ====="
+
+          sudo systemctl start xautusd-bot.service
+
+          echo
+          echo "Waiting for bot startup..."
+
+          sleep 8
+
+          echo
+          echo "========================================"
+          echo "BOT SERVICE STATUS"
+          echo "========================================"
+
+          if sudo systemctl is-active --quiet xautusd-bot.service; then
             echo "XAUTUSD_BOT_ACTIVE"
           else
-            echo "XAUTUSD_BOT_FAILED_TO_START"
+            echo "XAUTUSD_BOT_NOT_ACTIVE"
 
             echo
             echo "===== SYSTEMD STATUS ====="
 
             sudo systemctl status \
-              xautusd-bot \
+              xautusd-bot.service \
               --no-pager \
               -l || true
 
@@ -176,18 +217,18 @@ jobs:
             echo "===== BOT LOG ====="
 
             sudo journalctl \
-              -u xautusd-bot \
+              -u xautusd-bot.service \
               -n 100 \
               --no-pager || true
 
             exit 1
           fi
 
-          EOF
+          REMOTE_EOF
 
 
       # ============================================================
-      # VERIFY TRADING BOT
+      # VERIFY BOT + SHOW LOGS
       # ============================================================
 
       - name: Verify XAUTUSD Trading Bot
@@ -202,51 +243,45 @@ jobs:
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" << 'REMOTE_EOF'
 
+          echo
           echo "========================================"
-          echo "XAUTUSD BOT VERIFICATION"
+          echo "XAUTUSD BOT"
           echo "========================================"
 
           echo
-          echo "===== SYSTEMD STATUS ====="
-
-          sudo systemctl status \
-            xautusd-bot \
-            --no-pager \
-            -l
-
-          echo
-          echo "===== ACTIVE STATE ====="
+          echo "===== SERVICE ====="
 
           sudo systemctl is-active \
-            xautusd-bot
+            xautusd-bot.service
 
           echo
-          echo "===== ENABLED STATE ====="
+          echo "===== ENABLED ====="
 
           sudo systemctl is-enabled \
-            xautusd-bot || true
+            xautusd-bot.service
 
           echo
-          echo "===== BOT PROCESS ====="
+          echo "===== PROCESS ====="
 
-          pgrep -af "bot.py" || true
+          pgrep -af \
+            "/home/opc/xautusd-bot/bot.py" || true
 
           echo
-          echo "===== LAST 80 BOT LOGS ====="
+          echo "===== LAST 100 BOT LOGS ====="
 
           sudo journalctl \
-            -u xautusd-bot \
-            -n 80 \
+            -u xautusd-bot.service \
+            -n 100 \
             --no-pager
 
           echo
           echo "========================================"
-          echo "XAUTUSD BOT VERIFICATION COMPLETE"
+          echo "BOT VERIFICATION FINISHED"
           echo "========================================"
 
-          EOF
+          REMOTE_EOF
 
 
       # ============================================================
@@ -295,7 +330,7 @@ jobs:
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" << 'REMOTE_EOF'
 
           cd /home/opc/xautusd-bot
 
@@ -315,9 +350,11 @@ jobs:
 
           sleep 5
 
+          echo
           echo "===== DASHBOARD PROCESS ====="
 
-          pgrep -af "dashboard/dashboard_api.py" || true
+          pgrep -af \
+            "dashboard/dashboard_api.py" || true
 
           echo
           echo "===== PORT 8000 ====="
@@ -340,7 +377,7 @@ jobs:
 
           echo
 
-          EOF
+          REMOTE_EOF
 
 
       # ============================================================
@@ -359,7 +396,7 @@ jobs:
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" << 'REMOTE_EOF'
 
           CLOUDFLARED=$(command -v cloudflared || true)
 
@@ -463,11 +500,11 @@ jobs:
 
           echo
 
-          EOF
+          REMOTE_EOF
 
 
       # ============================================================
-      # FINAL VERIFICATION
+      # FINAL BOT VERIFICATION
       # ============================================================
 
       - name: Final Verification
@@ -482,7 +519,7 @@ jobs:
             -o ConnectionAttempts=1 \
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
-            "$ORACLE_USER@$ORACLE_HOST" << 'EOF'
+            "$ORACLE_USER@$ORACLE_HOST" << 'REMOTE_EOF'
 
           echo
           echo "========================================"
@@ -490,22 +527,31 @@ jobs:
           echo "========================================"
 
           echo
-          echo "===== BOT SERVICE ====="
+          echo "===== SERVICE STATUS ====="
+
+          sudo systemctl status \
+            xautusd-bot.service \
+            --no-pager \
+            -l
+
+          echo
+          echo "===== ACTIVE ====="
 
           sudo systemctl is-active \
-            xautusd-bot
+            xautusd-bot.service
 
           echo
           echo "===== BOT PROCESS ====="
 
-          pgrep -af "bot.py" || true
+          pgrep -af \
+            "/home/opc/xautusd-bot/bot.py" || true
 
           echo
-          echo "===== BOT LOGS ====="
+          echo "===== RECENT BOT LOGS ====="
 
           sudo journalctl \
-            -u xautusd-bot \
-            -n 40 \
+            -u xautusd-bot.service \
+            -n 50 \
             --no-pager
 
           echo
@@ -525,19 +571,10 @@ jobs:
           ss -lntp | grep ':8000' || true
 
           echo
-          echo "===== LOCAL HEALTH ====="
+          echo "===== DASHBOARD HEALTH ====="
 
           curl --max-time 15 \
             http://127.0.0.1:8000/api/health \
-            || true
-
-          echo
-
-          echo
-          echo "===== DASHBOARD DATA ====="
-
-          curl --max-time 15 \
-            http://127.0.0.1:8000/api/dashboard \
             || true
 
           echo
@@ -547,4 +584,4 @@ jobs:
           echo "DEPLOYMENT COMPLETE"
           echo "========================================"
 
-          EOF
+          REMOTE_EOF
