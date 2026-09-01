@@ -1,31 +1,24 @@
 const $ = (id) =>
   document.getElementById(id);
 
-
-let historyView = "all";
+let adminPin = "";
 
 
 // ============================================================
-// BASIC FORMATTERS
+// FORMATTERS
 // ============================================================
 
-function number(
-  value,
-  decimals = 2
-) {
+function number(value, decimals = 2) {
 
   if (
     value === null ||
     value === undefined ||
     Number.isNaN(Number(value))
   ) {
-
     return "--";
   }
 
-  return Number(value).toFixed(
-    decimals
-  );
+  return Number(value).toFixed(decimals);
 }
 
 
@@ -36,1355 +29,727 @@ function money(value) {
     value === undefined ||
     Number.isNaN(Number(value))
   ) {
-
     return "--";
   }
 
   const n = Number(value);
 
-  if (n >= 0) {
+  return n >= 0
+    ? "+$" + n.toFixed(2)
+    : "-$" + Math.abs(n).toFixed(2);
+}
 
-    return "+$" + n.toFixed(2);
-  }
 
-  return "-$" + Math.abs(n).toFixed(2);
+function escapeHtml(value) {
+
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 
 // ============================================================
-// BOT START / STOP CONTROL
+// API
 // ============================================================
 
-function ensureBotControls() {
-
-  if (
-    document.getElementById(
-      "bot-control-section"
-    )
-  ) {
-
-    return;
-  }
-
-  const container =
-    document.querySelector(
-      ".container"
-    );
-
-  if (!container) {
-
-    return;
-  }
-
-  const section =
-    document.createElement(
-      "div"
-    );
-
-  section.id =
-    "bot-control-section";
-
-  section.className =
-    "card bot-control-card";
-
-  section.innerHTML = `
-
-    <div class="bot-control-header">
-
-      <div>
-
-        <h2>
-          Bot Control
-        </h2>
-
-        <p id="bot-control-message">
-          Bot is stopped. Press START BOT to allow new trades.
-        </p>
-
-      </div>
-
-      <div
-        id="bot-control-status"
-        class="bot-control-status stopped"
-      >
-        BOT STOPPED
-      </div>
-
-    </div>
-
-
-    <div class="bot-control-buttons">
-
-      <button
-        id="start-bot-btn"
-        class="bot-control-btn start-bot-btn"
-        type="button"
-        onclick="startBot()"
-      >
-        ▶ START BOT
-      </button>
-
-
-      <button
-        id="stop-bot-btn"
-        class="bot-control-btn stop-bot-btn"
-        type="button"
-        onclick="stopBot()"
-      >
-        ■ STOP BOT
-      </button>
-
-    </div>
-
-
-    <div
-      id="bot-control-warning"
-      class="bot-control-warning"
-    >
-      START BOT is required before the strategy can take
-      any new position.
-    </div>
-
-  `;
-
-  /*
-   * Put Bot Control at the very top of the dashboard.
-   */
-  container.insertBefore(
-    section,
-    container.firstChild
-  );
-
-  addBotControlStyles();
-}
-
-
-// ============================================================
-// BOT CONTROL STYLES
-// ============================================================
-
-function addBotControlStyles() {
-
-  if (
-    document.getElementById(
-      "bot-control-styles"
-    )
-  ) {
-
-    return;
-  }
-
-  const style =
-    document.createElement(
-      "style"
-    );
-
-  style.id =
-    "bot-control-styles";
-
-  style.textContent = `
-
-    .bot-control-card {
-      margin-bottom: 20px;
-      overflow: hidden;
-    }
-
-
-    .bot-control-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 15px;
-      margin-bottom: 16px;
-    }
-
-
-    .bot-control-header h2 {
-      margin: 0 0 5px 0;
-    }
-
-
-    .bot-control-header p {
-      margin: 0;
-      opacity: 0.65;
-      font-size: 13px;
-      line-height: 1.4;
-    }
-
-
-    .bot-control-status {
-      padding: 9px 13px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 800;
-      white-space: nowrap;
-    }
-
-
-    .bot-control-status.running {
-      background: rgba(34, 197, 94, 0.14);
-      color: #16a34a;
-    }
-
-
-    .bot-control-status.stopped {
-      background: rgba(239, 68, 68, 0.14);
-      color: #dc2626;
-    }
-
-
-    .bot-control-buttons {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-
-
-    .bot-control-btn {
-      border: 0;
-      border-radius: 10px;
-      padding: 13px 16px;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 800;
-      transition:
-        opacity 0.15s ease,
-        transform 0.15s ease;
-    }
-
-
-    .bot-control-btn:hover {
-      opacity: 0.9;
-    }
-
-
-    .bot-control-btn:active {
-      transform: scale(0.98);
-    }
-
-
-    .bot-control-btn:disabled {
-      opacity: 0.45;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-
-    .start-bot-btn {
-      background: #16a34a;
-      color: white;
-    }
-
-
-    .stop-bot-btn {
-      background: #dc2626;
-      color: white;
-    }
-
-
-    .bot-control-warning {
-      margin-top: 12px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      background: rgba(128,128,128,0.08);
-      font-size: 12px;
-      line-height: 1.45;
-      opacity: 0.75;
-    }
-
-
-    @media (max-width: 600px) {
-
-      .bot-control-header {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-
-
-      .bot-control-buttons {
-        grid-template-columns: 1fr;
-      }
-
-    }
-
-  `;
-
-  document.head.appendChild(
-    style
-  );
-}
-
-
-// ============================================================
-// BOT CONTROL UI
-// ============================================================
-
-function updateBotControls(
-  data
+async function apiFetch(
+  url,
+  options = {}
 ) {
 
-  ensureBotControls();
+  options.headers = {
+    ...(options.headers || {}),
+    "Content-Type": "application/json",
+    "X-Admin-Pin": adminPin
+  };
 
-  const enabled =
-    data.bot_enabled === true;
+  const response =
+    await fetch(
+      url,
+      options
+    );
 
+  const data =
+    await response.json();
 
-  const status =
-    $("bot-control-status");
+  if (!response.ok || data.success === false) {
 
+    throw new Error(
+      data.message ||
+      "Request failed."
+    );
+  }
 
-  const message =
-    $("bot-control-message");
-
-
-  const warning =
-    $("bot-control-warning");
-
-
-  const startButton =
-    $("start-bot-btn");
-
-
-  const stopButton =
-    $("stop-bot-btn");
-
-
-  if (status) {
-
-    status.textContent =
-      enabled
-        ? "BOT RUNNING"
-        : "BOT STOPPED";
+  return data;
+}
 
 
-    status.className =
-      enabled
-        ? "bot-control-status running"
-        : "bot-control-status stopped";
+// ============================================================
+// PIN
+// ============================================================
+
+function requestPin() {
+
+  const saved =
+    localStorage.getItem(
+      "xaut_admin_pin"
+    );
+
+  if (saved) {
+
+    adminPin = saved;
+
+    return;
+  }
+
+  adminPin =
+    window.prompt(
+      "Enter dashboard admin PIN:"
+    ) || "";
+
+  localStorage.setItem(
+    "xaut_admin_pin",
+    adminPin
+  );
+}
+
+
+// ============================================================
+// BOT CONTROL
+// ============================================================
+
+async function startBot(
+  accountId
+) {
+
+  try {
+
+    await apiFetch(
+      "/api/bot/start",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          account_id:
+            accountId
+        })
+      }
+    );
+
+    await loadDashboard();
+
+  } catch (error) {
+
+    alert(
+      error.message
+    );
+  }
+}
+
+
+async function stopBot(
+  accountId
+) {
+
+  if (
+    !window.confirm(
+      "STOP BOT will close the open position on this account. Continue?"
+    )
+  ) {
+    return;
+  }
+
+  try {
+
+    await apiFetch(
+      "/api/bot/stop",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          account_id:
+            accountId
+        })
+      }
+    );
+
+    await loadDashboard();
+
+  } catch (error) {
+
+    alert(
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// ADD CLIENT
+// ============================================================
+
+function openClientForm() {
+
+  const form =
+    $("client-form");
+
+  if (!form) {
+    return;
+  }
+
+  form.style.display =
+    form.style.display === "none"
+      ? "block"
+      : "none";
+}
+
+
+async function addClient() {
+
+  const name =
+    $("client-name")?.value.trim();
+
+  const apiKey =
+    $("client-api-key")?.value.trim();
+
+  const apiSecret =
+    $("client-api-secret")?.value.trim();
+
+  const start =
+    $("client-start")?.value;
+
+  const expiry =
+    $("client-expiry")?.value;
+
+  const fee =
+    $("client-fee")?.value || 0;
+
+
+  if (!name) {
+
+    alert(
+      "Enter client name."
+    );
+
+    return;
   }
 
 
-  if (message) {
+  if (!apiKey || !apiSecret) {
 
-    if (enabled) {
+    alert(
+      "Enter Delta API key and API secret."
+    );
 
-      message.textContent =
-        "Bot is running. New positions can be taken according to the strategy.";
+    return;
+  }
+
+
+  if (!start || !expiry) {
+
+    alert(
+      "Enter subscription start and expiry."
+    );
+
+    return;
+  }
+
+
+  try {
+
+    await apiFetch(
+      "/api/client/add",
+      {
+        method: "POST",
+
+        body:
+          JSON.stringify({
+
+            name,
+
+            api_key:
+              apiKey,
+
+            api_secret:
+              apiSecret,
+
+            subscription_start:
+              new Date(
+                start
+              ).toISOString(),
+
+            subscription_expiry:
+              new Date(
+                expiry
+              ).toISOString(),
+
+            subscription_fee:
+              Number(fee)
+          })
+      }
+    );
+
+
+    $("client-form").style.display =
+      "none";
+
+
+    $("client-name").value = "";
+    $("client-api-key").value = "";
+    $("client-api-secret").value = "";
+    $("client-start").value = "";
+    $("client-expiry").value = "";
+    $("client-fee").value = "";
+
+
+    await loadDashboard();
+
+
+    alert(
+      "Client account added successfully."
+    );
+
+  } catch (error) {
+
+    alert(
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// CLIENT SUBSCRIPTION UPDATE
+// ============================================================
+
+async function updateSubscription(
+  accountId
+) {
+
+  const start =
+    prompt(
+      "Subscription start date/time (local):"
+    );
+
+  if (!start) {
+    return;
+  }
+
+  const expiry =
+    prompt(
+      "Subscription expiry date/time (local):"
+    );
+
+  if (!expiry) {
+    return;
+  }
+
+  const fee =
+    prompt(
+      "Subscription fee:"
+    );
+
+
+  try {
+
+    await apiFetch(
+      "/api/client/subscription",
+      {
+        method: "POST",
+
+        body:
+          JSON.stringify({
+
+            account_id:
+              accountId,
+
+            subscription_start:
+              new Date(
+                start
+              ).toISOString(),
+
+            subscription_expiry:
+              new Date(
+                expiry
+              ).toISOString(),
+
+            subscription_fee:
+              Number(fee || 0)
+          })
+      }
+    );
+
+
+    await loadDashboard();
+
+  } catch (error) {
+
+    alert(
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// DELETE CLIENT
+// ============================================================
+
+async function deleteClient(
+  accountId
+) {
+
+  if (
+    !window.confirm(
+      "Remove this client account? If a position exists, the system will try to close it first."
+    )
+  ) {
+    return;
+  }
+
+
+  try {
+
+    await apiFetch(
+      "/api/client/delete",
+      {
+        method: "POST",
+
+        body:
+          JSON.stringify({
+            account_id:
+              accountId
+          })
+      }
+    );
+
+
+    await loadDashboard();
+
+  } catch (error) {
+
+    alert(
+      error.message
+    );
+  }
+}
+
+
+// ============================================================
+// ACCOUNT CARD
+// ============================================================
+
+function renderAccount(
+  account
+) {
+
+  const running =
+    account.bot_enabled === true;
+
+  const primary =
+    account.account_type === "primary";
+
+  const subscription =
+    account.subscription || {};
+
+  const position =
+    account.position || {};
+
+
+  let subscriptionText =
+    "PRIMARY ACCOUNT";
+
+  if (!primary) {
+
+    if (subscription.expired) {
+
+      subscriptionText =
+        "SUBSCRIPTION EXPIRED";
+
+    } else if (
+      subscription.active
+    ) {
+
+      subscriptionText =
+        "ACTIVE UNTIL " +
+        formatDate(
+          subscription.expiry
+        );
 
     } else {
 
-      message.textContent =
-        "Bot is stopped. It cannot take any new position.";
+      subscriptionText =
+        "SUBSCRIPTION INACTIVE";
     }
   }
 
 
-  if (warning) {
+  return `
 
-    warning.textContent =
-      enabled
-        ? "Bot is active. STOP BOT will close the current position, if any, and prevent all new trades."
-        : "START BOT is required before the strategy can take any new position.";
-  }
+    <section class="card account-card">
 
+      <div class="account-header">
 
-  if (startButton) {
+        <div>
 
-    startButton.disabled =
-      enabled;
-  }
+          <div class="account-type">
+            ${
+              primary
+                ? "PRIMARY ACCOUNT"
+                : "CLIENT ACCOUNT"
+            }
+          </div>
 
+          <h2>
+            ${escapeHtml(
+              account.account_name
+            )}
+          </h2>
 
-  if (stopButton) {
+          <p>
+            ${escapeHtml(
+              account.account_id
+            )}
+          </p>
 
-    stopButton.disabled =
-      !enabled;
-  }
-}
-
-
-// ============================================================
-// START BOT
-// ============================================================
-
-async function startBot() {
-
-  const button =
-    $("start-bot-btn");
+        </div>
 
 
-  if (button) {
+        <div class="${
+          running
+            ? "account-running"
+            : "account-stopped"
+        }">
 
-    button.disabled = true;
-    button.textContent =
-      "STARTING...";
-  }
+          ${
+            running
+              ? "BOT RUNNING"
+              : "BOT STOPPED"
+          }
+
+        </div>
+
+      </div>
 
 
-  try {
+      <div class="subscription-bar">
 
-    const response =
-      await fetch(
-        "/api/bot/start",
-        {
-          method: "POST",
-          cache: "no-store"
+        <span>
+          ${escapeHtml(
+            subscriptionText
+          )}
+        </span>
+
+        ${
+          !primary &&
+          subscription.fee !== undefined
+            ? `<strong>
+                Fee: $${number(
+                  subscription.fee
+                )}
+              </strong>`
+            : ""
         }
-      );
+
+      </div>
 
 
-    const data =
-      await response.json();
+      <div class="account-stats">
+
+        <div>
+          <span>Balance</span>
+          <strong>
+            ${
+              account.balance === null
+                ? "--"
+                : "$" +
+                  number(
+                    account.balance
+                  )
+            }
+          </strong>
+        </div>
 
 
-    if (!response.ok || !data.success) {
-
-      throw new Error(
-        data.message
-        || "Could not start bot."
-      );
-    }
-
-
-    window.__lastDashboardData =
-      null;
+        <div>
+          <span>Price</span>
+          <strong>
+            ${number(
+              account.current_price
+            )}
+          </strong>
+        </div>
 
 
-    await loadDashboard();
+        <div>
+          <span>Position</span>
+          <strong>
+            ${position.direction || "FLAT"}
+          </strong>
+        </div>
 
 
-  } catch (error) {
-
-    console.error(
-      "Start bot error:",
-      error
-    );
-
-
-    alert(
-      error.message
-      || "Could not start bot."
-    );
+        <div>
+          <span>Size</span>
+          <strong>
+            ${position.size ?? 0}
+          </strong>
+        </div>
 
 
-    await loadDashboard();
-
-  } finally {
-
-    const current =
-      $("start-bot-btn");
-
-    if (current) {
-
-      current.textContent =
-        "▶ START BOT";
-    }
-  }
-}
+        <div>
+          <span>Entry</span>
+          <strong>
+            ${number(
+              position.entry_price
+            )}
+          </strong>
+        </div>
 
 
-// ============================================================
-// STOP BOT
-// ============================================================
-
-async function stopBot() {
-
-  const confirmed =
-    window.confirm(
-      "STOP BOT will close the current open position, if any, and prevent all new trades. Continue?"
-    );
+        <div>
+          <span>Stop Loss</span>
+          <strong>
+            ${number(
+              position.stop_loss
+            )}
+          </strong>
+        </div>
 
 
-  if (!confirmed) {
-
-    return;
-  }
-
-
-  const button =
-    $("stop-bot-btn");
-
-
-  if (button) {
-
-    button.disabled = true;
-    button.textContent =
-      "STOPPING...";
-  }
+        <div>
+          <span>Unrealized P&L</span>
+          <strong>
+            ${money(
+              position.unrealized_pnl
+            )}
+          </strong>
+        </div>
 
 
-  try {
+        <div>
+          <span>All-Time P&L</span>
+          <strong>
+            ${money(
+              account.statistics
+                ?.all_time
+                ?.pnl
+            )}
+          </strong>
+        </div>
 
-    const response =
-      await fetch(
-        "/api/bot/stop",
-        {
-          method: "POST",
-          cache: "no-store"
+      </div>
+
+
+      <div class="account-actions">
+
+        ${
+          running
+            ? `
+              <button
+                class="danger-button"
+                onclick="stopBot('${escapeHtml(
+                  account.account_id
+                )}')"
+              >
+                ■ STOP BOT
+              </button>
+            `
+            : `
+              <button
+                class="success-button"
+                onclick="startBot('${escapeHtml(
+                  account.account_id
+                )}')"
+              >
+                ▶ START BOT
+              </button>
+            `
         }
-      );
 
 
-    const data =
-      await response.json();
+        ${
+          !primary
+            ? `
+              <button
+                class="secondary-button"
+                onclick="updateSubscription('${escapeHtml(
+                  account.account_id
+                )}')"
+              >
+                EDIT SUBSCRIPTION
+              </button>
 
-
-    if (!response.ok || !data.success) {
-
-      throw new Error(
-        data.message
-        || "Could not stop bot."
-      );
-    }
-
-
-    await loadDashboard();
-
-
-    alert(
-      data.message
-      || "Bot stopped successfully."
-    );
-
-
-  } catch (error) {
-
-    console.error(
-      "Stop bot error:",
-      error
-    );
-
-
-    alert(
-      error.message
-      || "Could not stop bot."
-    );
-
-
-    await loadDashboard();
-
-  } finally {
-
-    const current =
-      $("stop-bot-btn");
-
-    if (current) {
-
-      current.textContent =
-        "■ STOP BOT";
-    }
-  }
-}
-
-
-// ============================================================
-// TOP STATUS
-// ============================================================
-
-function setStatus(
-  running
-) {
-
-  const status =
-    $("bot-status");
-
-  if (!status) {
-
-    return;
-  }
-
-  if (running) {
-
-    status.textContent =
-      "BOT RUNNING";
-
-    status.className =
-      "status online";
-
-  } else {
-
-    status.textContent =
-      "OFFLINE";
-
-    status.className =
-      "status offline";
-  }
-}
-
-
-// ============================================================
-// HISTORY SECTION
-// ============================================================
-
-function ensureHistorySection() {
-
-  if (
-    document.getElementById(
-      "trade-history-section"
-    )
-  ) {
-
-    return;
-  }
-
-  const container =
-    document.querySelector(
-      ".container"
-    );
-
-  if (!container) {
-
-    return;
-  }
-
-  const section =
-    document.createElement(
-      "div"
-    );
-
-  section.id =
-    "trade-history-section";
-
-  section.className =
-    "card trade-history-card";
-
-  section.innerHTML = `
-
-    <div class="trade-history-header">
-
-      <div>
-
-        <h2>
-          Trade History
-        </h2>
-
-        <p id="history-date">
-          All completed trades
-        </p>
+              <button
+                class="delete-button"
+                onclick="deleteClient('${escapeHtml(
+                  account.account_id
+                )}')"
+              >
+                DELETE CLIENT
+              </button>
+            `
+            : ""
+        }
 
       </div>
 
-      <div class="history-count-box">
 
-        <span>
-          Total Saved
-        </span>
-
-        <strong id="history-saved-count">
-          0
-        </strong>
-
-      </div>
-
-    </div>
-
-
-    <div class="history-view-buttons">
-
-      <button
-        id="history-all-btn"
-        class="history-view-btn active"
-        type="button"
-        onclick="setHistoryView('all')"
-      >
-        ALL TIME
-      </button>
-
-
-      <button
-        id="history-today-btn"
-        class="history-view-btn"
-        type="button"
-        onclick="setHistoryView('today')"
-      >
-        TODAY
-      </button>
-
-    </div>
-
-
-    <div
-      id="all-time-stat-title"
-      class="history-stat-title"
-    >
-      ALL-TIME PERFORMANCE
-    </div>
-
-
-    <div
-      id="all-time-summary"
-      class="history-summary"
-    >
-
-      <div class="history-stat">
-
-        <span>
-          Total Trades
-        </span>
-
-        <strong id="all-history-total">
-          0
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Winning
-        </span>
-
-        <strong id="all-history-winning">
-          0
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Losing
-        </span>
-
-        <strong id="all-history-losing">
-          0
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Win Rate
-        </span>
-
-        <strong id="all-history-winrate">
-          0.0%
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Total P&L
-        </span>
-
-        <strong id="all-history-pnl">
-          $0.00
-        </strong>
-
-      </div>
-
-    </div>
-
-
-    <div
-      id="today-stat-title"
-      class="history-stat-title"
-      style="display:none;"
-    >
-      TODAY'S PERFORMANCE
-    </div>
-
-
-    <div
-      id="today-summary"
-      class="history-summary"
-      style="display:none;"
-    >
-
-      <div class="history-stat">
-
-        <span>
-          Today's Trades
-        </span>
-
-        <strong id="today-history-total">
-          0
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Winning
-        </span>
-
-        <strong id="today-history-winning">
-          0
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Losing
-        </span>
-
-        <strong id="today-history-losing">
-          0
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Win Rate
-        </span>
-
-        <strong id="today-history-winrate">
-          0.0%
-        </strong>
-
-      </div>
-
-
-      <div class="history-stat">
-
-        <span>
-          Today P&L
-        </span>
-
-        <strong id="today-history-pnl">
-          $0.00
-        </strong>
-
-      </div>
-
-    </div>
-
-
-    <div class="history-table-wrapper">
-
-      <table class="trade-history-table">
-
-        <thead>
-
-          <tr>
-
-            <th>
-              Date
-            </th>
-
-            <th>
-              Entry Time
-            </th>
-
-            <th>
-              Exit Time
-            </th>
-
-            <th>
-              Trade
-            </th>
-
-            <th>
-              Entry
-            </th>
-
-            <th>
-              Exit
-            </th>
-
-            <th>
-              Size
-            </th>
-
-            <th>
-              Reason
-            </th>
-
-            <th>
-              P&L
-            </th>
-
-          </tr>
-
-        </thead>
-
-
-        <tbody id="trade-history-body">
-
-          <tr>
-
-            <td colspan="9">
-              No completed trades yet.
-            </td>
-
-          </tr>
-
-        </tbody>
-
-      </table>
-
-    </div>
-
+      ${
+        !primary
+          ? `
+            <div class="subscription-details">
+
+              <div>
+                <span>Start</span>
+                <strong>
+                  ${
+                    formatDate(
+                      subscription.start
+                    )
+                  }
+                </strong>
+              </div>
+
+              <div>
+                <span>Expiry</span>
+                <strong>
+                  ${
+                    formatDate(
+                      subscription.expiry
+                    )
+                  }
+                </strong>
+              </div>
+
+            </div>
+          `
+          : ""
+      }
+
+    </section>
   `;
-
-  container.appendChild(
-    section
-  );
-
-  addHistoryStyles();
 }
 
 
 // ============================================================
-// HISTORY STYLES
+// DATE
 // ============================================================
 
-function addHistoryStyles() {
-
-  if (
-    document.getElementById(
-      "trade-history-styles"
-    )
-  ) {
-
-    return;
-  }
-
-  const style =
-    document.createElement(
-      "style"
-    );
-
-  style.id =
-    "trade-history-styles";
-
-  style.textContent = `
-
-    .trade-history-card {
-      margin-top: 20px;
-      overflow: hidden;
-    }
-
-
-    .trade-history-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-
-
-    .trade-history-header h2 {
-      margin: 0 0 4px 0;
-    }
-
-
-    .trade-history-header p {
-      margin: 0;
-      opacity: 0.65;
-      font-size: 13px;
-    }
-
-
-    .history-count-box {
-      padding: 10px 14px;
-      border-radius: 10px;
-      background: rgba(128,128,128,0.08);
-      text-align: center;
-      min-width: 80px;
-    }
-
-
-    .history-count-box span {
-      display: block;
-      font-size: 11px;
-      opacity: 0.65;
-      margin-bottom: 3px;
-    }
-
-
-    .history-count-box strong {
-      font-size: 18px;
-    }
-
-
-    .history-view-buttons {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 18px;
-    }
-
-
-    .history-view-btn {
-      border: 1px solid rgba(128,128,128,0.25);
-      background: transparent;
-      padding: 8px 14px;
-      border-radius: 8px;
-      cursor: pointer;
-      font-size: 12px;
-      font-weight: 700;
-    }
-
-
-    .history-view-btn.active {
-      background: rgba(128,128,128,0.16);
-    }
-
-
-    .history-stat-title {
-      font-size: 12px;
-      font-weight: 700;
-      opacity: 0.65;
-      margin-bottom: 8px;
-      letter-spacing: 0.4px;
-    }
-
-
-    .history-summary {
-      display: grid;
-      grid-template-columns:
-        repeat(5, minmax(100px, 1fr));
-      gap: 10px;
-      margin-bottom: 20px;
-    }
-
-
-    .history-stat {
-      padding: 12px;
-      border-radius: 10px;
-      background: rgba(128,128,128,0.08);
-    }
-
-
-    .history-stat span {
-      display: block;
-      font-size: 12px;
-      opacity: 0.65;
-      margin-bottom: 5px;
-    }
-
-
-    .history-stat strong {
-      font-size: 18px;
-    }
-
-
-    .history-table-wrapper {
-      width: 100%;
-      overflow-x: auto;
-    }
-
-
-    .trade-history-table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 980px;
-    }
-
-
-    .trade-history-table th,
-    .trade-history-table td {
-      padding: 10px;
-      text-align: left;
-      border-bottom: 1px solid
-        rgba(128,128,128,0.15);
-      white-space: nowrap;
-    }
-
-
-    .trade-history-table th {
-      font-size: 12px;
-      opacity: 0.65;
-      font-weight: 600;
-    }
-
-
-    .trade-history-table td {
-      font-size: 13px;
-    }
-
-
-    .history-long {
-      font-weight: 700;
-    }
-
-
-    .history-short {
-      font-weight: 700;
-    }
-
-
-    .history-profit {
-      font-weight: 700;
-    }
-
-
-    .history-loss {
-      font-weight: 700;
-    }
-
-
-    .history-empty {
-      text-align: center !important;
-      padding: 24px !important;
-      opacity: 0.6;
-    }
-
-
-    @media (max-width: 800px) {
-
-      .history-summary {
-        grid-template-columns:
-          repeat(2, minmax(120px, 1fr));
-      }
-
-
-      .trade-history-card {
-        padding: 14px;
-      }
-
-
-      .trade-history-header {
-        align-items: flex-start;
-      }
-
-    }
-
-  `;
-
-  document.head.appendChild(
-    style
-  );
-}
-
-
-// ============================================================
-// HISTORY VIEW
-// ============================================================
-
-function setHistoryView(
-  view
-) {
-
-  historyView = view;
-
-  const allButton =
-    $("history-all-btn");
-
-  const todayButton =
-    $("history-today-btn");
-
-
-  if (allButton) {
-
-    allButton.classList.toggle(
-      "active",
-      view === "all"
-    );
-  }
-
-
-  if (todayButton) {
-
-    todayButton.classList.toggle(
-      "active",
-      view === "today"
-    );
-  }
-
-
-  const allTitle =
-    $("all-time-stat-title");
-
-  const allSummary =
-    $("all-time-summary");
-
-  const todayTitle =
-    $("today-stat-title");
-
-  const todaySummary =
-    $("today-summary");
-
-
-  if (view === "all") {
-
-    if (allTitle) {
-
-      allTitle.style.display =
-        "block";
-    }
-
-
-    if (allSummary) {
-
-      allSummary.style.display =
-        "grid";
-    }
-
-
-    if (todayTitle) {
-
-      todayTitle.style.display =
-        "none";
-    }
-
-
-    if (todaySummary) {
-
-      todaySummary.style.display =
-        "none";
-    }
-
-
-    const subtitle =
-      $("history-date");
-
-
-    if (subtitle) {
-
-      subtitle.textContent =
-        "All completed trades — newest first";
-    }
-
-  } else {
-
-    if (allTitle) {
-
-      allTitle.style.display =
-        "none";
-    }
-
-
-    if (allSummary) {
-
-      allSummary.style.display =
-        "none";
-    }
-
-
-    if (todayTitle) {
-
-      todayTitle.style.display =
-        "block";
-    }
-
-
-    if (todaySummary) {
-
-      todaySummary.style.display =
-        "grid";
-    }
-
-
-    const subtitle =
-      $("history-date");
-
-
-    if (subtitle) {
-
-      subtitle.textContent =
-        "Today's completed trades";
-    }
-  }
-
-
-  if (
-    window.__lastDashboardData
-  ) {
-
-    renderTradeHistory(
-      window.__lastDashboardData
-    );
-  }
-}
-
-
-// ============================================================
-// TIME FORMAT
-// ============================================================
-
-function formatTradeDate(
+function formatDate(
   value
 ) {
 
   if (!value) {
-
     return "--";
   }
 
-
   try {
 
-    const date =
-      new Date(value);
-
-
-    if (
-      Number.isNaN(
-        date.getTime()
-      )
-    ) {
-
-      return value;
-    }
-
-
-    return date.toLocaleDateString(
-      [],
-      {
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric"
-      }
-    );
-
-  } catch {
-
-    return value;
-  }
-}
-
-
-function formatTradeTime(
-  value
-) {
-
-  if (!value) {
-
-    return "--";
-  }
-
-
-  try {
-
-    const date =
-      new Date(value);
-
-
-    if (
-      Number.isNaN(
-        date.getTime()
-      )
-    ) {
-
-      return value;
-    }
-
-
-    return date.toLocaleTimeString(
-      [],
-      {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      }
-    );
+    return new Date(
+      value
+    ).toLocaleString();
 
   } catch {
 
@@ -1394,604 +759,78 @@ function formatTradeTime(
 
 
 // ============================================================
-// RENDER HISTORY
-// ============================================================
-
-function renderTradeHistory(
-  data
-) {
-
-  ensureHistorySection();
-
-  const history =
-    Array.isArray(
-      data.trade_history
-    )
-      ? data.trade_history
-      : [];
-
-
-  const statistics =
-    data.statistics || {};
-
-
-  const today =
-    new Date()
-      .toLocaleDateString(
-        "en-CA"
-      );
-
-
-  const todayHistory =
-    history.filter(
-      trade =>
-        trade.date === today
-    );
-
-
-  // ----------------------------------------------------------
-  // ALL-TIME STATISTICS
-  // ----------------------------------------------------------
-
-  const allTime =
-    statistics.all_time || {};
-
-
-  const allTimeTotal =
-    Number(
-      allTime.total_trades
-      ?? history.length
-    );
-
-
-  const allTimeWinning =
-    Number(
-      allTime.winning_trades
-      ?? history.filter(
-        trade =>
-          Number(trade.pnl) > 0
-      ).length
-    );
-
-
-  const allTimeLosing =
-    Number(
-      allTime.losing_trades
-      ?? history.filter(
-        trade =>
-          Number(trade.pnl) < 0
-      ).length
-    );
-
-
-  const allTimeWinRate =
-    Number(
-      allTime.win_rate
-      ?? (
-        allTimeTotal > 0
-          ? (
-              allTimeWinning
-              / allTimeTotal
-              * 100
-            )
-          : 0
-      )
-    );
-
-
-  const allTimePnl =
-    Number(
-      allTime.pnl
-      ?? history.reduce(
-        (sum, trade) =>
-          sum + Number(
-            trade.pnl || 0
-          ),
-        0
-      )
-    );
-
-
-  // ----------------------------------------------------------
-  // TODAY STATISTICS
-  // ----------------------------------------------------------
-
-  const todayStats =
-    statistics.today || {};
-
-
-  const todayTotal =
-    Number(
-      todayStats.total_trades
-      ?? todayHistory.length
-    );
-
-
-  const todayWinning =
-    Number(
-      todayStats.winning_trades
-      ?? todayHistory.filter(
-        trade =>
-          Number(trade.pnl) > 0
-      ).length
-    );
-
-
-  const todayLosing =
-    Number(
-      todayStats.losing_trades
-      ?? todayHistory.filter(
-        trade =>
-          Number(trade.pnl) < 0
-      ).length
-    );
-
-
-  const todayWinRate =
-    Number(
-      todayStats.win_rate
-      ?? (
-        todayTotal > 0
-          ? (
-              todayWinning
-              / todayTotal
-              * 100
-            )
-          : 0
-      )
-    );
-
-
-  const todayPnl =
-    Number(
-      todayStats.pnl
-      ?? todayHistory.reduce(
-        (sum, trade) =>
-          sum + Number(
-            trade.pnl || 0
-          ),
-        0
-      )
-    );
-
-
-  // ----------------------------------------------------------
-  // UPDATE ALL-TIME BOX
-  // ----------------------------------------------------------
-
-  if ($("all-history-total")) {
-
-    $("all-history-total")
-      .textContent =
-      allTimeTotal;
-  }
-
-
-  if ($("all-history-winning")) {
-
-    $("all-history-winning")
-      .textContent =
-      allTimeWinning;
-  }
-
-
-  if ($("all-history-losing")) {
-
-    $("all-history-losing")
-      .textContent =
-      allTimeLosing;
-  }
-
-
-  if ($("all-history-winrate")) {
-
-    $("all-history-winrate")
-      .textContent =
-      allTimeWinRate.toFixed(1)
-      + "%";
-  }
-
-
-  if ($("all-history-pnl")) {
-
-    $("all-history-pnl")
-      .textContent =
-      money(allTimePnl);
-  }
-
-
-  // ----------------------------------------------------------
-  // UPDATE TODAY BOX
-  // ----------------------------------------------------------
-
-  if ($("today-history-total")) {
-
-    $("today-history-total")
-      .textContent =
-      todayTotal;
-  }
-
-
-  if ($("today-history-winning")) {
-
-    $("today-history-winning")
-      .textContent =
-      todayWinning;
-  }
-
-
-  if ($("today-history-losing")) {
-
-    $("today-history-losing")
-      .textContent =
-      todayLosing;
-  }
-
-
-  if ($("today-history-winrate")) {
-
-    $("today-history-winrate")
-      .textContent =
-      todayWinRate.toFixed(1)
-      + "%";
-  }
-
-
-  if ($("today-history-pnl")) {
-
-    $("today-history-pnl")
-      .textContent =
-      money(todayPnl);
-  }
-
-
-  // ----------------------------------------------------------
-  // TOTAL SAVED COUNT
-  // ----------------------------------------------------------
-
-  if ($("history-saved-count")) {
-
-    $("history-saved-count")
-      .textContent =
-      Number(
-        data.history_count
-        ?? history.length
-      );
-  }
-
-
-  // ----------------------------------------------------------
-  // SELECT HISTORY
-  // ----------------------------------------------------------
-
-  const visibleHistory =
-    historyView === "today"
-      ? todayHistory
-      : history;
-
-
-  const body =
-    $("trade-history-body");
-
-
-  if (!body) {
-
-    return;
-  }
-
-
-  if (
-    visibleHistory.length === 0
-  ) {
-
-    const message =
-      historyView === "today"
-        ? "No completed trades today."
-        : "No completed trades yet.";
-
-
-    body.innerHTML = `
-
-      <tr>
-
-        <td
-          colspan="9"
-          class="history-empty"
-        >
-          ${message}
-        </td>
-
-      </tr>
-
-    `;
-
-    return;
-  }
-
-
-  body.innerHTML =
-    visibleHistory
-      .map(
-        trade => {
-
-          const direction =
-            trade.direction || "--";
-
-
-          const pnl =
-            Number(
-              trade.pnl || 0
-            );
-
-
-          const pnlClass =
-            pnl >= 0
-              ? "history-profit"
-              : "history-loss";
-
-
-          const directionClass =
-            direction === "LONG"
-              ? "history-long"
-              : "history-short";
-
-
-          return `
-
-            <tr>
-
-              <td>
-                ${formatTradeDate(
-                  trade.exit_time
-                )}
-              </td>
-
-
-              <td>
-                ${formatTradeTime(
-                  trade.entry_time
-                )}
-              </td>
-
-
-              <td>
-                ${formatTradeTime(
-                  trade.exit_time
-                )}
-              </td>
-
-
-              <td class="${directionClass}">
-                ${direction}
-              </td>
-
-
-              <td>
-                ${number(
-                  trade.entry_price
-                )}
-              </td>
-
-
-              <td>
-                ${number(
-                  trade.exit_price
-                )}
-              </td>
-
-
-              <td>
-                ${trade.size ?? 0}
-              </td>
-
-
-              <td>
-                ${trade.reason || "--"}
-              </td>
-
-
-              <td class="${pnlClass}">
-                ${money(pnl)}
-              </td>
-
-            </tr>
-
-          `;
-        }
-      )
-      .join("");
-}
-
-
-// ============================================================
-// UPDATE DASHBOARD
-// ============================================================
-
-function updateDashboard(
-  data
-) {
-
-  window.__lastDashboardData =
-    data;
-
-
-  /*
-   * Process status.
-   * This remains separate from trading status.
-   */
-  setStatus(
-    data.bot_running === true
-  );
-
-
-  /*
-   * Trading START / STOP status.
-   */
-  updateBotControls(
-    data
-  );
-
-
-  if ($("symbol")) {
-
-    $("symbol").textContent =
-      data.symbol || "XAUTUSD";
-  }
-
-
-  if ($("current-price")) {
-
-    $("current-price").textContent =
-      number(
-        data.current_price
-      );
-  }
-
-
-  if ($("today-high")) {
-
-    $("today-high").textContent =
-      number(
-        data.high
-      );
-  }
-
-
-  if ($("today-low")) {
-
-    $("today-low").textContent =
-      number(
-        data.low
-      );
-  }
-
-
-  if ($("wallet-balance")) {
-
-    $("wallet-balance").textContent =
-      money(
-        data.balance
-      );
-  }
-
-
-  const position =
-    data.position || {};
-
-
-  if ($("pos-direction")) {
-
-    $("pos-direction").textContent =
-      position.direction || "FLAT";
-  }
-
-
-  if ($("pos-size")) {
-
-    $("pos-size").textContent =
-      position.size ?? 0;
-  }
-
-
-  if ($("pos-entry")) {
-
-    $("pos-entry").textContent =
-      number(
-        position.entry_price
-      );
-  }
-
-
-  if ($("pos-sl")) {
-
-    $("pos-sl").textContent =
-      number(
-        position.stop_loss
-      );
-  }
-
-
-  if ($("pos-pnl")) {
-
-    $("pos-pnl").textContent =
-      money(
-        position.unrealized_pnl
-      );
-  }
-
-
-  const ready =
-    data.session &&
-    data.session.ready;
-
-
-  if ($("session-ready")) {
-
-    $("session-ready").textContent =
-      ready
-        ? "YES"
-        : "NO";
-  }
-
-
-  if ($("last-update")) {
-
-    $("last-update").textContent =
-      "Last update: "
-      + new Date()
-        .toLocaleTimeString();
-  }
-
-
-  renderTradeHistory(
-    data
-  );
-}
-
-
-// ============================================================
-// LOAD DASHBOARD
+// DASHBOARD
 // ============================================================
 
 async function loadDashboard() {
 
   try {
 
-    const response =
-      await fetch(
+    const data =
+      await apiFetch(
         "/api/dashboard",
         {
+          method: "GET",
           cache: "no-store"
         }
       );
 
 
-    if (!response.ok) {
+    const accounts =
+      Array.isArray(
+        data.accounts
+      )
+        ? data.accounts
+        : [];
 
-      throw new Error(
-        "HTTP "
-        + response.status
-      );
+
+    const container =
+      $("accounts-container");
+
+
+    if (!container) {
+      return;
     }
 
 
-    const data =
-      await response.json();
+    container.innerHTML =
+      accounts
+        .map(
+          renderAccount
+        )
+        .join("");
 
 
-    updateDashboard(
-      data
-    );
+    const primary =
+      accounts.find(
+        a =>
+          a.account_type === "primary"
+      );
+
+
+    if ($("bot-status")) {
+
+      $("bot-status").textContent =
+        primary?.bot_running
+          ? "SYSTEM ONLINE"
+          : "OFFLINE";
+    }
+
+
+    if ($("last-update")) {
+
+      $("last-update").textContent =
+        "Last update: " +
+        new Date()
+          .toLocaleTimeString();
+    }
+
 
   } catch (error) {
 
     console.error(
-      "Dashboard error:",
       error
     );
-
-
-    setStatus(false);
 
 
     if ($("last-update")) {
@@ -2004,15 +843,12 @@ async function loadDashboard() {
 
 
 // ============================================================
-// START
+// INIT
 // ============================================================
 
-ensureBotControls();
-
-ensureHistorySection();
+requestPin();
 
 loadDashboard();
-
 
 setInterval(
   loadDashboard,
