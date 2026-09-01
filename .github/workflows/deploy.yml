@@ -10,135 +10,51 @@ on:
 permissions:
   contents: read
 
-
 jobs:
-
   deploy:
-
     runs-on: ubuntu-latest
 
     steps:
 
-      # =====================================================
-      # CHECKOUT
-      # =====================================================
-
       - name: Checkout
         uses: actions/checkout@v4
-
-
-      # =====================================================
-      # PREPARE SSH
-      # =====================================================
 
       - name: Prepare SSH
         env:
           ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
-
         run: |
-
           set -e
 
           mkdir -p ~/.ssh
 
-          printf '%s\n' "$ORACLE_PRIVATE_KEY" \
-            > ~/.ssh/oracle.key
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" > ~/.ssh/oracle.key
 
           chmod 600 ~/.ssh/oracle.key
 
-          ssh-keygen \
-            -y \
-            -f ~/.ssh/oracle.key \
-            > /dev/null
+          ssh-keygen -y -f ~/.ssh/oracle.key > /dev/null
 
           echo "SSH KEY OK"
 
-
-      # =====================================================
-      # CHECK BOT SYNTAX
-      # =====================================================
-
       - name: Check bot.py Syntax
         run: |
-
           set -e
 
           python3 -m py_compile bot.py
 
           echo "BOT_PY_SYNTAX_OK"
 
-
-      # =====================================================
-      # SSH CONFIGURATION
-      # =====================================================
-
-      - name: Configure SSH
-        run: |
-
-          set -e
-
-          cat > ~/.ssh/config << 'EOF'
-
-          Host oracle-xautusd
-
-              HostName PLACEHOLDER_ORACLE_HOST
-
-              User PLACEHOLDER_ORACLE_USER
-
-              IdentityFile ~/.ssh/oracle.key
-
-              BatchMode yes
-
-              StrictHostKeyChecking no
-
-              UserKnownHostsFile /dev/null
-
-              ConnectTimeout 30
-
-              ConnectionAttempts 1
-
-              ServerAliveInterval 10
-
-              ServerAliveCountMax 3
-
-              TCPKeepAlive yes
-
-              IPQoS throughput
-
-              GSSAPIAuthentication no
-
-              PreferredAuthentications publickey
-
-              PubkeyAuthentication yes
-
-              IdentitiesOnly yes
-
-              AddressFamily inet
-
-          EOF
-
-
-          echo "SSH CONFIG CREATED"
-
-
-      # =====================================================
-      # TEST ORACLE SSH
-      # =====================================================
-
       - name: Test Oracle SSH
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
           echo "========================================"
           echo "TESTING ORACLE SSH"
           echo "========================================"
 
-          timeout 90 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -149,7 +65,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -158,26 +73,16 @@ jobs:
             "$ORACLE_USER@$ORACLE_HOST" \
             "echo ORACLE_SSH_OK"
 
-          echo
-          echo "========================================"
           echo "ORACLE_SSH_OK"
-          echo "========================================"
-
-
-      # =====================================================
-      # PREPARE ORACLE DEPLOYMENT DIRECTORY
-      # =====================================================
 
       - name: Prepare Oracle Deployment Directory
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 90 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -188,7 +93,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -199,21 +103,14 @@ jobs:
 
           echo "ORACLE_DEPLOY_DIRECTORY_OK"
 
-
-      # =====================================================
-      # UPLOAD FILES
-      # =====================================================
-
       - name: Upload Bot And Dashboard
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 120 scp \
+          scp \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -224,7 +121,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -238,21 +134,14 @@ jobs:
 
           echo "UPLOAD_OK"
 
-
-      # =====================================================
-      # VERIFY UPLOADED FILES
-      # =====================================================
-
       - name: Verify Uploaded Files
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 90 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -263,7 +152,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -288,21 +176,14 @@ jobs:
 
           EOF
 
-
-      # =====================================================
-      # INSTALL FILES
-      # =====================================================
-
       - name: Install New Files
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 120 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -313,7 +194,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -344,21 +224,14 @@ jobs:
 
           EOF
 
-
-      # =====================================================
-      # RESTART BOT
-      # =====================================================
-
       - name: Restart XAUTUSD Bot
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 120 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -369,7 +242,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -384,11 +256,8 @@ jobs:
           sleep 10
 
           if sudo systemctl is-active --quiet xautusd-bot.service; then
-
             echo "XAUTUSD_BOT_ACTIVE"
-
           else
-
             echo "XAUTUSD_BOT_FAILED"
 
             sudo systemctl --no-pager status \
@@ -401,26 +270,18 @@ jobs:
               --no-pager
 
             exit 1
-
           fi
 
           EOF
-
-
-      # =====================================================
-      # VERIFY DASHBOARD
-      # =====================================================
 
       - name: Verify Dashboard
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 120 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -431,7 +292,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -441,13 +301,9 @@ jobs:
 
           set -e
 
-          echo "===== PORT 8000 ====="
-
           ss -lnt | grep -q ':8000'
 
           echo "DASHBOARD_PORT_8000_OK"
-
-          echo "===== HEALTH ====="
 
           curl \
             --max-time 20 \
@@ -456,16 +312,12 @@ jobs:
 
           echo
 
-          echo "===== DASHBOARD DATA ====="
-
           curl \
             --max-time 20 \
             -fsS \
             http://127.0.0.1:8000/api/dashboard
 
           echo
-
-          echo "===== DASHBOARD PAGE ====="
 
           curl \
             --max-time 20 \
@@ -477,21 +329,14 @@ jobs:
 
           EOF
 
-
-      # =====================================================
-      # INSTALL PERSISTENT CLOUDFLARE TUNNEL
-      # =====================================================
-
       - name: Install Persistent Cloudflare Tunnel
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 150 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -502,7 +347,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -561,7 +405,6 @@ jobs:
           URL=""
 
           for i in $(seq 1 45); do
-
             sleep 2
 
             URL=$(grep -oE \
@@ -573,7 +416,6 @@ jobs:
             if [ -n "$URL" ]; then
               break
             fi
-
           done
 
           if ! sudo systemctl is-active --quiet \
@@ -586,17 +428,12 @@ jobs:
             tail -n 100 "$LOG_FILE" || true
 
             exit 1
-
           fi
 
           if [ -z "$URL" ]; then
-
             echo "ERROR: Cloudflare URL not found."
-
             tail -n 100 "$LOG_FILE" || true
-
             exit 1
-
           fi
 
           printf '%s\n' "$URL" > "$URL_FILE"
@@ -611,21 +448,14 @@ jobs:
 
           EOF
 
-
-      # =====================================================
-      # FINAL VERIFICATION
-      # =====================================================
-
       - name: Final Verification
         env:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
-
         run: |
-
           set -e
 
-          timeout 150 ssh \
+          ssh \
             -4 \
             -i ~/.ssh/oracle.key \
             -o BatchMode=yes \
@@ -636,7 +466,6 @@ jobs:
             -o ServerAliveInterval=10 \
             -o ServerAliveCountMax=3 \
             -o TCPKeepAlive=yes \
-            -o IPQoS=throughput \
             -o GSSAPIAuthentication=no \
             -o PreferredAuthentications=publickey \
             -o PubkeyAuthentication=yes \
@@ -649,33 +478,10 @@ jobs:
           BOT_DIR="/home/opc/xautusd-bot"
           URL_FILE="$BOT_DIR/dashboard-url.txt"
 
-          echo "========================================"
-          echo "FINAL DEPLOYMENT VERIFICATION"
-          echo "========================================"
+          sudo systemctl is-active --quiet \
+            xautusd-bot.service
 
-          echo
-          echo "===== BOT ====="
-
-          if sudo systemctl is-active --quiet \
-            xautusd-bot.service; then
-
-            echo "BOT_ACTIVE"
-
-          else
-
-            echo "BOT_FAILED"
-
-            sudo journalctl \
-              -u xautusd-bot.service \
-              -n 100 \
-              --no-pager
-
-            exit 1
-
-          fi
-
-          echo
-          echo "===== DASHBOARD ====="
+          echo "BOT_ACTIVE"
 
           curl \
             --max-time 20 \
@@ -684,38 +490,10 @@ jobs:
 
           echo
 
-          echo
-          echo "===== DASHBOARD DATA ====="
+          sudo systemctl is-active --quiet \
+            xautusd-cloudflared.service
 
-          curl \
-            --max-time 20 \
-            -fsS \
-            http://127.0.0.1:8000/api/dashboard
-
-          echo
-
-          echo
-          echo "===== CLOUDFLARE ====="
-
-          if sudo systemctl is-active --quiet \
-            xautusd-cloudflared.service; then
-
-            echo "CLOUDFLARE_TUNNEL_ACTIVE"
-
-          else
-
-            echo "CLOUDFLARE_TUNNEL_FAILED"
-
-            sudo systemctl --no-pager status \
-              xautusd-cloudflared.service \
-              || true
-
-            exit 1
-
-          fi
-
-          echo
-          echo "===== CLOUDFLARE ENABLED ====="
+          echo "CLOUDFLARE_TUNNEL_ACTIVE"
 
           sudo systemctl is-enabled \
             xautusd-cloudflared.service
@@ -723,19 +501,10 @@ jobs:
           echo
           echo "===== DASHBOARD URL ====="
 
-          if [ -f "$URL_FILE" ]; then
+          test -f "$URL_FILE"
 
-            cat "$URL_FILE"
+          cat "$URL_FILE"
 
-          else
-
-            echo "URL FILE NOT FOUND"
-
-            exit 1
-
-          fi
-
-          echo
           echo
           echo "========================================"
           echo "DEPLOYMENT SUCCESS"
