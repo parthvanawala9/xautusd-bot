@@ -5,6 +5,10 @@ const $ = (id) =>
 let historyView = "all";
 
 
+// ============================================================
+// BASIC FORMATTERS
+// ============================================================
+
 function number(
   value,
   decimals = 2
@@ -46,6 +50,536 @@ function money(value) {
   return "-$" + Math.abs(n).toFixed(2);
 }
 
+
+// ============================================================
+// BOT START / STOP CONTROL
+// ============================================================
+
+function ensureBotControls() {
+
+  if (
+    document.getElementById(
+      "bot-control-section"
+    )
+  ) {
+
+    return;
+  }
+
+  const container =
+    document.querySelector(
+      ".container"
+    );
+
+  if (!container) {
+
+    return;
+  }
+
+  const section =
+    document.createElement(
+      "div"
+    );
+
+  section.id =
+    "bot-control-section";
+
+  section.className =
+    "card bot-control-card";
+
+  section.innerHTML = `
+
+    <div class="bot-control-header">
+
+      <div>
+
+        <h2>
+          Bot Control
+        </h2>
+
+        <p id="bot-control-message">
+          Bot is stopped. Press START BOT to allow new trades.
+        </p>
+
+      </div>
+
+      <div
+        id="bot-control-status"
+        class="bot-control-status stopped"
+      >
+        BOT STOPPED
+      </div>
+
+    </div>
+
+
+    <div class="bot-control-buttons">
+
+      <button
+        id="start-bot-btn"
+        class="bot-control-btn start-bot-btn"
+        type="button"
+        onclick="startBot()"
+      >
+        ▶ START BOT
+      </button>
+
+
+      <button
+        id="stop-bot-btn"
+        class="bot-control-btn stop-bot-btn"
+        type="button"
+        onclick="stopBot()"
+      >
+        ■ STOP BOT
+      </button>
+
+    </div>
+
+
+    <div
+      id="bot-control-warning"
+      class="bot-control-warning"
+    >
+      START BOT is required before the strategy can take
+      any new position.
+    </div>
+
+  `;
+
+  /*
+   * Put Bot Control at the very top of the dashboard.
+   */
+  container.insertBefore(
+    section,
+    container.firstChild
+  );
+
+  addBotControlStyles();
+}
+
+
+// ============================================================
+// BOT CONTROL STYLES
+// ============================================================
+
+function addBotControlStyles() {
+
+  if (
+    document.getElementById(
+      "bot-control-styles"
+    )
+  ) {
+
+    return;
+  }
+
+  const style =
+    document.createElement(
+      "style"
+    );
+
+  style.id =
+    "bot-control-styles";
+
+  style.textContent = `
+
+    .bot-control-card {
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+
+    .bot-control-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 15px;
+      margin-bottom: 16px;
+    }
+
+
+    .bot-control-header h2 {
+      margin: 0 0 5px 0;
+    }
+
+
+    .bot-control-header p {
+      margin: 0;
+      opacity: 0.65;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+
+    .bot-control-status {
+      padding: 9px 13px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+
+    .bot-control-status.running {
+      background: rgba(34, 197, 94, 0.14);
+      color: #16a34a;
+    }
+
+
+    .bot-control-status.stopped {
+      background: rgba(239, 68, 68, 0.14);
+      color: #dc2626;
+    }
+
+
+    .bot-control-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+
+    .bot-control-btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 13px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 800;
+      transition:
+        opacity 0.15s ease,
+        transform 0.15s ease;
+    }
+
+
+    .bot-control-btn:hover {
+      opacity: 0.9;
+    }
+
+
+    .bot-control-btn:active {
+      transform: scale(0.98);
+    }
+
+
+    .bot-control-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+
+    .start-bot-btn {
+      background: #16a34a;
+      color: white;
+    }
+
+
+    .stop-bot-btn {
+      background: #dc2626;
+      color: white;
+    }
+
+
+    .bot-control-warning {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(128,128,128,0.08);
+      font-size: 12px;
+      line-height: 1.45;
+      opacity: 0.75;
+    }
+
+
+    @media (max-width: 600px) {
+
+      .bot-control-header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+
+      .bot-control-buttons {
+        grid-template-columns: 1fr;
+      }
+
+    }
+
+  `;
+
+  document.head.appendChild(
+    style
+  );
+}
+
+
+// ============================================================
+// BOT CONTROL UI
+// ============================================================
+
+function updateBotControls(
+  data
+) {
+
+  ensureBotControls();
+
+  const enabled =
+    data.bot_enabled === true;
+
+
+  const status =
+    $("bot-control-status");
+
+
+  const message =
+    $("bot-control-message");
+
+
+  const warning =
+    $("bot-control-warning");
+
+
+  const startButton =
+    $("start-bot-btn");
+
+
+  const stopButton =
+    $("stop-bot-btn");
+
+
+  if (status) {
+
+    status.textContent =
+      enabled
+        ? "BOT RUNNING"
+        : "BOT STOPPED";
+
+
+    status.className =
+      enabled
+        ? "bot-control-status running"
+        : "bot-control-status stopped";
+  }
+
+
+  if (message) {
+
+    if (enabled) {
+
+      message.textContent =
+        "Bot is running. New positions can be taken according to the strategy.";
+
+    } else {
+
+      message.textContent =
+        "Bot is stopped. It cannot take any new position.";
+    }
+  }
+
+
+  if (warning) {
+
+    warning.textContent =
+      enabled
+        ? "Bot is active. STOP BOT will close the current position, if any, and prevent all new trades."
+        : "START BOT is required before the strategy can take any new position.";
+  }
+
+
+  if (startButton) {
+
+    startButton.disabled =
+      enabled;
+  }
+
+
+  if (stopButton) {
+
+    stopButton.disabled =
+      !enabled;
+  }
+}
+
+
+// ============================================================
+// START BOT
+// ============================================================
+
+async function startBot() {
+
+  const button =
+    $("start-bot-btn");
+
+
+  if (button) {
+
+    button.disabled = true;
+    button.textContent =
+      "STARTING...";
+  }
+
+
+  try {
+
+    const response =
+      await fetch(
+        "/api/bot/start",
+        {
+          method: "POST",
+          cache: "no-store"
+        }
+      );
+
+
+    const data =
+      await response.json();
+
+
+    if (!response.ok || !data.success) {
+
+      throw new Error(
+        data.message
+        || "Could not start bot."
+      );
+    }
+
+
+    window.__lastDashboardData =
+      null;
+
+
+    await loadDashboard();
+
+
+  } catch (error) {
+
+    console.error(
+      "Start bot error:",
+      error
+    );
+
+
+    alert(
+      error.message
+      || "Could not start bot."
+    );
+
+
+    await loadDashboard();
+
+  } finally {
+
+    const current =
+      $("start-bot-btn");
+
+    if (current) {
+
+      current.textContent =
+        "▶ START BOT";
+    }
+  }
+}
+
+
+// ============================================================
+// STOP BOT
+// ============================================================
+
+async function stopBot() {
+
+  const confirmed =
+    window.confirm(
+      "STOP BOT will close the current open position, if any, and prevent all new trades. Continue?"
+    );
+
+
+  if (!confirmed) {
+
+    return;
+  }
+
+
+  const button =
+    $("stop-bot-btn");
+
+
+  if (button) {
+
+    button.disabled = true;
+    button.textContent =
+      "STOPPING...";
+  }
+
+
+  try {
+
+    const response =
+      await fetch(
+        "/api/bot/stop",
+        {
+          method: "POST",
+          cache: "no-store"
+        }
+      );
+
+
+    const data =
+      await response.json();
+
+
+    if (!response.ok || !data.success) {
+
+      throw new Error(
+        data.message
+        || "Could not stop bot."
+      );
+    }
+
+
+    await loadDashboard();
+
+
+    alert(
+      data.message
+      || "Bot stopped successfully."
+    );
+
+
+  } catch (error) {
+
+    console.error(
+      "Stop bot error:",
+      error
+    );
+
+
+    alert(
+      error.message
+      || "Could not stop bot."
+    );
+
+
+    await loadDashboard();
+
+  } finally {
+
+    const current =
+      $("stop-bot-btn");
+
+    if (current) {
+
+      current.textContent =
+        "■ STOP BOT";
+    }
+  }
+}
+
+
+// ============================================================
+// TOP STATUS
+// ============================================================
 
 function setStatus(
   running
@@ -131,8 +665,15 @@ function ensureHistorySection() {
       </div>
 
       <div class="history-count-box">
-        <span>Total Saved</span>
-        <strong id="history-saved-count">0</strong>
+
+        <span>
+          Total Saved
+        </span>
+
+        <strong id="history-saved-count">
+          0
+        </strong>
+
       </div>
 
     </div>
@@ -148,6 +689,7 @@ function ensureHistorySection() {
       >
         ALL TIME
       </button>
+
 
       <button
         id="history-today-btn"
@@ -638,6 +1180,7 @@ function setHistoryView(
   const todayButton =
     $("history-today-btn");
 
+
   if (allButton) {
 
     allButton.classList.toggle(
@@ -646,6 +1189,7 @@ function setHistoryView(
     );
   }
 
+
   if (todayButton) {
 
     todayButton.classList.toggle(
@@ -653,6 +1197,7 @@ function setHistoryView(
       view === "today"
     );
   }
+
 
   const allTitle =
     $("all-time-stat-title");
@@ -666,30 +1211,40 @@ function setHistoryView(
   const todaySummary =
     $("today-summary");
 
+
   if (view === "all") {
 
     if (allTitle) {
+
       allTitle.style.display =
         "block";
     }
 
+
     if (allSummary) {
+
       allSummary.style.display =
         "grid";
     }
 
+
     if (todayTitle) {
+
       todayTitle.style.display =
         "none";
     }
 
+
     if (todaySummary) {
+
       todaySummary.style.display =
         "none";
     }
 
+
     const subtitle =
       $("history-date");
+
 
     if (subtitle) {
 
@@ -700,27 +1255,36 @@ function setHistoryView(
   } else {
 
     if (allTitle) {
+
       allTitle.style.display =
         "none";
     }
 
+
     if (allSummary) {
+
       allSummary.style.display =
         "none";
     }
 
+
     if (todayTitle) {
+
       todayTitle.style.display =
         "block";
     }
 
+
     if (todaySummary) {
+
       todaySummary.style.display =
         "grid";
     }
 
+
     const subtitle =
       $("history-date");
+
 
     if (subtitle) {
 
@@ -728,6 +1292,7 @@ function setHistoryView(
         "Today's completed trades";
     }
   }
+
 
   if (
     window.__lastDashboardData
@@ -753,10 +1318,12 @@ function formatTradeDate(
     return "--";
   }
 
+
   try {
 
     const date =
       new Date(value);
+
 
     if (
       Number.isNaN(
@@ -766,6 +1333,7 @@ function formatTradeDate(
 
       return value;
     }
+
 
     return date.toLocaleDateString(
       [],
@@ -792,10 +1360,12 @@ function formatTradeTime(
     return "--";
   }
 
+
   try {
 
     const date =
       new Date(value);
+
 
     if (
       Number.isNaN(
@@ -805,6 +1375,7 @@ function formatTradeTime(
 
       return value;
     }
+
 
     return date.toLocaleTimeString(
       [],
@@ -1244,8 +1815,20 @@ function updateDashboard(
     data;
 
 
+  /*
+   * Process status.
+   * This remains separate from trading status.
+   */
   setStatus(
     data.bot_running === true
+  );
+
+
+  /*
+   * Trading START / STOP status.
+   */
+  updateBotControls(
+    data
   );
 
 
@@ -1423,6 +2006,8 @@ async function loadDashboard() {
 // ============================================================
 // START
 // ============================================================
+
+ensureBotControls();
 
 ensureHistorySection();
 
