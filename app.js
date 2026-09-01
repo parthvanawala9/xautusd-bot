@@ -2,6 +2,7 @@ const $ = (id) =>
   document.getElementById(id);
 
 let adminPin = "";
+let dashboardLoading = false;
 
 
 // ============================================================
@@ -60,28 +61,96 @@ async function apiFetch(
   options = {}
 ) {
 
-  options.headers = {
-    ...(options.headers || {}),
-    "Content-Type": "application/json",
-    "X-Admin-Pin": adminPin
+  const requestOptions = {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "X-Admin-Pin": adminPin
+    }
   };
 
-  const response =
-    await fetch(
+  let response;
+
+  try {
+
+    response = await fetch(
       url,
-      options
+      requestOptions
     );
 
-  const data =
-    await response.json();
-
-  if (!response.ok || data.success === false) {
+  } catch (error) {
 
     throw new Error(
-      data.message ||
-      "Request failed."
+      "Dashboard server is unreachable."
     );
   }
+
+
+  const contentType =
+    response.headers.get(
+      "content-type"
+    ) || "";
+
+
+  let data = null;
+
+  if (
+    contentType
+      .toLowerCase()
+      .includes("application/json")
+  ) {
+
+    try {
+
+      data = await response.json();
+
+    } catch {
+
+      throw new Error(
+        `Server returned invalid JSON (HTTP ${response.status}).`
+      );
+    }
+
+  } else {
+
+    let text = "";
+
+    try {
+
+      text = await response.text();
+
+    } catch {
+
+      text = "";
+    }
+
+    const cleanText =
+      text
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    throw new Error(
+      cleanText
+        ? `Server returned a non-JSON response (HTTP ${response.status}): ${cleanText.slice(0, 180)}`
+        : `Server returned a non-JSON response (HTTP ${response.status}).`
+    );
+  }
+
+
+  if (
+    !response.ok ||
+    data?.success === false
+  ) {
+
+    throw new Error(
+      data?.message ||
+      `Request failed (HTTP ${response.status}).`
+    );
+  }
+
 
   return data;
 }
@@ -98,7 +167,7 @@ function requestPin() {
       "xaut_admin_pin"
     );
 
-  if (saved) {
+  if (saved !== null) {
 
     adminPin = saved;
 
@@ -138,7 +207,9 @@ async function startBot(
       }
     );
 
-    await loadDashboard();
+    await loadDashboard(
+      true
+    );
 
   } catch (error) {
 
@@ -174,7 +245,9 @@ async function stopBot(
       }
     );
 
-    await loadDashboard();
+    await loadDashboard(
+      true
+    );
 
   } catch (error) {
 
@@ -291,19 +364,43 @@ async function addClient() {
     );
 
 
-    $("client-form").style.display =
-      "none";
+    const form =
+      $("client-form");
+
+    if (form) {
+      form.style.display =
+        "none";
+    }
 
 
-    $("client-name").value = "";
-    $("client-api-key").value = "";
-    $("client-api-secret").value = "";
-    $("client-start").value = "";
-    $("client-expiry").value = "";
-    $("client-fee").value = "";
+    if ($("client-name")) {
+      $("client-name").value = "";
+    }
+
+    if ($("client-api-key")) {
+      $("client-api-key").value = "";
+    }
+
+    if ($("client-api-secret")) {
+      $("client-api-secret").value = "";
+    }
+
+    if ($("client-start")) {
+      $("client-start").value = "";
+    }
+
+    if ($("client-expiry")) {
+      $("client-expiry").value = "";
+    }
+
+    if ($("client-fee")) {
+      $("client-fee").value = "";
+    }
 
 
-    await loadDashboard();
+    await loadDashboard(
+      true
+    );
 
 
     alert(
@@ -381,7 +478,9 @@ async function updateSubscription(
     );
 
 
-    await loadDashboard();
+    await loadDashboard(
+      true
+    );
 
   } catch (error) {
 
@@ -425,7 +524,9 @@ async function deleteClient(
     );
 
 
-    await loadDashboard();
+    await loadDashboard(
+      true
+    );
 
   } catch (error) {
 
@@ -561,7 +662,8 @@ function renderAccount(
           <span>Balance</span>
           <strong>
             ${
-              account.balance === null
+              account.balance === null ||
+              account.balance === undefined
                 ? "--"
                 : "$" +
                   number(
@@ -585,7 +687,10 @@ function renderAccount(
         <div>
           <span>Position</span>
           <strong>
-            ${position.direction || "FLAT"}
+            ${escapeHtml(
+              position.direction ||
+              "FLAT"
+            )}
           </strong>
         </div>
 
@@ -747,13 +852,22 @@ function formatDate(
 
   try {
 
-    return new Date(
-      value
-    ).toLocaleString();
+    const date =
+      new Date(value);
+
+    if (
+      Number.isNaN(
+        date.getTime()
+      )
+    ) {
+      return String(value);
+    }
+
+    return date.toLocaleString();
 
   } catch {
 
-    return value;
+    return String(value);
   }
 }
 
@@ -762,7 +876,31 @@ function formatDate(
 // DASHBOARD
 // ============================================================
 
-async function loadDashboard() {
+async function loadDashboard(
+  force = false
+) {
+
+  // ----------------------------------------------------------
+  // Prevent overlapping 3-second requests.
+  // ----------------------------------------------------------
+
+  if (
+    dashboardLoading &&
+    !force
+  ) {
+    return;
+  }
+
+
+  if (
+    dashboardLoading
+  ) {
+    return;
+  }
+
+
+  dashboardLoading = true;
+
 
   try {
 
@@ -803,17 +941,19 @@ async function loadDashboard() {
 
     const primary =
       accounts.find(
-        a =>
-          a.account_type === "primary"
+        account =>
+          account.account_type === "primary"
       );
 
 
     if ($("bot-status")) {
 
       $("bot-status").textContent =
-        primary?.bot_running
-          ? "SYSTEM ONLINE"
-          : "OFFLINE";
+        data.server_online === false
+          ? "OFFLINE"
+          : primary?.bot_enabled
+            ? "SYSTEM ONLINE"
+            : "SYSTEM ONLINE • BOT STOPPED";
     }
 
 
@@ -829,6 +969,7 @@ async function loadDashboard() {
   } catch (error) {
 
     console.error(
+      "Dashboard load error:",
       error
     );
 
@@ -838,6 +979,18 @@ async function loadDashboard() {
       $("last-update").textContent =
         "Dashboard connection failed";
     }
+
+
+    if ($("bot-status")) {
+
+      $("bot-status").textContent =
+        "CONNECTION ERROR";
+    }
+
+
+  } finally {
+
+    dashboardLoading = false;
   }
 }
 
@@ -851,6 +1004,6 @@ requestPin();
 loadDashboard();
 
 setInterval(
-  loadDashboard,
+  () => loadDashboard(),
   3000
 );
