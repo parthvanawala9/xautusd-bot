@@ -715,3 +715,78 @@ jobs:
 
 
           EOF
+
+
+      # =====================================================
+      # SEND CLOUDFLARE URL TO NEW DASHBOARD REPOSITORY
+      #
+      # ONLY NEW AUTOMATION STEP.
+      #
+      # This does NOT change Oracle, bot, dashboard files,
+      # strategy, restart, or Cloudflare tunnel behavior.
+      # =====================================================
+
+      - name: Send Dashboard URL To Vercel Repository
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+          DASHBOARD_REPO_TOKEN: ${{ secrets.DASHBOARD_REPO_TOKEN }}
+
+        run: |
+
+          set -e
+
+          echo "========================================"
+          echo "GETTING CURRENT CLOUDFLARE URL"
+          echo "========================================"
+
+
+          DASHBOARD_URL=$(ssh \
+            -i ~/.ssh/oracle.key \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=60 \
+            -o ConnectionAttempts=5 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=4 \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "grep -oE 'https://[a-zA-Z0-9.-]+\.trycloudflare\.com' /home/opc/xautusd-bot/quick-tunnel.log | tail -n 1")
+
+
+          if [ -z "$DASHBOARD_URL" ]; then
+
+            echo "ERROR: Cloudflare URL not found."
+
+            exit 1
+
+          fi
+
+
+          echo
+          echo "Cloudflare URL received."
+
+
+          echo
+          echo "Sending URL to xautusd-dashboard repository..."
+
+
+          curl \
+            -fsS \
+            -X POST \
+            "https://api.github.com/repos/parthvanawala9/xautusd-dashboard/dispatches" \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $DASHBOARD_REPO_TOKEN" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "Content-Type: application/json" \
+            --data "{\"event_type\":\"cloudflare-url-updated\",\"client_payload\":{\"url\":\"$DASHBOARD_URL\"}}"
+
+
+          echo
+          echo "========================================"
+          echo "CLOUDFLARE URL SENT TO DASHBOARD REPO"
+          echo "========================================"
+
+
+          echo
+          echo "DASHBOARD URL"
+          echo "$DASHBOARD_URL"
