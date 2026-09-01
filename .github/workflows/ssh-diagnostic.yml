@@ -1,0 +1,140 @@
+name: XAUTUSD SSH Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ssh-diagnostic:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Prepare SSH Key
+        env:
+          ORACLE_PRIVATE_KEY: ${{ secrets.ORACLE_PRIVATE_KEY }}
+
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "PREPARING SSH KEY"
+          echo "========================================"
+
+          mkdir -p ~/.ssh
+
+          printf '%s\n' "$ORACLE_PRIVATE_KEY" \
+            > ~/.ssh/oracle.key
+
+          chmod 600 ~/.ssh/oracle.key
+
+          ssh-keygen \
+            -y \
+            -f ~/.ssh/oracle.key \
+            > /dev/null
+
+          echo "SSH_KEY_OK"
+
+
+      - name: Test Oracle Port 22
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "TESTING ORACLE PORT 22"
+          echo "========================================"
+
+          timeout 20 bash -c \
+            "cat < /dev/null > /dev/tcp/$ORACLE_HOST/22"
+
+          echo
+          echo "ORACLE_PORT_22_REACHABLE"
+
+
+      - name: Test SSH Banner
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+          ORACLE_USER: ${{ secrets.ORACLE_USER }}
+
+        run: |
+          set -u
+
+          echo "========================================"
+          echo "TESTING SSH BANNER"
+          echo "========================================"
+
+          set +e
+
+          timeout 30 ssh \
+            -vvv \
+            -4 \
+            -i ~/.ssh/oracle.key \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=15 \
+            -o ConnectionAttempts=1 \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=2 \
+            -o TCPKeepAlive=yes \
+            -o IPQoS=throughput \
+            -o GSSAPIAuthentication=no \
+            -o PreferredAuthentications=publickey \
+            -o PubkeyAuthentication=yes \
+            -o IdentitiesOnly=yes \
+            -o AddressFamily=inet \
+            "$ORACLE_USER@$ORACLE_HOST" \
+            "echo ORACLE_SSH_OK" \
+            2>&1 | tee ssh-debug.log
+
+          SSH_EXIT=${PIPESTATUS[0]}
+
+          set -e
+
+          echo
+          echo "SSH_EXIT_CODE=$SSH_EXIT"
+
+          if [ "$SSH_EXIT" -eq 0 ]; then
+            echo
+            echo "========================================"
+            echo "ORACLE_SSH_OK"
+            echo "========================================"
+          else
+            echo
+            echo "========================================"
+            echo "ORACLE_SSH_FAILED"
+            echo "========================================"
+            echo
+            echo "SSH failed, but diagnostic continues."
+          fi
+
+
+      - name: Test SSH Banner With Netcat
+        env:
+          ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
+
+        run: |
+          set +e
+
+          echo "========================================"
+          echo "RAW SSH BANNER TEST"
+          echo "========================================"
+
+          timeout 15 bash -c \
+            "exec 3<>/dev/tcp/$ORACLE_HOST/22; sleep 5; cat <&3" \
+            2>&1 | head -n 20
+
+          EXIT_CODE=${PIPESTATUS[0]}
+
+          echo
+          echo "RAW_BANNER_TEST_EXIT=$EXIT_CODE"
+
+          echo
+          echo "========================================"
+          echo "DIAGNOSTIC COMPLETE"
+          echo "========================================"
