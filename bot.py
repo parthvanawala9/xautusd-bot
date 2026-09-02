@@ -64,6 +64,10 @@ def trading_day_start(dt=None):
         boundary -= timedelta(days=1)
     return boundary
 
+def daily_squareoff_time(dt=None):
+    dt = dt or now_ist()
+    return dt.replace(hour=5, minute=40, second=0, microsecond=0)
+
 def strategy_start(day_start):
     return day_start.replace(hour=5, minute=45, second=0, microsecond=0)
 
@@ -352,6 +356,7 @@ class AccountBot:
         self.last_position = 0
         self.last_price = None
         self.ready = False
+        self.daily_squared_off = False
 
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -366,9 +371,6 @@ class AccountBot:
 
         self.load_state()
 
-        # ============================================================
-        # AUTO-START FIX 1: Bot starts automatically by default
-        # ============================================================
         if self.stop_reason == "START REQUIRED" or self.stop_reason is None or self.stop_reason == "":
             self.bot_enabled = True
             self.stop_reason = None
@@ -390,6 +392,7 @@ class AccountBot:
             if state.get("active_trade"): self.active_trade = state["active_trade"]
             self.bot_enabled = state.get("bot_enabled", True)
             self.stop_reason = state.get("stop_reason", None)
+            self.daily_squared_off = state.get("daily_squared_off", False)
         except Exception as e:
             logging.warning(f"{self.account_name} | STATE LOAD ERROR | {e}")
 
@@ -406,7 +409,8 @@ class AccountBot:
             "trade_low": str(self.trade_low) if self.trade_low is not None else None,
             "active_trade": getattr(self, 'active_trade', None),
             "bot_enabled": self.bot_enabled,
-            "stop_reason": self.stop_reason
+            "stop_reason": self.stop_reason,
+            "daily_squared_off": self.daily_squared_off
         }
         atomic_write_json(account_state_file(self.account_id), data)
 
@@ -564,6 +568,7 @@ class AccountBot:
         self.high = None
         self.low = None
         self.ready = False
+        self.daily_squared_off = False
 
         live_size = self.last_position
         if live_size == 0:
@@ -578,10 +583,6 @@ class AccountBot:
             self.trade_low = None
             self.active_trade = None
 
-        # ============================================================
-        # AUTO-START FIX 2: Do NOT stop bot on new session
-        # ============================================================
-        # Keep bot_enabled state unchanged so trading continues automatically.
         self.save()
 
     def prepare(self, now, price):
@@ -706,6 +707,7 @@ class AccountBot:
             now = now_ist()
             self.last_ws_message_time = now.isoformat()
 
+            # Saturday Weekend Squareoff
             if saturday_squareoff(now):
                 try:
                     pos = self.refresh_position(force=True)
@@ -723,6 +725,26 @@ class AccountBot:
 
             if weekend(now): return
             self.new_day(now)
+
+            # ============================================================
+            # DAILY 05:40 AM SQUAREOFF LOGIC (Carry-Forward Position Exit)
+            # ============================================================
+            sq_time = daily_squareoff_time(now)
+            if now >= sq_time and now < strategy_start(self.day) and not self.daily_squared_off:
+                try:
+                    pos = self.refresh_position(force=True)
+                    if pos["size"] != 0:
+                        logging.warning(f"{self.account_name} | DAILY 05:40 AM SQUAREOFF | Closing open position: {pos['size']}")
+                        self.client.close_position(self.product_id, pos["size"])
+                        self.finish_active_trade(price, "DAILY_0540_SQUAREOFF")
+                        self.last_position = 0
+                        self.sl = None
+                        self.trade_high = None
+                        self.trade_low = None
+                    self.daily_squared_off = True
+                    self.save()
+                except Exception as e:
+                    logging.exception(f"{self.account_name} | DAILY SQUAREOFF ERROR | {e}")
 
             if now < strategy_start(self.day): return
             if not self.prepare(now, price): return
