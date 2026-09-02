@@ -510,15 +510,6 @@ jobs:
 
       # =====================================================
       # CLOUDFLARE QUICK TUNNEL
-      #
-      # IMPORTANT:
-      # We do NOT curl the trycloudflare URL from Oracle.
-      #
-      # The previous workflow failed here because Oracle
-      # could not resolve the temporary Cloudflare hostname.
-      #
-      # We only verify that the tunnel started and obtain
-      # its public URL.
       # =====================================================
 
       - name: Start Cloudflare Quick Tunnel
@@ -718,12 +709,7 @@ jobs:
 
 
       # =====================================================
-      # SEND CLOUDFLARE URL TO NEW DASHBOARD REPOSITORY
-      #
-      # ONLY NEW AUTOMATION STEP.
-      #
-      # This does NOT change Oracle, bot, dashboard files,
-      # strategy, restart, or Cloudflare tunnel behavior.
+      # SEND CLOUDFLARE URL TO DASHBOARD REPO AND VERCEL
       # =====================================================
 
       - name: Send Dashboard URL To Vercel Repository
@@ -731,6 +717,8 @@ jobs:
           ORACLE_HOST: ${{ secrets.ORACLE_HOST }}
           ORACLE_USER: ${{ secrets.ORACLE_USER }}
           DASHBOARD_REPO_TOKEN: ${{ secrets.DASHBOARD_REPO_TOKEN }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
 
         run: |
 
@@ -766,25 +754,59 @@ jobs:
           echo "Cloudflare URL received."
 
 
-          echo
-          echo "Sending URL to xautusd-dashboard repository..."
+          # ---------------------------------------------------
+          # Direct Vercel API Update (Fixed 404 Endpoint)
+          # ---------------------------------------------------
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
+            echo
+            echo "Updating Vercel Environment Variable directly..."
+            
+            ENV_ID=$(curl -s \
+              -H "Authorization: Bearer $VERCEL_TOKEN" \
+              "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env" \
+              | python3 -c "import sys, json; data=json.load(sys.stdin); print(next((x['id'] for x in data.get('envs', []) if x.get('key') in ['ORACLE_DASHBOARD_URL', 'NEXT_PUBLIC_API_URL']), ''))" || true)
+
+            if [ -n "$ENV_ID" ]; then
+              echo "Updating existing Vercel env ($ENV_ID)..."
+              curl -fsS -X PATCH \
+                "https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID/env/$ENV_ID" \
+                -H "Authorization: Bearer $VERCEL_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "{\"value\":\"$DASHBOARD_URL\",\"target\":[\"production\"]}"
+            else
+              echo "Creating new Vercel env..."
+              curl -fsS -X POST \
+                "https://api.vercel.com/v10/projects/$VERCEL_PROJECT_ID/env" \
+                -H "Authorization: Bearer $VERCEL_TOKEN" \
+                -H "Content-Type: application/json" \
+                --data "{\"key\":\"NEXT_PUBLIC_API_URL\",\"value\":\"$DASHBOARD_URL\",\"type\":\"encrypted\",\"target\":[\"production\"]}"
+            fi
+            echo "VERCEL_ENV_UPDATED"
+          fi
 
 
-          curl \
-            -fsS \
-            -X POST \
-            "https://api.github.com/repos/parthvanawala9/xautusd-dashboard/dispatches" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer $DASHBOARD_REPO_TOKEN" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            -H "Content-Type: application/json" \
-            --data "{\"event_type\":\"cloudflare-url-updated\",\"client_payload\":{\"url\":\"$DASHBOARD_URL\"}}"
+          # ---------------------------------------------------
+          # Dispatch Event to xautusd-dashboard Repo
+          # ---------------------------------------------------
+          if [ -n "$DASHBOARD_REPO_TOKEN" ]; then
+            echo
+            echo "Sending URL to xautusd-dashboard repository..."
 
+            curl \
+              -fsS \
+              -X POST \
+              "https://api.github.com/repos/parthvanawala9/xautusd-dashboard/dispatches" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $DASHBOARD_REPO_TOKEN" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              -H "Content-Type: application/json" \
+              --data "{\"event_type\":\"cloudflare-url-updated\",\"client_payload\":{\"url\":\"$DASHBOARD_URL\"}}"
 
-          echo
-          echo "========================================"
-          echo "CLOUDFLARE URL SENT TO DASHBOARD REPO"
-          echo "========================================"
+            echo
+            echo "========================================"
+            echo "CLOUDFLARE URL SENT TO DASHBOARD REPO"
+            echo "========================================"
+          fi
 
 
           echo
