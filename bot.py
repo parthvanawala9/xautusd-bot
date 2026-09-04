@@ -301,6 +301,18 @@ class DeltaClient:
             logging.warning(f"{self.account_name} | HISTORY ERROR | {e}")
             return None, None
 
+    def last_traded_price(self):
+        try:
+            data = self.api("GET", f"/v2/tickers/{SYMBOL}")
+            res = data.get("result")
+            if isinstance(res, dict):
+                p = res.get("close") or res.get("spot_price") or res.get("ltp")
+                if p is not None:
+                    return Decimal(str(p))
+        except Exception:
+            pass
+        return None
+
 def load_trade_history(account_id):
     filename = account_history_file(account_id)
     if not os.path.exists(filename): return []
@@ -471,7 +483,7 @@ class AccountBot:
                         try: recovered_entry = Decimal(str(se))
                         except Exception: pass
 
-                if recovered_entry is None: recovered_entry = self.last_price
+                if recovered_entry is None: recovered_entry = self.last_price or self.client.last_traded_price()
 
                 recovered_sl = pos.get("stop_loss")
                 if recovered_sl is not None:
@@ -552,7 +564,8 @@ class AccountBot:
             except Exception as e:
                 return {"success": False, "bot_enabled": False, "message": f"Stop failed to close position: {e}"}
 
-            self.finish_active_trade(self.last_price or self.active_trade.get("entry_price"), "MANUAL_STOP")
+            exit_p = self.last_price or self.client.last_traded_price()
+            self.finish_active_trade(exit_p, "MANUAL_STOP")
             self.last_position = 0
             self.sl = None
             self.trade_high = None
@@ -594,21 +607,20 @@ class AccountBot:
         except Exception: pos = {"size": self.last_position}
         self.last_position = int(pos.get("size", 0))
 
-        if now > start + timedelta(seconds=5):
-            high, low = self.client.historical_high_low(start, now)
-            if high is not None and low is not None:
-                self.high = high
-                self.low = low
-                self.ready = True
-                self.save()
-                logging.warning(f"{self.account_name} | RECOVERED RANGE | HIGH={high} | LOW={low}")
-                return True
+        high, low = self.client.historical_high_low(self.day, now)
+        if high is not None and low is not None:
+            self.high = high
+            self.low = low
+            self.ready = True
+            self.save()
+            logging.warning(f"{self.account_name} | RANGE LOADED VIA REST | HIGH={high} | LOW={low}")
+            return True
 
         self.high = price
         self.low = price
         self.ready = True
         self.save()
-        logging.warning(f"{self.account_name} | INITIAL RANGE | HIGH={price} | LOW={price}")
+        logging.warning(f"{self.account_name} | INITIAL RANGE FALLBACK | HIGH={price} | LOW={price}")
         return True
 
     def enter(self, direction, price, sl):
@@ -701,11 +713,15 @@ class AccountBot:
         self.active_trade = None
         self.save()
 
-    def price_tick(self, price):
+    def evaluate(self, price=None):
         with self.lock:
-            self.last_price = price
             now = now_ist()
-            self.last_ws_message_time = now.isoformat()
+            if price is None:
+                price = self.last_price or self.client.last_traded_price()
+            if price is None:
+                return
+
+            self.last_price = price
 
             # Saturday Weekend Squareoff
             if saturday_squareoff(now):
@@ -727,10 +743,11 @@ class AccountBot:
             self.new_day(now)
 
             # ============================================================
-            # DAILY 05:40 AM SQUAREOFF LOGIC (Carry-Forward Position Exit)
+            # DAILY 05:40 AM SQUAREOFF LOGIC
             # ============================================================
             sq_time = daily_squareoff_time(now)
-            if now >= sq_time and now < strategy_start(self.day) and not self.daily_squared_off:
+            s_start = strategy_start(self.day)
+            if now >= sq_time and now < s_start and not self.daily_squared_off:
                 try:
                     pos = self.refresh_position(force=True)
                     if pos["size"] != 0:
@@ -746,7 +763,7 @@ class AccountBot:
                 except Exception as e:
                     logging.exception(f"{self.account_name} | DAILY SQUAREOFF ERROR | {e}")
 
-            if now < strategy_start(self.day): return
+            if now < s_start: return
             if not self.prepare(now, price): return
 
             pos = self.refresh_position()
@@ -800,14 +817,14 @@ class AccountBot:
             if not self.bot_enabled: return
 
             if self.high is not None and price > self.high:
-                old_h, sl = self.high, self.low
+                sl = self.low
                 if self.enter("LONG", price, sl):
                     self.high = price
                     self.save()
                 return
 
             if self.low is not None and price < self.low:
-                old_l, sl = self.low, self.high
+                sl = self.high
                 if self.enter("SHORT", price, sl):
                     self.low = price
                     self.save()
@@ -1014,11 +1031,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def start_dashboard():
     def server_thread():
         server = ThreadingHTTPServer(("127.0.0.1", DASHBOARD_PORT), DashboardHandler)
-        logging.warning(f"DASHBOARD STARTED | PORT = {DASHBOARD_PORT}")
         server.serve_forever()
     t = threading.Thread(target=server_thread, daemon=True, name="dashboard-server")
     t.start()
     time.sleep(0.2)
+
+def background_timer_loop():
+    while True:
+        time.sleep(2)
+        try:
+            with ACCOUNTS_LOCK:
+                bots = list(BOT_ACCOUNTS.values())
+            if not bots:
+                continue
+            for b in bots:
+                try:
+                    b.evaluate()
+                except Exception as e:
+                    logging.warning(f"{b.account_name} | TIMER EVAL ERROR | {e}")
+        except Exception as e:
+            logging.warning(f"BACKGROUND TIMER ERROR | {e}")
 
 def run_websocket():
     while True:
@@ -1035,7 +1067,7 @@ def run_websocket():
                 if p_val is None: return
                 price = Decimal(str(p_val))
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
-                for b in bots: b.price_tick(price)
+                for b in bots: b.evaluate(price)
 
             def on_error(ws, error):
                 with ACCOUNTS_LOCK:
@@ -1058,6 +1090,8 @@ if __name__ == "__main__":
     try:
         start_dashboard()
         load_all_accounts()
+        timer_thread = threading.Thread(target=background_timer_loop, daemon=True, name="background-timer")
+        timer_thread.start()
         run_websocket()
     except KeyboardInterrupt:
         logging.warning("BOT STOPPED")
