@@ -607,7 +607,9 @@ class AccountBot:
         except Exception: pos = {"size": self.last_position}
         self.last_position = int(pos.get("size", 0))
 
-        high, low = self.client.historical_high_low(self.day, now)
+        fetch_end = max(now, start + timedelta(minutes=1))
+        high, low = self.client.historical_high_low(start, fetch_end)
+        
         if high is not None and low is not None:
             self.high = high
             self.low = low
@@ -616,11 +618,11 @@ class AccountBot:
             logging.warning(f"{self.account_name} | RANGE LOADED VIA REST | HIGH={high} | LOW={low}")
             return True
 
-        self.high = price
-        self.low = price
+        logging.warning(f"{self.account_name} | REST RANGE EMPTY, USING PRICE FALLBACK | PRICE={price}")
+        if self.high is None or price > self.high: self.high = price
+        if self.low is None or price < self.low: self.low = price
         self.ready = True
         self.save()
-        logging.warning(f"{self.account_name} | INITIAL RANGE FALLBACK | HIGH={price} | LOW={price}")
         return True
 
     def enter(self, direction, price, sl):
