@@ -256,9 +256,6 @@ class DeltaClient:
             logging.warning(f"{self.account_name} | CANCEL ALL ORDERS ERROR | {e}")
 
     def market_entry(self, product_id, side, size, sl):
-        """
-        Market Entry WITH Attached Bracket Stop Loss.
-        """
         body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
@@ -273,15 +270,14 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def place_reversal_slm_order(self, product_id, active_side, size, sl_price):
-        """
-        Places Reversal Stop-Market Order (SLM) on Exchange.
-        """
         reversal_side = "sell" if active_side == "buy" else "buy"
+        # 2x size for reversing position on stop trigger
+        reversal_size = int(abs(size) * 2)
 
         reversal_body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
-            "size": int(abs(size)),
+            "size": reversal_size,
             "side": reversal_side,
             "order_type": "stop_market_order",
             "stop_price": str(sl_price),
@@ -292,7 +288,7 @@ class DeltaClient:
 
         try:
             self.api("POST", "/v2/orders", body=reversal_body, auth=True)
-            logging.warning(f"{self.account_name} | REVERSAL SLM ORDER PLACED AT {sl_price}")
+            logging.warning(f"{self.account_name} | REVERSAL SLM ORDER PLACED AT {sl_price} | SIZE={reversal_size}")
         except Exception as e:
             logging.error(f"{self.account_name} | FAILED TO PLACE REVERSAL SLM ORDER | {e}")
 
@@ -404,6 +400,8 @@ class AccountBot:
         self.last_price = None
         self.ready = False
         self.daily_squared_off = False
+        self.bot_enabled = True
+        self.stop_reason = None
 
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -417,11 +415,6 @@ class AccountBot:
         self.api_error = None
 
         self.load_state()
-
-        if self.stop_reason == "START REQUIRED" or self.stop_reason is None or self.stop_reason == "":
-            self.bot_enabled = True
-            self.stop_reason = None
-        
         self.save()
 
     def load_state(self):
@@ -520,26 +513,17 @@ class AccountBot:
 
                 if recovered_entry is None: recovered_entry = self.last_price or self.client.last_traded_price()
 
-                recovered_sl = pos.get("stop_loss")
-                if recovered_sl is not None:
-                    try: recovered_sl = Decimal(str(recovered_sl))
-                    except Exception: recovered_sl = None
-
-                if recovered_sl is None: recovered_sl = self.sl
+                recovered_sl = pos.get("stop_loss") or self.sl
                 if recovered_sl is None: recovered_sl = self.low if direction == "LONG" else self.high
 
-                if getattr(self, 'active_trade', None) is None:
-                    self.active_trade = {
-                        "direction": direction,
-                        "entry_price": float(recovered_entry) if recovered_entry else None,
-                        "entry_time": now_ist().isoformat(),
-                        "size": abs(size)
-                    }
-                else:
-                    self.active_trade["direction"] = direction
-                    self.active_trade["size"] = abs(size)
+                self.active_trade = {
+                    "direction": direction,
+                    "entry_price": float(recovered_entry) if recovered_entry else None,
+                    "entry_time": now_ist().isoformat(),
+                    "size": abs(size)
+                }
 
-                if recovered_sl: self.sl = recovered_sl
+                if recovered_sl: self.sl = Decimal(str(recovered_sl))
                 if direction == "LONG":
                     if self.trade_high is None: self.trade_high = self.high or recovered_entry
                     self.trade_low = None
@@ -551,7 +535,6 @@ class AccountBot:
                 self.bot_enabled = True
                 self.stop_reason = None
                 
-                # Re-attach Reversal SLM if recovering
                 side = "buy" if size > 0 else "sell"
                 if self.sl:
                     self.client.place_reversal_slm_order(self.product_id, side, size, self.sl)
@@ -649,15 +632,17 @@ class AccountBot:
         except Exception: pos = {"size": self.last_position}
         self.last_position = int(pos.get("size", 0))
 
-        fetch_end = max(now, start + timedelta(minutes=1))
-        high, low = self.client.historical_high_low(start, fetch_end)
+        # Candle calculation for 05:30 to 05:45 IST
+        c_start = self.day
+        c_end = start
+        high, low = self.client.historical_high_low(c_start, c_end)
         
         if high is not None and low is not None:
             self.high = high
             self.low = low
             self.ready = True
             self.save()
-            logging.warning(f"{self.account_name} | RANGE LOADED VIA REST | HIGH={high} | LOW={low}")
+            logging.warning(f"{self.account_name} | 05:30-05:45 RANGE LOADED | HIGH={high} | LOW={low}")
             return True
 
         logging.warning(f"{self.account_name} | REST RANGE EMPTY, USING PRICE FALLBACK | PRICE={price}")
@@ -681,7 +666,6 @@ class AccountBot:
 
         try:
             size = self.client.order_size(self.product, price)
-            # 1. Market Entry WITH Bracket SL attached
             self.client.market_entry(self.product_id, side, size, sl)
         except Exception as e:
             logging.exception(f"{self.account_name} | ENTRY ORDER ERROR | {e}")
@@ -717,11 +701,11 @@ class AccountBot:
             "size": abs(int(self.last_position))
         }
 
-        # 2. Place Reversal SLM Order on Exchange
+        # Place Reversal SLM Order on Exchange with 2x size
         self.client.place_reversal_slm_order(self.product_id, side, self.last_position, self.sl)
 
         self.save()
-        logging.warning(f"{self.account_name} | TRADE LIVE WITH BRACKET SL & SLM | {direction} | ENTRY={price} | SL={sl}")
+        logging.warning(f"{self.account_name} | TRADE LIVE WITH BRACKET SL & REVERSAL SLM | {direction} | ENTRY={price} | SL={sl}")
         return True
 
     def finish_active_trade(self, exit_price, reason):
@@ -760,36 +744,37 @@ class AccountBot:
         self.save()
 
     def execute_540_exit(self):
-        """Dedicated Retry Loop for 05:40 AM Squareoff"""
+        """100% Reliable 05:40 AM Squareoff Execution"""
         with self.lock:
-            now = now_ist()
             if self.daily_squared_off:
                 return
             
-            logging.warning(f"{self.account_name} | CRON TRIGGERED 05:40 AM SQUAREOFF")
+            logging.warning(f"{self.account_name} | TRIGGERING 05:40 AM SQUAREOFF")
             for attempt in range(5):
                 try:
                     self.client.cancel_all_orders(self.product_id)
+                    time.sleep(0.5)
                     pos = self.refresh_position(force=True)
                     size = int(pos.get("size", 0))
                     if size != 0:
                         exit_price = self.last_price or self.client.last_traded_price()
                         self.client.close_position(self.product_id, size)
                         self.finish_active_trade(exit_price, "DAILY_0540_SQUAREOFF")
-                        self.last_position = 0
-                        self.sl = None
-                        self.trade_high = None
-                        self.trade_low = None
+                    
+                    self.last_position = 0
+                    self.sl = None
+                    self.trade_high = None
+                    self.trade_low = None
                     self.daily_squared_off = True
                     self.save()
-                    logging.warning(f"{self.account_name} | 05:40 SQUAREOFF COMPLETED SUCCESSFULLY")
+                    logging.warning(f"{self.account_name} | 05:40 SQUAREOFF SUCCESSFULLY COMPLETED")
                     break
                 except Exception as e:
                     logging.error(f"{self.account_name} | 05:40 EXIT ATTEMPT {attempt+1} FAILED | {e}")
                     time.sleep(2)
 
     def execute_545_preparation(self):
-        """Dedicated Trigger for 05:45 AM Strategy Start"""
+        """05:45 AM Strategy Start Trigger"""
         with self.lock:
             now = now_ist()
             price = self.last_price or self.client.last_traded_price()
@@ -806,7 +791,6 @@ class AccountBot:
 
             self.last_price = price
 
-            # Saturday Weekend Squareoff
             if saturday_squareoff(now):
                 try:
                     self.client.cancel_all_orders(self.product_id)
@@ -829,7 +813,6 @@ class AccountBot:
             sq_time = daily_squareoff_time(now)
             s_start = strategy_start(self.day)
             
-            # Legacy fallback check for 05:40
             if now >= sq_time and now < s_start and not self.daily_squared_off:
                 self.execute_540_exit()
 
@@ -843,11 +826,10 @@ class AccountBot:
             if self.last_position != 0 and size != 0 and ((self.last_position > 0 and size < 0) or (self.last_position < 0 and size > 0)):
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 new_dir = "SHORT" if size < 0 else "LONG"
-                logging.warning(f"{self.account_name} | REVERSAL EXECUTED BY EXCHANGE | {old_dir} -> {new_dir}")
+                logging.warning(f"{self.account_name} | REVERSAL EXECUTED ON EXCHANGE | {old_dir} -> {new_dir}")
                 
                 self.finish_active_trade(price, "REVERSAL_SLM")
                 
-                # Setup New Reversal Position Data
                 self.last_position = size
                 if new_dir == "SHORT":
                     new_sl = self.trade_high or self.high
@@ -867,13 +849,11 @@ class AccountBot:
                     "size": abs(int(size))
                 }
 
-                # Place Next Reversal SLM Order Chain on Exchange
                 side = "sell" if size < 0 else "buy"
                 self.client.place_reversal_slm_order(self.product_id, side, size, self.sl)
                 self.save()
                 return
 
-            # External Close Logic
             if size == 0 and self.last_position != 0:
                 self.finish_active_trade(price, "EXTERNAL_CLOSE")
                 self.last_position = 0
@@ -899,10 +879,10 @@ class AccountBot:
                     self.save()
                 return
 
-            # Flat Position -> Looking for Breakout Entry
             self.last_position = 0
             if not self.bot_enabled: return
 
+            # Breakout Entry at 05:45 AM onward
             if self.high is not None and price > self.high:
                 sl = self.low
                 if self.enter("LONG", price, sl):
@@ -1124,7 +1104,6 @@ def start_dashboard():
     time.sleep(0.2)
 
 def background_timer_loop():
-    """Precise Clock Monitoring for Daily 5:40 Exit & 5:45 Threading"""
     last_exec_540 = None
     last_exec_545 = None
     
@@ -1140,19 +1119,19 @@ def background_timer_loop():
             if not bots:
                 continue
 
-            # Dedicated 05:40 Trigger
+            # Trigger 05:40 AM Squareoff
             if time_str == "05:40" and last_exec_540 != now.date():
                 last_exec_540 = now.date()
                 for b in bots:
                     b.execute_540_exit()
 
-            # Dedicated 05:45 Trigger
+            # Trigger 05:45 AM Preparation & Entry Strategy
             if time_str == "05:45" and last_exec_545 != now.date():
                 last_exec_545 = now.date()
                 for b in bots:
                     b.execute_545_preparation()
 
-            # Standard Regular Evaluation
+            # Continuous Price & Position Evaluation
             for b in bots:
                 try:
                     b.evaluate()
