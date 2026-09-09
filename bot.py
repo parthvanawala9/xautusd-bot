@@ -159,7 +159,7 @@ class DeltaClient:
                 params=params,
                 data=body_text if body is not None else None,
                 headers=headers,
-                timeout=(5, 15)
+                timeout=(3, 8)  # Optimized timeouts for faster execution
             )
         except requests.RequestException as e:
             raise RuntimeError(f"Delta connection error: {e}") from e
@@ -626,7 +626,7 @@ class AccountBot:
         return True
 
     def enter(self, direction, price, sl):
-        if not self.bot_enabled or self.last_position != 0 or sl is None: return False
+        if not self.bot_enabled or sl is None: return False
 
         pos = self.refresh_position(force=True)
         if pos["size"] != 0:
@@ -648,8 +648,8 @@ class AccountBot:
             return False
 
         confirmed = False
-        for _ in range(50):
-            time.sleep(0.2)
+        for _ in range(15):  # Reduced from 50 to 15 (max 1.5s check) for speed
+            time.sleep(0.1)
             try:
                 p = self.client.position(self.product_id)
                 self.cached_position = p
@@ -715,6 +715,42 @@ class AccountBot:
         self.active_trade = None
         self.save()
 
+    def execute_540_exit(self):
+        """Dedicated Retry Loop for 05:40 AM Squareoff"""
+        with self.lock:
+            now = now_ist()
+            if self.daily_squared_off:
+                return
+            
+            logging.warning(f"{self.account_name} | CRON TRIGGERED 05:40 AM SQUAREOFF")
+            for attempt in range(5):
+                try:
+                    pos = self.refresh_position(force=True)
+                    size = int(pos.get("size", 0))
+                    if size != 0:
+                        exit_price = self.last_price or self.client.last_traded_price()
+                        self.client.close_position(self.product_id, size)
+                        self.finish_active_trade(exit_price, "DAILY_0540_SQUAREOFF")
+                        self.last_position = 0
+                        self.sl = None
+                        self.trade_high = None
+                        self.trade_low = None
+                    self.daily_squared_off = True
+                    self.save()
+                    logging.warning(f"{self.account_name} | 05:40 SQUAREOFF COMPLETED SUCCESSFULLY")
+                    break
+                except Exception as e:
+                    logging.error(f"{self.account_name} | 05:40 EXIT ATTEMPT {attempt+1} FAILED | {e}")
+                    time.sleep(2)
+
+    def execute_545_preparation(self):
+        """Dedicated Trigger for 05:45 AM Strategy Start"""
+        with self.lock:
+            now = now_ist()
+            price = self.last_price or self.client.last_traded_price()
+            if price:
+                self.prepare(now, price)
+
     def evaluate(self, price=None):
         with self.lock:
             now = now_ist()
@@ -744,52 +780,49 @@ class AccountBot:
             if weekend(now): return
             self.new_day(now)
 
-            # ============================================================
-            # DAILY 05:40 AM SQUAREOFF LOGIC
-            # ============================================================
             sq_time = daily_squareoff_time(now)
             s_start = strategy_start(self.day)
+            
+            # Legacy fallback check for 05:40
             if now >= sq_time and now < s_start and not self.daily_squared_off:
-                try:
-                    pos = self.refresh_position(force=True)
-                    if pos["size"] != 0:
-                        logging.warning(f"{self.account_name} | DAILY 05:40 AM SQUAREOFF | Closing open position: {pos['size']}")
-                        self.client.close_position(self.product_id, pos["size"])
-                        self.finish_active_trade(price, "DAILY_0540_SQUAREOFF")
-                        self.last_position = 0
-                        self.sl = None
-                        self.trade_high = None
-                        self.trade_low = None
-                    self.daily_squared_off = True
-                    self.save()
-                except Exception as e:
-                    logging.exception(f"{self.account_name} | DAILY SQUAREOFF ERROR | {e}")
+                self.execute_540_exit()
 
             if now < s_start: return
             if not self.prepare(now, price): return
 
-            pos = self.refresh_position()
-            size = int(pos.get("size", 0))
-
-            # Stop-Loss Checking Logic
-            if size == 0 and self.last_position != 0:
+            # Direct Stop-Loss Detection against Market Price (INSTANT REVERSAL)
+            if self.bot_enabled and self.last_position != 0 and self.sl is not None:
                 old = self.last_position
-                sl_hit = self.sl is not None and ((old > 0 and price <= self.sl) or (old < 0 and price >= self.sl))
-                if self.bot_enabled and sl_hit:
+                sl_hit = (old > 0 and price <= self.sl) or (old < 0 and price >= self.sl)
+                if sl_hit:
+                    logging.warning(f"{self.account_name} | STOP LOSS HIT ON LIVE PRICE | Price: {price} | SL: {self.sl}")
+                    # Close position immediately on exchange
+                    try:
+                        self.client.close_position(self.product_id, old)
+                    except Exception as e:
+                        logging.error(f"Error closing position on SL hit: {e}")
+
                     if old > 0:
                         peak = self.trade_high or self.high
                         self.finish_active_trade(price, "STOP_LOSS")
                         self.last_position = 0
                         self.sl = None
-                        if peak is not None: self.enter("SHORT", price, peak)
+                        if peak is not None:
+                            self.enter("SHORT", price, peak)
                     else:
                         trough = self.trade_low or self.low
                         self.finish_active_trade(price, "STOP_LOSS")
                         self.last_position = 0
                         self.sl = None
-                        if trough is not None: self.enter("LONG", price, trough)
+                        if trough is not None:
+                            self.enter("LONG", price, trough)
                     return
 
+            pos = self.refresh_position()
+            size = int(pos.get("size", 0))
+
+            # External Close Logic
+            if size == 0 and self.last_position != 0:
                 self.finish_active_trade(price, "EXTERNAL_CLOSE")
                 self.last_position = 0
                 self.sl = None
@@ -1039,13 +1072,35 @@ def start_dashboard():
     time.sleep(0.2)
 
 def background_timer_loop():
+    """Precise Clock Monitoring for Daily 5:40 Exit & 5:45 Threading"""
+    last_exec_540 = None
+    last_exec_545 = None
+    
     while True:
-        time.sleep(2)
+        time.sleep(1)
         try:
+            now = now_ist()
+            time_str = now.strftime("%H:%M")
+
             with ACCOUNTS_LOCK:
                 bots = list(BOT_ACCOUNTS.values())
+
             if not bots:
                 continue
+
+            # Dedicated 05:40 Trigger
+            if time_str == "05:40" and last_exec_540 != now.date():
+                last_exec_540 = now.date()
+                for b in bots:
+                    b.execute_540_exit()
+
+            # Dedicated 05:45 Trigger
+            if time_str == "05:45" and last_exec_545 != now.date():
+                last_exec_545 = now.date()
+                for b in bots:
+                    b.execute_545_preparation()
+
+            # Standard Regular Evaluation
             for b in bots:
                 try:
                     b.evaluate()
