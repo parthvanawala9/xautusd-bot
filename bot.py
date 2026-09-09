@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 
 # ============================================================
-# XAUTUSD MULTI ACCOUNT BOT - BRACKET SL + REVERSAL SLM
+# XAUTUSD MULTI ACCOUNT BOT - BRACKET SL + SINGLE SLM REVERSAL
 # ============================================================
 
 load_dotenv()
@@ -39,7 +39,6 @@ BALANCE_CACHE_SECONDS = float(os.getenv("BALANCE_CACHE_SECONDS", "5.0"))
 ACCOUNTS_FILE = os.getenv("ACCOUNTS_FILE", os.path.join(BASE_DIR, "accounts.json"))
 STATE_DIR = os.getenv("STATE_DIR", os.path.join(BASE_DIR, "account_states"))
 HISTORY_DIR = os.getenv("HISTORY_DIR", os.path.join(BASE_DIR, "account_history"))
-ADMIN_PIN = os.getenv("ADMIN_PIN", "").strip()
 
 PRIMARY_ACCOUNT_ID = os.getenv("ACCOUNT_ID", "primary").strip()
 PRIMARY_ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "Primary Account").strip()
@@ -256,6 +255,7 @@ class DeltaClient:
             logging.warning(f"{self.account_name} | CANCEL ALL ORDERS ERROR | {e}")
 
     def market_entry(self, product_id, side, size, sl):
+        """Market Entry with Native Bracket SL"""
         body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
@@ -269,10 +269,9 @@ class DeltaClient:
         logging.warning(f"{self.account_name} | ENTRY {side.upper()} WITH BRACKET SL | SIZE={size} | SL={sl}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def place_reversal_slm_order(self, product_id, active_side, size, sl_price):
-        reversal_side = "sell" if active_side == "buy" else "buy"
-        # 2x size for reversing position on stop trigger
-        reversal_size = int(abs(size) * 2)
+    def place_reversal_slm_order(self, product_id, reversal_side, size, sl_price):
+        """Single Size SLM Order for Opposite Reversal Entry"""
+        reversal_size = int(abs(size)) # EXACT 1x SIZE ONLY
 
         reversal_body = {
             "product_id": int(product_id),
@@ -288,7 +287,7 @@ class DeltaClient:
 
         try:
             self.api("POST", "/v2/orders", body=reversal_body, auth=True)
-            logging.warning(f"{self.account_name} | REVERSAL SLM ORDER PLACED AT {sl_price} | SIZE={reversal_size}")
+            logging.warning(f"{self.account_name} | REVERSAL SLM ORDER PLACED AT {sl_price} | SIZE={reversal_size} | SIDE={reversal_side.upper()}")
         except Exception as e:
             logging.error(f"{self.account_name} | FAILED TO PLACE REVERSAL SLM ORDER | {e}")
 
@@ -535,9 +534,9 @@ class AccountBot:
                 self.bot_enabled = True
                 self.stop_reason = None
                 
-                side = "buy" if size > 0 else "sell"
+                reversal_side = "sell" if size > 0 else "buy"
                 if self.sl:
-                    self.client.place_reversal_slm_order(self.product_id, side, size, self.sl)
+                    self.client.place_reversal_slm_order(self.product_id, reversal_side, abs(size), self.sl)
                 
                 self.save()
                 return {"success": True, "bot_enabled": True, "position_recovered": True, "message": f"Bot started with existing {direction} position."}
@@ -661,11 +660,16 @@ class AccountBot:
             return False
 
         side = "buy" if direction == "LONG" else "sell"
+        reversal_side = "sell" if direction == "LONG" else "buy"
+
         if (direction == "LONG" and sl >= price) or (direction == "SHORT" and sl <= price):
             return False
 
         try:
+            # Daily Fresh Order Size Calculation
             size = self.client.order_size(self.product, price)
+            
+            # 1. Market Entry with Bracket SL
             self.client.market_entry(self.product_id, side, size, sl)
         except Exception as e:
             logging.exception(f"{self.account_name} | ENTRY ORDER ERROR | {e}")
@@ -701,8 +705,8 @@ class AccountBot:
             "size": abs(int(self.last_position))
         }
 
-        # Place Reversal SLM Order on Exchange with 2x size
-        self.client.place_reversal_slm_order(self.product_id, side, self.last_position, self.sl)
+        # 2. Place Reversal SLM Order with EXACT SAME Size (1x)
+        self.client.place_reversal_slm_order(self.product_id, reversal_side, abs(int(self.last_position)), self.sl)
 
         self.save()
         logging.warning(f"{self.account_name} | TRADE LIVE WITH BRACKET SL & REVERSAL SLM | {direction} | ENTRY={price} | SL={sl}")
@@ -849,8 +853,9 @@ class AccountBot:
                     "size": abs(int(size))
                 }
 
-                side = "sell" if size < 0 else "buy"
-                self.client.place_reversal_slm_order(self.product_id, side, size, self.sl)
+                # Set Next Reversal Order (SAME Quantity)
+                reversal_side = "sell" if size < 0 else "buy"
+                self.client.place_reversal_slm_order(self.product_id, reversal_side, abs(int(size)), self.sl)
                 self.save()
                 return
 
