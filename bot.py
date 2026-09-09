@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 
 # ============================================================
-# XAUTUSD MULTI ACCOUNT BOT
+# XAUTUSD MULTI ACCOUNT BOT - ADVANCED EXCHANGE OCO CHAIN
 # ============================================================
 
 load_dotenv()
@@ -159,7 +159,7 @@ class DeltaClient:
                 params=params,
                 data=body_text if body is not None else None,
                 headers=headers,
-                timeout=(3, 8)  # Optimized timeouts for faster execution
+                timeout=(3, 8)
             )
         except requests.RequestException as e:
             raise RuntimeError(f"Delta connection error: {e}") from e
@@ -248,23 +248,73 @@ class DeltaClient:
         logging.info(f"{self.account_name} | SIZE | Balance={bal} | Margin={margin} | Notional={notional} | Size={size}")
         return size
 
-    def market_entry(self, product_id, side, size, sl):
+    def cancel_all_orders(self, product_id):
+        try:
+            self.api("DELETE", "/v2/orders/all", body={"product_id": int(product_id)}, auth=True)
+            logging.info(f"{self.account_name} | ALL OPEN ORDERS CANCELLED")
+        except Exception as e:
+            logging.warning(f"{self.account_name} | CANCEL ALL ORDERS ERROR | {e}")
+
+    def market_entry(self, product_id, side, size):
         body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
             "size": int(abs(size)),
             "side": side,
             "order_type": "market_order",
-            "bracket_stop_loss_price": str(sl),
-            "bracket_stop_trigger_method": "last_traded_price",
             "client_order_id": (f"simple_{int(time.time() * 1000)}")[-32:]
         }
-        logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size} | SL={sl}")
+        logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
+
+    def place_exchange_sl_and_reversal(self, product_id, active_side, size, sl_price):
+        """
+        Places 2 Orders directly on Delta Exchange:
+        1. Reduce-Only Stop Loss Order to exit position.
+        2. Reversal Stop-Market Order (SLM) to enter opposite side immediately.
+        """
+        self.cancel_all_orders(product_id)
+
+        exit_side = "sell" if active_side == "buy" else "buy"
+        reversal_side = exit_side
+
+        # 1. Stop Loss Order (Reduce Only)
+        sl_body = {
+            "product_id": int(product_id),
+            "product_symbol": SYMBOL,
+            "size": int(abs(size)),
+            "side": exit_side,
+            "order_type": "stop_market_order",
+            "stop_price": str(sl_price),
+            "stop_trigger_method": "last_traded_price",
+            "reduce_only": True,
+            "client_order_id": (f"sl_{int(time.time() * 1000)}")[-32:]
+        }
+
+        # 2. Reversal Entry Order (SLM)
+        reversal_body = {
+            "product_id": int(product_id),
+            "product_symbol": SYMBOL,
+            "size": int(abs(size)),
+            "side": reversal_side,
+            "order_type": "stop_market_order",
+            "stop_price": str(sl_price),
+            "stop_trigger_method": "last_traded_price",
+            "reduce_only": False,
+            "client_order_id": (f"rev_{int(time.time() * 1000)}")[-32:]
+        }
+
+        try:
+            self.api("POST", "/v2/orders", body=sl_body, auth=True)
+            self.api("POST", "/v2/orders", body=reversal_body, auth=True)
+            logging.warning(f"{self.account_name} | EXCHANGE SL & REVERSAL SLM PLACED AT {sl_price}")
+        except Exception as e:
+            logging.error(f"{self.account_name} | FAILED TO PLACE SL/REVERSAL ORDERS | {e}")
 
     def close_position(self, product_id, size):
         if size == 0:
             return
+        self.cancel_all_orders(product_id)
         side = "sell" if size > 0 else "buy"
         body = {
             "product_id": int(product_id),
@@ -515,6 +565,12 @@ class AccountBot:
                 self.last_position = size
                 self.bot_enabled = True
                 self.stop_reason = None
+                
+                # Auto-sync Exchange SL & Reversal
+                side = "buy" if size > 0 else "sell"
+                if self.sl:
+                    self.client.place_exchange_sl_and_reversal(self.product_id, side, size, self.sl)
+                
                 self.save()
                 return {"success": True, "bot_enabled": True, "position_recovered": True, "message": f"Bot started with existing {direction} position."}
 
@@ -544,6 +600,7 @@ class AccountBot:
             self.bot_enabled = False
             self.stop_reason = "MANUAL STOP"
             self.save()
+            self.client.cancel_all_orders(self.product_id)
             try:
                 pos = self.refresh_position(force=True)
             except Exception as e:
@@ -633,22 +690,19 @@ class AccountBot:
             self.last_position = pos["size"]
             return False
 
-        if direction == "LONG":
-            if sl >= price: return False
-            side = "buy"
-        else:
-            if sl <= price: return False
-            side = "sell"
+        side = "buy" if direction == "LONG" else "sell"
+        if (direction == "LONG" and sl >= price) or (direction == "SHORT" and sl <= price):
+            return False
 
         try:
             size = self.client.order_size(self.product, price)
-            self.client.market_entry(self.product_id, side, size, sl)
+            self.client.market_entry(self.product_id, side, size)
         except Exception as e:
             logging.exception(f"{self.account_name} | ENTRY ORDER ERROR | {e}")
             return False
 
         confirmed = False
-        for _ in range(15):  # Reduced from 50 to 15 (max 1.5s check) for speed
+        for _ in range(15):
             time.sleep(0.1)
             try:
                 p = self.client.position(self.product_id)
@@ -676,6 +730,10 @@ class AccountBot:
             "entry_time": now_ist().isoformat(),
             "size": abs(int(self.last_position))
         }
+
+        # Automatically place Exchange SL and SLM Reversal Order
+        self.client.place_exchange_sl_and_reversal(self.product_id, side, self.last_position, self.sl)
+
         self.save()
         logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | SL={sl}")
         return True
@@ -725,6 +783,7 @@ class AccountBot:
             logging.warning(f"{self.account_name} | CRON TRIGGERED 05:40 AM SQUAREOFF")
             for attempt in range(5):
                 try:
+                    self.client.cancel_all_orders(self.product_id)
                     pos = self.refresh_position(force=True)
                     size = int(pos.get("size", 0))
                     if size != 0:
@@ -764,6 +823,7 @@ class AccountBot:
             # Saturday Weekend Squareoff
             if saturday_squareoff(now):
                 try:
+                    self.client.cancel_all_orders(self.product_id)
                     pos = self.refresh_position(force=True)
                     if pos["size"] != 0:
                         self.client.close_position(self.product_id, pos["size"])
@@ -790,36 +850,42 @@ class AccountBot:
             if now < s_start: return
             if not self.prepare(now, price): return
 
-            # Direct Stop-Loss Detection against Market Price (INSTANT REVERSAL)
-            if self.bot_enabled and self.last_position != 0 and self.sl is not None:
-                old = self.last_position
-                sl_hit = (old > 0 and price <= self.sl) or (old < 0 and price >= self.sl)
-                if sl_hit:
-                    logging.warning(f"{self.account_name} | STOP LOSS HIT ON LIVE PRICE | Price: {price} | SL: {self.sl}")
-                    # Close position immediately on exchange
-                    try:
-                        self.client.close_position(self.product_id, old)
-                    except Exception as e:
-                        logging.error(f"Error closing position on SL hit: {e}")
-
-                    if old > 0:
-                        peak = self.trade_high or self.high
-                        self.finish_active_trade(price, "STOP_LOSS")
-                        self.last_position = 0
-                        self.sl = None
-                        if peak is not None:
-                            self.enter("SHORT", price, peak)
-                    else:
-                        trough = self.trade_low or self.low
-                        self.finish_active_trade(price, "STOP_LOSS")
-                        self.last_position = 0
-                        self.sl = None
-                        if trough is not None:
-                            self.enter("LONG", price, trough)
-                    return
-
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
+
+            # REVERSAL DETECTED VIA EXCHANGE SLM TRIGGER
+            if self.last_position != 0 and size != 0 and ((self.last_position > 0 and size < 0) or (self.last_position < 0 and size > 0)):
+                old_dir = "LONG" if self.last_position > 0 else "SHORT"
+                new_dir = "SHORT" if size < 0 else "LONG"
+                logging.warning(f"{self.account_name} | REVERSAL EXECUTED BY EXCHANGE | {old_dir} -> {new_dir}")
+                
+                self.finish_active_trade(price, "REVERSAL_SLM")
+                
+                # Setup New Reversal Position Data
+                self.last_position = size
+                if new_dir == "SHORT":
+                    new_sl = self.trade_high or self.high
+                    self.sl = Decimal(str(new_sl)) if new_sl else price
+                    self.trade_low = price
+                    self.trade_high = None
+                else:
+                    new_sl = self.trade_low or self.low
+                    self.sl = Decimal(str(new_sl)) if new_sl else price
+                    self.trade_high = price
+                    self.trade_low = None
+
+                self.active_trade = {
+                    "direction": new_dir,
+                    "entry_price": float(price),
+                    "entry_time": now_ist().isoformat(),
+                    "size": abs(int(size))
+                }
+
+                # Place New SL and Next Reversal SLM Order Chain on Exchange
+                side = "sell" if size < 0 else "buy"
+                self.client.place_exchange_sl_and_reversal(self.product_id, side, size, self.sl)
+                self.save()
+                return
 
             # External Close Logic
             if size == 0 and self.last_position != 0:
