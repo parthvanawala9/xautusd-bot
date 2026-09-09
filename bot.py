@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 
 
 # ============================================================
-# XAUTUSD MULTI ACCOUNT BOT - ADVANCED EXCHANGE OCO CHAIN
+# XAUTUSD MULTI ACCOUNT BOT - BRACKET SL + REVERSAL SLM
 # ============================================================
 
 load_dotenv()
@@ -255,43 +255,29 @@ class DeltaClient:
         except Exception as e:
             logging.warning(f"{self.account_name} | CANCEL ALL ORDERS ERROR | {e}")
 
-    def market_entry(self, product_id, side, size):
+    def market_entry(self, product_id, side, size, sl):
+        """
+        Market Entry WITH Attached Bracket Stop Loss.
+        """
         body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
             "size": int(abs(size)),
             "side": side,
             "order_type": "market_order",
+            "bracket_stop_loss_price": str(sl),
+            "bracket_stop_trigger_method": "last_traded_price",
             "client_order_id": (f"simple_{int(time.time() * 1000)}")[-32:]
         }
-        logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size}")
+        logging.warning(f"{self.account_name} | ENTRY {side.upper()} WITH BRACKET SL | SIZE={size} | SL={sl}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def place_exchange_sl_and_reversal(self, product_id, active_side, size, sl_price):
+    def place_reversal_slm_order(self, product_id, active_side, size, sl_price):
         """
-        Places 2 Orders directly on Delta Exchange:
-        1. Reduce-Only Stop Loss Order to exit position.
-        2. Reversal Stop-Market Order (SLM) to enter opposite side immediately.
+        Places Reversal Stop-Market Order (SLM) on Exchange.
         """
-        self.cancel_all_orders(product_id)
+        reversal_side = "sell" if active_side == "buy" else "buy"
 
-        exit_side = "sell" if active_side == "buy" else "buy"
-        reversal_side = exit_side
-
-        # 1. Stop Loss Order (Reduce Only)
-        sl_body = {
-            "product_id": int(product_id),
-            "product_symbol": SYMBOL,
-            "size": int(abs(size)),
-            "side": exit_side,
-            "order_type": "stop_market_order",
-            "stop_price": str(sl_price),
-            "stop_trigger_method": "last_traded_price",
-            "reduce_only": True,
-            "client_order_id": (f"sl_{int(time.time() * 1000)}")[-32:]
-        }
-
-        # 2. Reversal Entry Order (SLM)
         reversal_body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
@@ -305,11 +291,10 @@ class DeltaClient:
         }
 
         try:
-            self.api("POST", "/v2/orders", body=sl_body, auth=True)
             self.api("POST", "/v2/orders", body=reversal_body, auth=True)
-            logging.warning(f"{self.account_name} | EXCHANGE SL & REVERSAL SLM PLACED AT {sl_price}")
+            logging.warning(f"{self.account_name} | REVERSAL SLM ORDER PLACED AT {sl_price}")
         except Exception as e:
-            logging.error(f"{self.account_name} | FAILED TO PLACE SL/REVERSAL ORDERS | {e}")
+            logging.error(f"{self.account_name} | FAILED TO PLACE REVERSAL SLM ORDER | {e}")
 
     def close_position(self, product_id, size):
         if size == 0:
@@ -566,10 +551,10 @@ class AccountBot:
                 self.bot_enabled = True
                 self.stop_reason = None
                 
-                # Auto-sync Exchange SL & Reversal
+                # Re-attach Reversal SLM if recovering
                 side = "buy" if size > 0 else "sell"
                 if self.sl:
-                    self.client.place_exchange_sl_and_reversal(self.product_id, side, size, self.sl)
+                    self.client.place_reversal_slm_order(self.product_id, side, size, self.sl)
                 
                 self.save()
                 return {"success": True, "bot_enabled": True, "position_recovered": True, "message": f"Bot started with existing {direction} position."}
@@ -696,7 +681,8 @@ class AccountBot:
 
         try:
             size = self.client.order_size(self.product, price)
-            self.client.market_entry(self.product_id, side, size)
+            # 1. Market Entry WITH Bracket SL attached
+            self.client.market_entry(self.product_id, side, size, sl)
         except Exception as e:
             logging.exception(f"{self.account_name} | ENTRY ORDER ERROR | {e}")
             return False
@@ -731,11 +717,11 @@ class AccountBot:
             "size": abs(int(self.last_position))
         }
 
-        # Automatically place Exchange SL and SLM Reversal Order
-        self.client.place_exchange_sl_and_reversal(self.product_id, side, self.last_position, self.sl)
+        # 2. Place Reversal SLM Order on Exchange
+        self.client.place_reversal_slm_order(self.product_id, side, self.last_position, self.sl)
 
         self.save()
-        logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | SL={sl}")
+        logging.warning(f"{self.account_name} | TRADE LIVE WITH BRACKET SL & SLM | {direction} | ENTRY={price} | SL={sl}")
         return True
 
     def finish_active_trade(self, exit_price, reason):
@@ -881,9 +867,9 @@ class AccountBot:
                     "size": abs(int(size))
                 }
 
-                # Place New SL and Next Reversal SLM Order Chain on Exchange
+                # Place Next Reversal SLM Order Chain on Exchange
                 side = "sell" if size < 0 else "buy"
-                self.client.place_exchange_sl_and_reversal(self.product_id, side, size, self.sl)
+                self.client.place_reversal_slm_order(self.product_id, side, size, self.sl)
                 self.save()
                 return
 
