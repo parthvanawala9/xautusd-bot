@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD MULTI ACCOUNT BOT - RAILWAY READY VERSION
+# XAUTUSD MULTI ACCOUNT BOT - RAILWAY READY VERSION (CLEANED)
 # ============================================================
 
 load_dotenv()
@@ -77,10 +77,6 @@ def weekend(dt=None):
         return True
     return False
 
-def saturday_squareoff(dt=None):
-    dt = dt or now_ist()
-    return dt.weekday() == 5 and dt.hour == 5
-
 def safe_filename(value):
     result = ""
     for char in str(value):
@@ -103,23 +99,6 @@ def atomic_write_json(filename, data):
     os.replace(tmp, filename)
 
 accounts_file_lock = threading.RLock()
-
-def load_client_accounts():
-    if not os.path.exists(ACCOUNTS_FILE):
-        return []
-    try:
-        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, list):
-            return []
-        return data
-    except Exception as e:
-        logging.warning(f"ACCOUNTS LOAD ERROR | {e}")
-        return []
-
-def save_client_accounts(accounts):
-    with accounts_file_lock:
-        atomic_write_json(ACCOUNTS_FILE, accounts)
 
 class DeltaClient:
     def __init__(self, api_key, api_secret, account_name):
@@ -266,25 +245,6 @@ class DeltaClient:
         }
         logging.warning(f"{self.account_name} | ENTRY {side.upper()} WITH BRACKET SL | SIZE={size} | SL={sl}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
-
-    def place_reversal_slm_order(self, product_id, reversal_side, size, sl_price):
-        reversal_size = int(abs(size))
-        reversal_body = {
-            "product_id": int(product_id),
-            "product_symbol": SYMBOL,
-            "size": reversal_size,
-            "side": reversal_side,
-            "order_type": "stop_market_order",
-            "stop_price": str(sl_price),
-            "stop_trigger_method": "last_traded_price",
-            "reduce_only": False,
-            "client_order_id": (f"rev_{int(time.time() * 1000)}")[-32:]
-        }
-        try:
-            self.api("POST", "/v2/orders", body=reversal_body, auth=True)
-            logging.warning(f"{self.account_name} | REVERSAL SLM ORDER PLACED AT {sl_price} | SIZE={reversal_size} | SIDE={reversal_side.upper()}")
-        except Exception as e:
-            logging.error(f"{self.account_name} | FAILED TO PLACE REVERSAL SLM ORDER | {e}")
 
     def close_position(self, product_id, size):
         if size == 0:
@@ -509,10 +469,6 @@ class AccountBot:
                 self.bot_enabled = True
                 self.stop_reason = None
                 
-                reversal_side = "sell" if size > 0 else "buy"
-                if self.sl:
-                    self.client.place_reversal_slm_order(self.product_id, reversal_side, abs(size), self.sl)
-                
                 self.save()
                 return {"success": True, "bot_enabled": True, "message": f"Bot started with existing {direction} position."}
 
@@ -596,7 +552,6 @@ class AccountBot:
             return False
 
         side = "buy" if direction == "LONG" else "sell"
-        reversal_side = "sell" if direction == "LONG" else "buy"
 
         if (direction == "LONG" and sl >= price) or (direction == "SHORT" and sl <= price):
             return False
@@ -636,7 +591,6 @@ class AccountBot:
             "size": abs(int(self.last_position))
         }
 
-        self.client.place_reversal_slm_order(self.product_id, reversal_side, abs(int(self.last_position)), self.sl)
         self.save()
         logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | SL={sl}")
         return True
@@ -727,7 +681,6 @@ class AccountBot:
                 self.last_position = size
                 self.sl = Decimal(str(self.trade_high if new_dir == "SHORT" else self.trade_low)) if (self.trade_high if new_dir == "SHORT" else self.trade_low) else price
                 self.active_trade = {"direction": new_dir, "entry_price": float(price), "entry_time": now_ist().isoformat(), "size": abs(int(size))}
-                self.client.place_reversal_slm_order(self.product_id, "sell" if size < 0 else "buy", abs(int(size)), self.sl)
                 self.save()
                 return
 
