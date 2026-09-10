@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD FIXED 05:45 BASE CANDLE + 1:5 TARGET BOT
+# XAUTUSD FIXED 05:30 BASE CANDLE + 1:5 TARGET BOT
 # ============================================================
 
 load_dotenv()
@@ -263,13 +263,16 @@ class DeltaClient:
         logging.warning(f"{self.account_name} | CLOSE POSITION | SIZE={size}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def historical_high_low(self, start, end):
+    def historical_high_low(self, day_start):
         try:
+            start_time = day_start.replace(hour=5, minute=30, second=0, microsecond=0)
+            end_time = day_start.replace(hour=5, minute=45, second=0, microsecond=0)
+            
             data = self.api("GET", "/v2/history/candles", params={
                 "resolution": "15m",
                 "symbol": SYMBOL,
-                "start": int(start.timestamp()),
-                "end": int(end.timestamp())
+                "start": int(start_time.timestamp()),
+                "end": int(end_time.timestamp())
             })
             candles = data.get("result", [])
             for candle in candles:
@@ -355,8 +358,6 @@ class AccountBot:
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
         self.position_cache_time = 0
-        self.cached_balance = None
-        self.balance_cache_time = 0
 
         self.load_state()
         self.save()
@@ -481,16 +482,14 @@ class AccountBot:
         except Exception: pos = {"size": self.last_position}
         self.last_position = int(pos.get("size", 0))
 
-        c_start = self.day
-        c_end = start
-        high, low = self.client.historical_high_low(c_start, c_end)
+        high, low = self.client.historical_high_low(self.day)
         
         if high is not None and low is not None:
             self.base_high = high
             self.base_low = low
             self.ready = True
             self.save()
-            logging.warning(f"{self.account_name} | FIXED 05:45 BASE CANDLE LOADED | HIGH={high} | LOW={low}")
+            logging.warning(f"{self.account_name} | FIXED 05:30 BASE CANDLE LOADED | HIGH={high} | LOW={low}")
             return True
 
         return False
@@ -505,7 +504,7 @@ class AccountBot:
 
         side = "buy" if direction == "LONG" else "sell"
         
-        # Fixed Stop Loss and 1:5 Target based on 05:45 Candle
+        # Fixed Stop Loss and 1:5 Target based strictly on 05:30 Base Candle
         if direction == "LONG":
             sl = self.base_low
             risk = price - sl
@@ -632,7 +631,7 @@ class AccountBot:
             self.last_position = 0
             if not self.bot_enabled: return
 
-            # Fixed Base Candle Breakout Rules
+            # Fixed 05:30 Base Candle Breakout Rules
             if self.base_high is not None and price > self.base_high:
                 self.enter("LONG", price)
                 return
@@ -737,7 +736,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD FIXED BASE + 1:5 TARGET BOT STARTING")
+    logging.warning("XAUTUSD FIXED 05:30 BASE CANDLE + 1:5 TARGET BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
