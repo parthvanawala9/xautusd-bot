@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD UNLIMITED MULTI-BREAKOUT BOT (FLAT = READY FOR NEXT TRADE)
+# XAUTUSD STRICT CROSSOVER BREAKOUT/BREAKDOWN BOT
 # ============================================================
 
 load_dotenv()
@@ -108,7 +108,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/8.0"
+            "User-Agent": "XAUTUSD-Bot/9.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -119,7 +119,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/8.0"
+            "User-Agent": "XAUTUSD-Bot/9.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -242,9 +242,9 @@ class DeltaClient:
             "bracket_stop_trigger_method": "last_traded_price",
             "bracket_take_profit_price": str(tp),
             "bracket_take_profit_trigger_method": "last_traded_price",
-            "client_order_id": (f"multibreak_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"cross_{int(time.time() * 1000)}")[-32:]
         }
-        logging.warning(f"{self.account_name} | MULTI-BREAKOUT ENTRY {side.upper()} | SIZE={size} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | CROSSOVER ENTRY {side.upper()} | SIZE={size} | SL={sl} | TP={tp}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def close_position(self, product_id, size):
@@ -360,6 +360,7 @@ class AccountBot:
         self.base_low = None
         self.last_position = 0
         self.last_price = None
+        self.prev_price = None  # NEW: क्रॉसओवर ट्रैक करने के लिए पिछली कीमत
         self.ready = False
         self.bot_enabled = True
         self.stop_reason = None
@@ -488,6 +489,7 @@ class AccountBot:
             self.session_start = current_sess
             self.base_high = None
             self.base_low = None
+            self.prev_price = None
             self.ready = False
             self.save()
 
@@ -526,7 +528,7 @@ class AccountBot:
             risk = sl - price
             tp = price - (risk * Decimal("5"))
 
-        logging.warning(f"{self.account_name} | MULTI-BREAKOUT ENTRY -> DIRECTION={direction} | PRICE={price} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | CROSSOVER ENTRY -> DIRECTION={direction} | PRICE={price} | SL={sl} | TP={tp}")
 
         try:
             size = self.client.order_size(self.product, price)
@@ -595,6 +597,16 @@ class AccountBot:
             now = now_ist()
             if price is None: price = self.last_price or self.client.last_traded_price()
             if price is None: return
+            
+            # अगर पिछली कीमत सेव नहीं है, तो अभी वाली सेट कर दें ताकि अचानक हवा में ट्रिगर न हो
+            if self.prev_price is None:
+                self.prev_price = price
+                self.last_price = price
+                return
+
+            old_price = self.prev_price
+            new_price = price
+            self.prev_price = price
             self.last_price = price
 
             if is_weekend(now):
@@ -618,33 +630,30 @@ class AccountBot:
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
 
-            # यदि पोजीशन बंद हो चुकी है (चाहे टारगेट, एसएल या आपके मैनुअल एग्जिट से)
             if size == 0 and self.last_position != 0:
                 self.finish_active_trade(price, "CLOSED_OR_EXITED")
                 self.last_position = 0
                 self.save()
                 return
 
-            # अगर अभी भी ट्रेड चल रहा है, तो नया ट्रेड नहीं लेना है (बोट व्यस्त है)
             if size != 0:
                 self.last_position = size
                 return
 
-            # यहाँ तक पहुँचने का मतलब है कि बोट बिल्कुल **फ्लैट** है!
             self.last_position = 0
             if not self.bot_enabled: return
 
             # ==========================================================
-            # UNLIMITED MULTI-BREAKOUT / BREAKDOWN LOGIC:
-            # - चूंकि बोट फ्लैट है, अगर कीमत base_high से ऊपर या base_low से नीचे है,
-            #   तो यह तुरंत ट्रेड ले लेगा (चाहे दिन में ऐसा 10 बार क्यों न हो)।
+            # STRICT CROSSOVER & CROSS-UNDER LOGIC:
+            # - LONG: पुरानी कीमत base_high से नीचे/बराबर थी, और नई कीमत base_high के ऊपर गई है।
+            # - SHORT: पुरानी कीमत base_low से ऊपर/बराबर थी, और नई कीमत base_low के नीचे गई है।
             # ==========================================================
-            if self.base_high is not None and price > self.base_high:
-                self.enter("LONG", price)
+            if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
+                self.enter("LONG", new_price)
                 return
 
-            if self.base_low is not None and price < self.base_low:
-                self.enter("SHORT", price)
+            if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
+                self.enter("SHORT", new_price)
                 return
 
 BOT_ACCOUNTS = {}
@@ -741,7 +750,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD UNLIMITED MULTI-BREAKOUT BOT STARTING")
+    logging.warning("XAUTUSD STRICT CROSSOVER BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
