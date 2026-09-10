@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD LIVE TICK 05:30-05:45 BASE + 1:5 TARGET BOT
+# XAUTUSD FIXED 05:30 BASE CANDLE (ANYTIME START) + 1:5 TARGET BOT
 # ============================================================
 
 load_dotenv()
@@ -33,9 +33,7 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
 
 RECONNECT_SECONDS = 3
 POSITION_CACHE_SECONDS = float(os.getenv("POSITION_CACHE_SECONDS", "1.0"))
-BALANCE_CACHE_SECONDS = float(os.getenv("BALANCE_CACHE_SECONDS", "5.0"))
 
-ACCOUNTS_FILE = os.getenv("ACCOUNTS_FILE", os.path.join(BASE_DIR, "accounts.json"))
 STATE_DIR = os.getenv("STATE_DIR", os.path.join(BASE_DIR, "account_states"))
 HISTORY_DIR = os.getenv("HISTORY_DIR", os.path.join(BASE_DIR, "account_history"))
 
@@ -65,9 +63,6 @@ def trading_day_start(dt=None):
 def daily_squareoff_time(dt=None):
     dt = dt or now_ist()
     return dt.replace(hour=5, minute=40, second=0, microsecond=0)
-
-def strategy_start(day_start):
-    return day_start.replace(hour=5, minute=45, second=0, microsecond=0)
 
 def weekend(dt=None):
     dt = dt or now_ist()
@@ -107,7 +102,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/3.0"
+            "User-Agent": "XAUTUSD-Bot/4.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -118,7 +113,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/3.0"
+            "User-Agent": "XAUTUSD-Bot/4.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -241,9 +236,9 @@ class DeltaClient:
             "bracket_stop_trigger_method": "last_traded_price",
             "bracket_take_profit_price": str(tp),
             "bracket_take_profit_trigger_method": "last_traded_price",
-            "client_order_id": (f"livebase_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"base0530_{int(time.time() * 1000)}")[-32:]
         }
-        logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size} | SL={sl} | TP(1:5)={tp}")
+        logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size} | STRICT SL={sl} | TP(1:5)={tp}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def close_position(self, product_id, size):
@@ -262,6 +257,30 @@ class DeltaClient:
         }
         logging.warning(f"{self.account_name} | CLOSE POSITION | SIZE={size}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
+
+    def fetch_0530_candle(self, day_start):
+        try:
+            start_time = day_start.replace(hour=5, minute=30, second=0, microsecond=0)
+            end_time = day_start.replace(hour=5, minute=45, second=0, microsecond=0)
+            
+            data = self.api("GET", "/v2/history/candles", params={
+                "resolution": "15m",
+                "symbol": SYMBOL,
+                "start": int(start_time.timestamp()),
+                "end": int(end_time.timestamp())
+            })
+            candles = data.get("result", [])
+            for candle in candles:
+                try:
+                    h = Decimal(str(candle["high"]))
+                    l = Decimal(str(candle["low"]))
+                    return h, l
+                except Exception:
+                    continue
+            return None, None
+        except Exception as e:
+            logging.warning(f"{self.account_name} | 05:30 CANDLE FETCH ERROR | {e}")
+            return None, None
 
     def last_traded_price(self):
         try:
@@ -451,27 +470,20 @@ class AccountBot:
         self.daily_squared_off = False
         self.save()
 
-    def prepare(self, now, price):
-        s_start = strategy_start(self.day)   # 05:45
-        s_end = self.day.replace(hour=5, minute=45, second=0, microsecond=0) # 05:45 is the lock time
+    def prepare(self, now):
+        if self.ready: return True
 
-        # If we are past 05:45 and not ready, lock whatever high/low we gathered between 05:30 and 05:45
-        if now >= s_start:
-            if not self.ready:
-                if self.base_high is None or self.base_low is None:
-                    self.base_high = price
-                    self.base_low = price
-                self.ready = True
-                self.save()
-                logging.warning(f"{self.account_name} | 05:30-05:45 BASE LOCKED | HIGH={self.base_high} | LOW={self.base_low}")
+        day = trading_day_start(now)
+        high, low = self.client.fetch_0530_candle(day)
+
+        if high is not None and low is not None:
+            self.base_high = high
+            self.base_low = low
+            self.ready = True
+            self.save()
+            logging.warning(f"{self.account_name} | 05:30 BASE CANDLE LOADED (ANYTIME START) | HIGH={high} | LOW={low}")
             return True
 
-        # Between 05:30 and 05:45, accumulate live ticks to find exact high/low of that 15m candle
-        if self.base_high is None or price > self.base_high:
-            self.base_high = price
-        if self.base_low is None or price < self.base_low:
-            self.base_low = price
-        self.save()
         return False
 
     def enter(self, direction, price):
@@ -484,13 +496,13 @@ class AccountBot:
 
         side = "buy" if direction == "LONG" else "sell"
         
-        # Fixed Stop Loss (Base Candle High/Low) and 1:5 Target
+        # STRICT 05:30 BASE CANDLE STOP LOSS AND 1:5 TARGET
         if direction == "LONG":
-            sl = self.base_low
+            sl = self.base_low   # Strict Stop loss = 05:30 Candle Low
             risk = price - sl
             tp = price + (risk * Decimal("5"))
         else:
-            sl = self.base_high
+            sl = self.base_high  # Strict Stop loss = 05:30 Candle High
             risk = sl - price
             tp = price - (risk * Decimal("5"))
 
@@ -522,7 +534,7 @@ class AccountBot:
         }
 
         self.save()
-        logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | STRICT SL={sl} | TP={tp}")
         return True
 
     def finish_active_trade(self, exit_price, reason):
@@ -588,10 +600,11 @@ class AccountBot:
 
             sq_time = daily_squareoff_time(now)
             
-            if now >= sq_time and now < strategy_start(self.day) and not self.daily_squared_off:
+            if now >= sq_time and now < sq_time.replace(minute=45) and not self.daily_squared_off:
                 self.execute_540_exit()
 
-            if not self.prepare(now, price): return
+            # Anytime start check: fetch 05:30 base candle immediately if not ready
+            if not self.prepare(now): return
 
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
@@ -609,7 +622,7 @@ class AccountBot:
             self.last_position = 0
             if not self.bot_enabled: return
 
-            # Fixed Live Base Candle Breakout Rules
+            # Strict 05:30 Base Candle Breakout & Reversal Rules
             if self.base_high is not None and price > self.base_high:
                 self.enter("LONG", price)
                 return
@@ -714,7 +727,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD LIVE TICK BASE CANDLE BOT STARTING")
+    logging.warning("XAUTUSD FIXED 05:30 BASE CANDLE BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
