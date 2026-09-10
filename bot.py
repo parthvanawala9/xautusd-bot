@@ -6,7 +6,7 @@ import hashlib
 import logging
 import threading
 from decimal import Decimal, ROUND_DOWN
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD FIXED 05:30 BASE CANDLE MULTI-BREAKOUT/BREAKDOWN BOT
+# XAUTUSD DUAL SESSION + WEEKEND SAFE (05:30 & 17:30) BOT
 # ============================================================
 
 load_dotenv()
@@ -53,24 +53,35 @@ logging.basicConfig(
 def now_ist():
     return datetime.now(IST)
 
-def trading_day_start(dt=None):
+def is_weekend(dt=None):
+    """
+    Returns True if it's Saturday or Sunday.
+    Specifically, starting Saturday 05:30 IST until Monday 05:30 IST.
+    """
     dt = dt or now_ist()
-    boundary = dt.replace(hour=5, minute=30, second=0, microsecond=0)
-    if dt < boundary:
-        boundary -= timedelta(days=1)
-    return boundary
-
-def daily_squareoff_time(dt=None):
-    dt = dt or now_ist()
-    return dt.replace(hour=5, minute=40, second=0, microsecond=0)
-
-def weekend(dt=None):
-    dt = dt or now_ist()
-    if dt.weekday() == 5:
-        return dt.hour >= 5
-    if dt.weekday() == 6:
+    wday = dt.weekday() # 5 = Saturday, 6 = Sunday, 0 = Monday
+    t = dt.time()
+    
+    if wday == 5: # Saturday
+        return t >= dtime(5, 30)
+    if wday == 6: # Sunday
+        return True
+    if wday == 0 and t < dtime(5, 30): # Early Monday before 05:30
         return True
     return False
+
+def get_current_session_start(dt=None):
+    dt = dt or now_ist()
+    t = dt.time()
+    m530 = dt.replace(hour=5, minute=30, second=0, microsecond=0)
+    m1730 = dt.replace(hour=17, minute=30, second=0, microsecond=0)
+    
+    if t >= dtime(5, 30) and t < dtime(17, 30):
+        return m530
+    elif t >= dtime(17, 30):
+        return m1730
+    else:
+        return m1730 - timedelta(days=1)
 
 def safe_filename(value):
     result = ""
@@ -102,7 +113,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/4.3"
+            "User-Agent": "XAUTUSD-Bot/5.1"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -113,7 +124,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/4.3"
+            "User-Agent": "XAUTUSD-Bot/5.1"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -236,7 +247,7 @@ class DeltaClient:
             "bracket_stop_trigger_method": "last_traded_price",
             "bracket_take_profit_price": str(tp),
             "bracket_take_profit_trigger_method": "last_traded_price",
-            "client_order_id": (f"base0530_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"session_{int(time.time() * 1000)}")[-32:]
         }
         logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size} | STRICT SL={sl} | TP(1:5)={tp}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
@@ -258,9 +269,9 @@ class DeltaClient:
         logging.warning(f"{self.account_name} | CLOSE POSITION | SIZE={size}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def fetch_0530_candle(self, day_start):
+    def fetch_session_candle(self, session_start):
         try:
-            start_time = day_start.replace(hour=5, minute=30, second=0, microsecond=0)
+            start_time = session_start
             end_time = start_time + timedelta(hours=2)
             
             data = self.api("GET", "/v2/history/candles", params={
@@ -277,7 +288,7 @@ class DeltaClient:
                 if c_time and int(c_time) == target_ts:
                     h = Decimal(str(candle["high"]))
                     l = Decimal(str(candle["low"]))
-                    logging.info(f"{self.account_name} | EXACT 05:30 CANDLE FOUND | HIGH={h} | LOW={l}")
+                    logging.info(f"{self.account_name} | SESSION CANDLE FOUND ({start_time.strftime('%H:%M')}) | HIGH={h} | LOW={l}")
                     return h, l
             
             if candles:
@@ -288,7 +299,7 @@ class DeltaClient:
 
             return None, None
         except Exception as e:
-            logging.warning(f"{self.account_name} | 05:30 CANDLE FETCH ERROR | {e}")
+            logging.warning(f"{self.account_name} | SESSION CANDLE FETCH ERROR | {e}")
             return None, None
 
     def last_traded_price(self):
@@ -349,13 +360,12 @@ class AccountBot:
         self.product = self.client.product()
         self.product_id = int(self.product["id"])
 
-        self.day = None
+        self.session_start = None
         self.base_high = None
         self.base_low = None
         self.last_position = 0
         self.last_price = None
         self.ready = False
-        self.daily_squared_off = False
         self.bot_enabled = True
         self.stop_reason = None
 
@@ -372,13 +382,12 @@ class AccountBot:
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            if state.get("day"): self.day = datetime.fromisoformat(state["day"])
+            if state.get("session_start"): self.session_start = datetime.fromisoformat(state["session_start"])
             if state.get("base_high") is not None: self.base_high = Decimal(str(state["base_high"]))
             if state.get("base_low") is not None: self.base_low = Decimal(str(state["base_low"]))
             if state.get("active_trade"): self.active_trade = state["active_trade"]
             self.bot_enabled = state.get("bot_enabled", True)
             self.stop_reason = state.get("stop_reason", None)
-            self.daily_squared_off = state.get("daily_squared_off", False)
             self.ready = state.get("ready", False)
         except Exception as e:
             logging.warning(f"{self.account_name} | STATE LOAD ERROR | {e}")
@@ -388,13 +397,12 @@ class AccountBot:
             "account_id": self.account_id,
             "account_name": self.account_name,
             "symbol": SYMBOL,
-            "day": self.day.isoformat() if self.day else None,
+            "session_start": self.session_start.isoformat() if self.session_start else None,
             "base_high": str(self.base_high) if self.base_high is not None else None,
             "base_low": str(self.base_low) if self.base_low is not None else None,
             "active_trade": getattr(self, 'active_trade', None),
             "bot_enabled": self.bot_enabled,
             "stop_reason": self.stop_reason,
-            "daily_squared_off": self.daily_squared_off,
             "ready": self.ready
         }
         atomic_write_json(account_state_file(self.account_id), data)
@@ -468,34 +476,43 @@ class AccountBot:
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Bot stopped and position closed."}
 
-    def new_day(self, now):
-        day = trading_day_start(now)
-        if self.day == day: return
-        logging.warning(f"{self.account_name} | NEW SESSION | {day}")
-        self.day = day
-        self.base_high = None
-        self.base_low = None
-        self.ready = False
-        self.daily_squared_off = False
-        self.save()
+    def check_session_change(self, now):
+        current_sess = get_current_session_start(now)
+        if self.session_start != current_sess:
+            logging.warning(f"{self.account_name} | NEW SESSION DETECTED | {current_sess}")
+            pos = self.refresh_position(force=True)
+            size = int(pos.get("size", 0))
+            if size != 0:
+                exit_price = self.last_price or self.client.last_traded_price()
+                try:
+                    self.client.close_position(self.product_id, size)
+                    self.finish_active_trade(exit_price, "SESSION_SWITCH_SQUAREOFF")
+                except Exception as e:
+                    logging.error(f"{self.account_name} | SESSION SWITCH SQUAREOFF ERROR | {e}")
+
+            self.session_start = current_sess
+            self.base_high = None
+            self.base_low = None
+            self.ready = False
+            self.save()
 
     def prepare(self, now):
         if self.ready: return True
 
-        day = trading_day_start(now)
-        high, low = self.client.fetch_0530_candle(day)
+        high, low = self.client.fetch_session_candle(self.session_start)
 
         if high is not None and low is not None:
             self.base_high = high
             self.base_low = low
             self.ready = True
             self.save()
-            logging.warning(f"{self.account_name} | 05:30 BASE CANDLE LOCKED | HIGH={high} | LOW={low}")
+            logging.warning(f"{self.account_name} | SESSION BASE CANDLE LOCKED | HIGH={high} | LOW={low}")
             return True
 
         return False
 
     def enter(self, direction, price):
+        if is_weekend(): return False # वीकेंड पर नया ट्रेड नहीं लेगा
         if not self.bot_enabled or self.base_high is None or self.base_low is None: return False
 
         pos = self.refresh_position(force=True)
@@ -514,7 +531,7 @@ class AccountBot:
             risk = sl - price
             tp = price - (risk * Decimal("5"))
 
-        logging.warning(f"{self.account_name} | FORCING SL TO 05:30 BASE -> DIRECTION={direction} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | FORCING SL TO SESSION BASE -> DIRECTION={direction} | SL={sl} | TP={tp}")
 
         try:
             size = self.client.order_size(self.product, price)
@@ -563,7 +580,7 @@ class AccountBot:
             "account_id": self.account_id,
             "account": self.account_name,
             "symbol": SYMBOL,
-            "date": now_ist().strftime("%Y-%m-%d"),
+            "date": now_ist().strftime("%Y-%m-%d %H:%M"),
             "direction": direction,
             "entry_price": float(entry_price),
             "exit_price": float(exit_price),
@@ -578,26 +595,6 @@ class AccountBot:
         self.active_trade = None
         self.save()
 
-    def execute_540_exit(self):
-        with self.lock:
-            if self.daily_squared_off: return
-            logging.warning(f"{self.account_name} | 05:40 SQUAREOFF")
-            for _ in range(3):
-                try:
-                    self.client.cancel_all_orders(self.product_id)
-                    pos = self.refresh_position(force=True)
-                    size = int(pos.get("size", 0))
-                    if size != 0:
-                        exit_price = self.last_price or self.client.last_traded_price()
-                        self.client.close_position(self.product_id, size)
-                        self.finish_active_trade(exit_price, "DAILY_0540_SQUAREOFF")
-                    self.last_position = 0
-                    self.daily_squared_off = True
-                    self.save()
-                    break
-                except Exception:
-                    time.sleep(1)
-
     def evaluate(self, price=None):
         with self.lock:
             now = now_ist()
@@ -605,20 +602,28 @@ class AccountBot:
             if price is None: return
             self.last_price = price
 
-            if weekend(now): return
-            self.new_day(now)
+            # वीकेंड चेक: शनिवार सुबह 05:30 के बाद अगर ट्रेड चल रहा है तो बंद कर देगा और नया ट्रेड रोक देगा
+            if is_weekend(now):
+                pos = self.refresh_position()
+                size = int(pos.get("size", 0))
+                if size != 0:
+                    logging.warning(f"{self.account_name} | WEEKEND REACHED (SAT 05:30+) | CLOSING POSITION")
+                    try:
+                        self.client.close_position(self.product_id, size)
+                        self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
+                    except Exception:
+                        pass
+                    self.last_position = 0
+                    self.save()
+                return
 
-            sq_time = daily_squareoff_time(now)
-            
-            if now >= sq_time and now < sq_time.replace(minute=45) and not self.daily_squared_off:
-                self.execute_540_exit()
+            self.check_session_change(now)
 
             if not self.prepare(now): return
 
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
 
-            # जब टारगेट या एसएल हिट होने से पोजीशन बंद हो जाती है, तो बोट फ्लैट हो जाता है और अगले ब्रेकआउट/ब्रेकडाउन का इंतजार करता है
             if size == 0 and self.last_position != 0:
                 self.finish_active_trade(price, "SL_OR_TP_HIT")
                 self.last_position = 0
@@ -632,7 +637,6 @@ class AccountBot:
             self.last_position = 0
             if not self.bot_enabled: return
 
-            # बार-बार ब्रेकआउट और ब्रेकडाउन पर ट्रेड लेने का लॉजिक (जब भी लेवल्स पार हों)
             if self.base_high is not None and price > self.base_high:
                 self.enter("LONG", price)
                 return
@@ -676,7 +680,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             accounts = [{
                 "account_name": b.account_name,
                 "current_price": float(b.last_price) if b.last_price else None,
-                "bot_running": b.bot_enabled
+                "bot_running": b.bot_enabled,
+                "is_weekend": is_weekend(),
+                "session_start": b.session_start.isoformat() if b.session_start else None
             } for b in bots]
             self.send_json({"success": True, "accounts": accounts})
             return
@@ -704,13 +710,8 @@ def background_timer_loop():
         time.sleep(1)
         try:
             now = now_ist()
-            time_str = now.strftime("%H:%M")
             with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
             if not bots: continue
-
-            if time_str == "05:40":
-                for b in bots: b.execute_540_exit()
-
             for b in bots: b.evaluate()
         except Exception:
             pass
@@ -737,7 +738,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD FIXED 05:30 BASE CANDLE MULTI-TRADE BOT STARTING")
+    logging.warning("XAUTUSD DUAL SESSION + WEEKEND SAFE BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
