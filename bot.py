@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD DUAL SESSION + WEEKEND SAFE (05:30 & 17:30) BOT
+# XAUTUSD ONE-SHOT PER BREAKOUT/BREAKDOWN BOT (STATE LOCKED)
 # ============================================================
 
 load_dotenv()
@@ -54,19 +54,14 @@ def now_ist():
     return datetime.now(IST)
 
 def is_weekend(dt=None):
-    """
-    Returns True if it's Saturday or Sunday.
-    Specifically, starting Saturday 05:30 IST until Monday 05:30 IST.
-    """
     dt = dt or now_ist()
-    wday = dt.weekday() # 5 = Saturday, 6 = Sunday, 0 = Monday
+    wday = dt.weekday()
     t = dt.time()
-    
-    if wday == 5: # Saturday
+    if wday == 5:
         return t >= dtime(5, 30)
-    if wday == 6: # Sunday
+    if wday == 6:
         return True
-    if wday == 0 and t < dtime(5, 30): # Early Monday before 05:30
+    if wday == 0 and t < dtime(5, 30):
         return True
     return False
 
@@ -113,7 +108,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/5.1"
+            "User-Agent": "XAUTUSD-Bot/7.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -124,7 +119,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/5.1"
+            "User-Agent": "XAUTUSD-Bot/7.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -247,9 +242,9 @@ class DeltaClient:
             "bracket_stop_trigger_method": "last_traded_price",
             "bracket_take_profit_price": str(tp),
             "bracket_take_profit_trigger_method": "last_traded_price",
-            "client_order_id": (f"session_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"oneshot_{int(time.time() * 1000)}")[-32:]
         }
-        logging.warning(f"{self.account_name} | ENTRY {side.upper()} | SIZE={size} | STRICT SL={sl} | TP(1:5)={tp}")
+        logging.warning(f"{self.account_name} | ONESHOT ENTRY {side.upper()} | SIZE={size} | SL={sl} | TP={tp}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def close_position(self, product_id, size):
@@ -288,7 +283,7 @@ class DeltaClient:
                 if c_time and int(c_time) == target_ts:
                     h = Decimal(str(candle["high"]))
                     l = Decimal(str(candle["low"]))
-                    logging.info(f"{self.account_name} | SESSION CANDLE FOUND ({start_time.strftime('%H:%M')}) | HIGH={h} | LOW={l}")
+                    logging.info(f"{self.account_name} | SESSION CANDLE LOCKED ({start_time.strftime('%H:%M')}) | HIGH={h} | LOW={l}")
                     return h, l
             
             if candles:
@@ -368,6 +363,9 @@ class AccountBot:
         self.ready = False
         self.bot_enabled = True
         self.stop_reason = None
+        
+        # NEW: यह ट्रैक रखेगा कि इस सेशन में किस लेवल का ट्रेड लिया जा चुका है ('LONG', 'SHORT' या None)
+        self.triggered_direction_this_session = None
 
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -386,6 +384,7 @@ class AccountBot:
             if state.get("base_high") is not None: self.base_high = Decimal(str(state["base_high"]))
             if state.get("base_low") is not None: self.base_low = Decimal(str(state["base_low"]))
             if state.get("active_trade"): self.active_trade = state["active_trade"]
+            self.triggered_direction_this_session = state.get("triggered_direction_this_session", None)
             self.bot_enabled = state.get("bot_enabled", True)
             self.stop_reason = state.get("stop_reason", None)
             self.ready = state.get("ready", False)
@@ -401,6 +400,7 @@ class AccountBot:
             "base_high": str(self.base_high) if self.base_high is not None else None,
             "base_low": str(self.base_low) if self.base_low is not None else None,
             "active_trade": getattr(self, 'active_trade', None),
+            "triggered_direction_this_session": self.triggered_direction_this_session,
             "bot_enabled": self.bot_enabled,
             "stop_reason": self.stop_reason,
             "ready": self.ready
@@ -442,6 +442,7 @@ class AccountBot:
                     "size": abs(size)
                 }
                 self.last_position = size
+                self.triggered_direction_this_session = direction
                 self.bot_enabled = True
                 self.save()
                 return {"success": True, "bot_enabled": True, "message": f"Bot started with existing {direction} position."}
@@ -493,6 +494,7 @@ class AccountBot:
             self.session_start = current_sess
             self.base_high = None
             self.base_low = None
+            self.triggered_direction_this_session = None  # नया सेशन शुरू होते ही लॉक रीसेट!
             self.ready = False
             self.save()
 
@@ -506,14 +508,18 @@ class AccountBot:
             self.base_low = low
             self.ready = True
             self.save()
-            logging.warning(f"{self.account_name} | SESSION BASE CANDLE LOCKED | HIGH={high} | LOW={low}")
+            logging.warning(f"{self.account_name} | SESSION BASE LOCKED | HIGH={high} | LOW={low}")
             return True
 
         return False
 
     def enter(self, direction, price):
-        if is_weekend(): return False # वीकेंड पर नया ट्रेड नहीं लेगा
+        if is_weekend(): return False
         if not self.bot_enabled or self.base_high is None or self.base_low is None: return False
+
+        # अगर इस सेशन में इस डायरेक्शन का ट्रेड पहले ही लिया जा चुका है, तो दोबारा कभी नहीं लेगा!
+        if self.triggered_direction_this_session == direction:
+            return False
 
         pos = self.refresh_position(force=True)
         if pos["size"] != 0:
@@ -531,7 +537,7 @@ class AccountBot:
             risk = sl - price
             tp = price - (risk * Decimal("5"))
 
-        logging.warning(f"{self.account_name} | FORCING SL TO SESSION BASE -> DIRECTION={direction} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | ONESHOT ENTRY -> DIRECTION={direction} | PRICE={price} | SL={sl} | TP={tp}")
 
         try:
             size = self.client.order_size(self.product, price)
@@ -559,9 +565,10 @@ class AccountBot:
             "entry_time": now_ist().isoformat(),
             "size": abs(int(self.last_position))
         }
+        self.triggered_direction_this_session = direction  # लॉक लग गया! अब जब तक नया सेशन या रीसेट न हो, दोबारा ट्रेड नहीं लेगा।
 
         self.save()
-        logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | TRADE LIVE & LOCKED | {direction} | ENTRY={price}")
         return True
 
     def finish_active_trade(self, exit_price, reason):
@@ -602,12 +609,11 @@ class AccountBot:
             if price is None: return
             self.last_price = price
 
-            # वीकेंड चेक: शनिवार सुबह 05:30 के बाद अगर ट्रेड चल रहा है तो बंद कर देगा और नया ट्रेड रोक देगा
             if is_weekend(now):
                 pos = self.refresh_position()
                 size = int(pos.get("size", 0))
                 if size != 0:
-                    logging.warning(f"{self.account_name} | WEEKEND REACHED (SAT 05:30+) | CLOSING POSITION")
+                    logging.warning(f"{self.account_name} | WEEKEND REACHED | CLOSING POSITION")
                     try:
                         self.client.close_position(self.product_id, size)
                         self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
@@ -624,8 +630,9 @@ class AccountBot:
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
 
+            # यदि पोजीशन बंद हो चुकी है (चाहे टारगेट, एसएल या मैनुअल एग्जिट से)
             if size == 0 and self.last_position != 0:
-                self.finish_active_trade(price, "SL_OR_TP_HIT")
+                self.finish_active_trade(price, "CLOSED_OR_EXITED")
                 self.last_position = 0
                 self.save()
                 return
@@ -637,12 +644,19 @@ class AccountBot:
             self.last_position = 0
             if not self.bot_enabled: return
 
+            # ==========================================================
+            # STRICT ONESHOT BREAKOUT / BREAKDOWN LOGIC:
+            # - यदि इस सेशन में पहले ही शॉर्ट (या लॉन्ग) ट्रेड लिया जा चुका है, 
+            #   तो प्राइस चाहे जितनी भी नीचे या ऊपर हो, बोट दोबारा ट्रेड नहीं लेगा!
+            # ==========================================================
             if self.base_high is not None and price > self.base_high:
-                self.enter("LONG", price)
+                if self.triggered_direction_this_session != "LONG":
+                    self.enter("LONG", price)
                 return
 
             if self.base_low is not None and price < self.base_low:
-                self.enter("SHORT", price)
+                if self.triggered_direction_this_session != "SHORT":
+                    self.enter("SHORT", price)
                 return
 
 BOT_ACCOUNTS = {}
@@ -681,7 +695,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "account_name": b.account_name,
                 "current_price": float(b.last_price) if b.last_price else None,
                 "bot_running": b.bot_enabled,
-                "is_weekend": is_weekend(),
+                "triggered_direction": b.triggered_direction_this_session,
+                "base_high": float(b.base_high) if b.base_high else None,
+                "base_low": float(b.base_low) if b.base_low else None,
                 "session_start": b.session_start.isoformat() if b.session_start else None
             } for b in bots]
             self.send_json({"success": True, "accounts": accounts})
@@ -738,7 +754,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD DUAL SESSION + WEEKEND SAFE BOT STARTING")
+    logging.warning("XAUTUSD ONESHOT STATE-LOCKED BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
