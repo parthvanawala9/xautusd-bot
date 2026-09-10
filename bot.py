@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD FIXED 05:30 BASE CANDLE (ANYTIME START) + 1:5 TARGET BOT
+# XAUTUSD FIXED 05:30 BASE CANDLE (ROBUST ANYTIME START) + 1:5 TARGET BOT
 # ============================================================
 
 load_dotenv()
@@ -102,7 +102,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/4.0"
+            "User-Agent": "XAUTUSD-Bot/4.1"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -113,7 +113,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/4.0"
+            "User-Agent": "XAUTUSD-Bot/4.1"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -261,7 +261,7 @@ class DeltaClient:
     def fetch_0530_candle(self, day_start):
         try:
             start_time = day_start.replace(hour=5, minute=30, second=0, microsecond=0)
-            end_time = day_start.replace(hour=5, minute=45, second=0, microsecond=0)
+            end_time = start_time + timedelta(hours=2)
             
             data = self.api("GET", "/v2/history/candles", params={
                 "resolution": "15m",
@@ -270,13 +270,22 @@ class DeltaClient:
                 "end": int(end_time.timestamp())
             })
             candles = data.get("result", [])
+            target_ts = int(start_time.timestamp())
+            
             for candle in candles:
-                try:
+                c_time = candle.get("time") or candle.get("timestamp") or candle.get("start")
+                if c_time and int(c_time) == target_ts:
                     h = Decimal(str(candle["high"]))
                     l = Decimal(str(candle["low"]))
+                    logging.info(f"{self.account_name} | EXACT 05:30 CANDLE FOUND | HIGH={h} | LOW={l}")
                     return h, l
-                except Exception:
-                    continue
+            
+            if candles:
+                h = Decimal(str(candles[0]["high"]))
+                l = Decimal(str(candles[0]["low"]))
+                logging.warning(f"{self.account_name} | EXACT TIMESTAMP NOT MATCHED, USING FIRST CANDLE | HIGH={h} | LOW={l}")
+                return h, l
+
             return None, None
         except Exception as e:
             logging.warning(f"{self.account_name} | 05:30 CANDLE FETCH ERROR | {e}")
@@ -481,7 +490,7 @@ class AccountBot:
             self.base_low = low
             self.ready = True
             self.save()
-            logging.warning(f"{self.account_name} | 05:30 BASE CANDLE LOADED (ANYTIME START) | HIGH={high} | LOW={low}")
+            logging.warning(f"{self.account_name} | 05:30 BASE CANDLE LOCKED | HIGH={high} | LOW={low}")
             return True
 
         return False
@@ -498,13 +507,15 @@ class AccountBot:
         
         # STRICT 05:30 BASE CANDLE STOP LOSS AND 1:5 TARGET
         if direction == "LONG":
-            sl = self.base_low   # Strict Stop loss = 05:30 Candle Low
+            sl = self.base_low   # Strict Stop loss = 05:30 Candle Low (जबरदस्ती यही सेट होगा)
             risk = price - sl
             tp = price + (risk * Decimal("5"))
         else:
-            sl = self.base_high  # Strict Stop loss = 05:30 Candle High
+            sl = self.base_high  # Strict Stop loss = 05:30 Candle High (जबरदस्ती यही सेट होगा)
             risk = sl - price
             tp = price - (risk * Decimal("5"))
+
+        logging.warning(f"{self.account_name} | FORCING SL TO 05:30 BASE -> DIRECTION={direction} | SL={sl} | TP={tp}")
 
         try:
             size = self.client.order_size(self.product, price)
@@ -603,7 +614,6 @@ class AccountBot:
             if now >= sq_time and now < sq_time.replace(minute=45) and not self.daily_squared_off:
                 self.execute_540_exit()
 
-            # Anytime start check: fetch 05:30 base candle immediately if not ready
             if not self.prepare(now): return
 
             pos = self.refresh_position()
