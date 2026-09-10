@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD FIXED 05:30 BASE CANDLE (ROBUST ANYTIME START) + 1:5 TARGET BOT
+# XAUTUSD FIXED 05:30 BASE CANDLE MULTI-BREAKOUT/BREAKDOWN BOT
 # ============================================================
 
 load_dotenv()
@@ -102,7 +102,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/4.1"
+            "User-Agent": "XAUTUSD-Bot/4.3"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -113,7 +113,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/4.1"
+            "User-Agent": "XAUTUSD-Bot/4.3"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -283,7 +283,7 @@ class DeltaClient:
             if candles:
                 h = Decimal(str(candles[0]["high"]))
                 l = Decimal(str(candles[0]["low"]))
-                logging.warning(f"{self.account_name} | EXACT TIMESTAMP NOT MATCHED, USING FIRST CANDLE | HIGH={h} | LOW={l}")
+                logging.warning(f"{self.account_name} | USING FIRST CANDLE | HIGH={h} | LOW={l}")
                 return h, l
 
             return None, None
@@ -505,13 +505,12 @@ class AccountBot:
 
         side = "buy" if direction == "LONG" else "sell"
         
-        # STRICT 05:30 BASE CANDLE STOP LOSS AND 1:5 TARGET
         if direction == "LONG":
-            sl = self.base_low   # Strict Stop loss = 05:30 Candle Low (जबरदस्ती यही सेट होगा)
+            sl = self.base_low
             risk = price - sl
             tp = price + (risk * Decimal("5"))
         else:
-            sl = self.base_high  # Strict Stop loss = 05:30 Candle High (जबरदस्ती यही सेट होगा)
+            sl = self.base_high
             risk = sl - price
             tp = price - (risk * Decimal("5"))
 
@@ -545,7 +544,7 @@ class AccountBot:
         }
 
         self.save()
-        logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | STRICT SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | TRADE LIVE | {direction} | ENTRY={price} | SL={sl} | TP={tp}")
         return True
 
     def finish_active_trade(self, exit_price, reason):
@@ -619,6 +618,7 @@ class AccountBot:
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
 
+            # जब टारगेट या एसएल हिट होने से पोजीशन बंद हो जाती है, तो बोट फ्लैट हो जाता है और अगले ब्रेकआउट/ब्रेकडाउन का इंतजार करता है
             if size == 0 and self.last_position != 0:
                 self.finish_active_trade(price, "SL_OR_TP_HIT")
                 self.last_position = 0
@@ -632,7 +632,7 @@ class AccountBot:
             self.last_position = 0
             if not self.bot_enabled: return
 
-            # Strict 05:30 Base Candle Breakout & Reversal Rules
+            # बार-बार ब्रेकआउट और ब्रेकडाउन पर ट्रेड लेने का लॉजिक (जब भी लेवल्स पार हों)
             if self.base_high is not None and price > self.base_high:
                 self.enter("LONG", price)
                 return
@@ -737,7 +737,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD FIXED 05:30 BASE CANDLE BOT STARTING")
+    logging.warning("XAUTUSD FIXED 05:30 BASE CANDLE MULTI-TRADE BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
