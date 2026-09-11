@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + DYNAMIC LEVERAGE + PERMANENT HISTORY STORAGE
+# XAUTUSD BOT + MULTI-CLIENTS + LEVERAGE & PERMANENT HISTORY
 # ============================================================
 
 load_dotenv()
@@ -24,7 +24,6 @@ load_dotenv()
 IST = ZoneInfo("Asia/Kolkata")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# रेलवे पर परसिस्टेंट स्टोरेज सुनिश्चित करने के लिए स्थाई पाथ
 PERSISTENT_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR)
 
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
@@ -139,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/23.0"
+            "User-Agent": "XAUTUSD-Bot/24.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -150,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/23.0"
+            "User-Agent": "XAUTUSD-Bot/24.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -357,8 +356,8 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        self.leverage = Decimal(os.getenv("LEVERAGE", "50"))
-        self.balance_fraction = Decimal(os.getenv("BALANCE_FRACTION", "0.10"))
+        self.leverage = Decimal("50")
+        self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -803,6 +802,44 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"success": False, "message": "Account not found"}, status=404)
             return
 
+        if parsed_path == "/api/client/add":
+            name = body.get("name")
+            api_key = body.get("api_key")
+            api_secret = body.get("api_secret")
+            if not name or not api_key or not api_secret:
+                self.send_json({"success": False, "message": "Missing fields"}, status=400)
+                return
+            
+            cid = f"client_{int(time.time())}"
+            token = hashlib.sha256(f"{cid}_{time.time()}".encode()).hexdigest()[:16]
+            
+            clients_cfg = load_clients_config()
+            clients_cfg[cid] = {
+                "name": name, "api_key": api_key, "api_secret": api_secret, "token": token,
+                "subscription_start": body.get("subscription_start"),
+                "subscription_expiry": body.get("subscription_expiry"),
+                "subscription_fee": body.get("subscription_fee", 0)
+            }
+            save_clients_config(clients_cfg)
+            load_all_accounts()
+            self.send_json({"success": True, "message": "Client added successfully"})
+            return
+
+        if parsed_path == "/api/client/delete":
+            acc_id = body.get("account_id")
+            clients_cfg = load_clients_config()
+            if acc_id in clients_cfg:
+                del clients_cfg[acc_id]
+                save_clients_config(clients_cfg)
+                with ACCOUNTS_LOCK:
+                    if acc_id in BOT_ACCOUNTS:
+                        BOT_ACCOUNTS[acc_id].stop_bot()
+                        del BOT_ACCOUNTS[acc_id]
+                self.send_json({"success": True, "message": "Client removed"})
+                return
+            self.send_json({"success": False, "message": "Client not found"}, status=404)
+            return
+            
         self.send_json({"success": False, "message": "Not found"}, status=404)
 
     def send_html_dashboard(self):
