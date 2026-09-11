@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + FULL HISTORY & LIVE P&L DASHBOARD
+# XAUTUSD BOT + FULL HISTORY, LIVE IP & P&L DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/18.0"
+            "User-Agent": "XAUTUSD-Bot/19.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/18.0"
+            "User-Agent": "XAUTUSD-Bot/19.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -663,7 +663,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # Fallback P&L calculation if Delta returns 0
                 exchange_pnl = float(pos.get("unrealized_pnl", 0))
                 if exchange_pnl == 0 and pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
                     try:
