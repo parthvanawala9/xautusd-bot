@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD STRICT CROSSOVER BREAKOUT/BREAKDOWN BOT
+# XAUTUSD EXACT HIGH/LOW BREAKOUT BOT (CANDLE CLOSE VERIFIED)
 # ============================================================
 
 load_dotenv()
@@ -108,7 +108,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/9.0"
+            "User-Agent": "XAUTUSD-Bot/10.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -119,7 +119,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/9.0"
+            "User-Agent": "XAUTUSD-Bot/10.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -242,9 +242,9 @@ class DeltaClient:
             "bracket_stop_trigger_method": "last_traded_price",
             "bracket_take_profit_price": str(tp),
             "bracket_take_profit_trigger_method": "last_traded_price",
-            "client_order_id": (f"cross_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"exact_{int(time.time() * 1000)}")[-32:]
         }
-        logging.warning(f"{self.account_name} | CROSSOVER ENTRY {side.upper()} | SIZE={size} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | EXACT BREAKOUT ENTRY {side.upper()} | SIZE={size} | SL={sl} | TP={tp}")
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def close_position(self, product_id, size):
@@ -267,7 +267,8 @@ class DeltaClient:
     def fetch_session_candle(self, session_start):
         try:
             start_time = session_start
-            end_time = start_time + timedelta(hours=2)
+            # कैंडल पूरी तरह से क्लोज हो चुकी है यह सुनिश्चित करने के लिए हम थोड़ा आगे तक का डेटा फेच करेंगे
+            end_time = start_time + timedelta(minutes=30)
             
             data = self.api("GET", "/v2/history/candles", params={
                 "resolution": "15m",
@@ -283,13 +284,13 @@ class DeltaClient:
                 if c_time and int(c_time) == target_ts:
                     h = Decimal(str(candle["high"]))
                     l = Decimal(str(candle["low"]))
-                    logging.info(f"{self.account_name} | SESSION CANDLE LOCKED ({start_time.strftime('%H:%M')}) | HIGH={h} | LOW={l}")
+                    logging.info(f"{self.account_name} | 15M CANDLE CLOSED & LOCKED ({start_time.strftime('%H:%M')}) | HIGH={h} | LOW={l}")
                     return h, l
             
             if candles:
                 h = Decimal(str(candles[0]["high"]))
                 l = Decimal(str(candles[0]["low"]))
-                logging.warning(f"{self.account_name} | USING FIRST CANDLE | HIGH={h} | LOW={l}")
+                logging.warning(f"{self.account_name} | USING CANDLE | HIGH={h} | LOW={l}")
                 return h, l
 
             return None, None
@@ -360,7 +361,7 @@ class AccountBot:
         self.base_low = None
         self.last_position = 0
         self.last_price = None
-        self.prev_price = None  # NEW: क्रॉसओवर ट्रैक करने के लिए पिछली कीमत
+        self.prev_price = None
         self.ready = False
         self.bot_enabled = True
         self.stop_reason = None
@@ -496,6 +497,12 @@ class AccountBot:
     def prepare(self, now):
         if self.ready: return True
 
+        # कड़ा नियम: कैंडल पूरी तरह से क्लोज होने का समय (जैसे 05:30 वाली कैंडल 05:45 पर क्लोज होती है)
+        required_candle_close_time = self.session_start + timedelta(minutes=15)
+        if now < required_candle_close_time:
+            # अभी कैंडल बन रही है, ट्रेड नहीं लेना है!
+            return False
+
         high, low = self.client.fetch_session_candle(self.session_start)
 
         if high is not None and low is not None:
@@ -503,7 +510,7 @@ class AccountBot:
             self.base_low = low
             self.ready = True
             self.save()
-            logging.warning(f"{self.account_name} | SESSION BASE LOCKED | HIGH={high} | LOW={low}")
+            logging.warning(f"{self.account_name} | 15M CANDLE LOCKED SUCCESSFUL | HIGH={high} | LOW={low}")
             return True
 
         return False
@@ -528,7 +535,7 @@ class AccountBot:
             risk = sl - price
             tp = price - (risk * Decimal("5"))
 
-        logging.warning(f"{self.account_name} | CROSSOVER ENTRY -> DIRECTION={direction} | PRICE={price} | SL={sl} | TP={tp}")
+        logging.warning(f"{self.account_name} | EXACT BREAKOUT ENTRY -> DIRECTION={direction} | PRICE={price} | SL={sl} | TP={tp}")
 
         try:
             size = self.client.order_size(self.product, price)
@@ -598,7 +605,6 @@ class AccountBot:
             if price is None: price = self.last_price or self.client.last_traded_price()
             if price is None: return
             
-            # अगर पिछली कीमत सेव नहीं है, तो अभी वाली सेट कर दें ताकि अचानक हवा में ट्रिगर न हो
             if self.prev_price is None:
                 self.prev_price = price
                 self.last_price = price
@@ -644,16 +650,16 @@ class AccountBot:
             if not self.bot_enabled: return
 
             # ==========================================================
-            # STRICT CROSSOVER & CROSS-UNDER LOGIC:
-            # - LONG: पुरानी कीमत base_high से नीचे/बराबर थी, और नई कीमत base_high के ऊपर गई है।
-            # - SHORT: पुरानी कीमत base_low से ऊपर/बराबर थी, और नई कीमत base_low के नीचे गई है।
+            # STRICT EXACT BREAKOUT/BREAKDOWN CROSSOVER LOGIC:
+            # - LONG: पुरानी कीमत base_high से नीचे थी, और नई कीमत ठीक base_high को पार करके ऊपर गई है।
+            # - SHORT: पुरानी कीमत base_low से ऊपर थी, और नई कीमत ठीक base_low को पार करके नीचे गई है।
             # ==========================================================
             if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
-                self.enter("LONG", new_price)
+                self.enter("LONG", self.base_high)  # ठीक High वाले प्राइस पर एंट्री!
                 return
 
             if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
-                self.enter("SHORT", new_price)
+                self.enter("SHORT", self.base_low)  # ठीक Low वाले प्राइस पर एंट्री!
                 return
 
 BOT_ACCOUNTS = {}
@@ -750,7 +756,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD STRICT CROSSOVER BOT STARTING")
+    logging.warning("XAUTUSD EXACT BREAKOUT BOT STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
