@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD EXACT HIGH/LOW BREAKOUT BOT (CANDLE CLOSE VERIFIED)
+# XAUTUSD EXACT HIGH/LOW BREAKOUT BOT + FULL DASHBOARD SERVING
 # ============================================================
 
 load_dotenv()
@@ -108,7 +108,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/10.0"
+            "User-Agent": "XAUTUSD-Bot/11.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -119,7 +119,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/10.0"
+            "User-Agent": "XAUTUSD-Bot/11.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -267,7 +267,6 @@ class DeltaClient:
     def fetch_session_candle(self, session_start):
         try:
             start_time = session_start
-            # कैंडल पूरी तरह से क्लोज हो चुकी है यह सुनिश्चित करने के लिए हम थोड़ा आगे तक का डेटा फेच करेंगे
             end_time = start_time + timedelta(minutes=30)
             
             data = self.api("GET", "/v2/history/candles", params={
@@ -344,6 +343,30 @@ def calculate_trade_pnl(direction, entry_price, exit_price, size, product_info):
     except Exception as e:
         logging.warning(f"PNL ERROR | {e}")
         return Decimal("0")
+
+def calculate_statistics(history):
+    def compute_stats(trades):
+        total = len(trades)
+        wins = [t for t in trades if t.get("pnl", 0) > 0]
+        losses = [t for t in trades if t.get("pnl", 0) < 0]
+        pnl = sum(Decimal(str(t.get("pnl", 0))) for t in trades)
+        win_rate = (len(wins) / total * 100) if total > 0 else 0.0
+        return {
+            "total_trades": total,
+            "winning_trades": len(wins),
+            "losing_trades": len(losses),
+            "win_rate": float(win_rate),
+            "pnl": float(pnl)
+        }
+    
+    now = now_ist()
+    today_str = now.strftime("%Y-%m-%d")
+    today_trades = [t for t in history if str(t.get("date", "")).startswith(today_str)]
+    
+    return {
+        "today": compute_stats(today_trades),
+        "all_time": compute_stats(history)
+    }
 
 class AccountBot:
     def __init__(self, account_id, account_name, account_type, api_key, api_secret, subscription=None):
@@ -497,10 +520,8 @@ class AccountBot:
     def prepare(self, now):
         if self.ready: return True
 
-        # कड़ा नियम: कैंडल पूरी तरह से क्लोज होने का समय (जैसे 05:30 वाली कैंडल 05:45 पर क्लोज होती है)
         required_candle_close_time = self.session_start + timedelta(minutes=15)
         if now < required_candle_close_time:
-            # अभी कैंडल बन रही है, ट्रेड नहीं लेना है!
             return False
 
         high, low = self.client.fetch_session_candle(self.session_start)
@@ -649,17 +670,12 @@ class AccountBot:
             self.last_position = 0
             if not self.bot_enabled: return
 
-            # ==========================================================
-            # STRICT EXACT BREAKOUT/BREAKDOWN CROSSOVER LOGIC:
-            # - LONG: पुरानी कीमत base_high से नीचे थी, और नई कीमत ठीक base_high को पार करके ऊपर गई है।
-            # - SHORT: पुरानी कीमत base_low से ऊपर थी, और नई कीमत ठीक base_low को पार करके नीचे गई है।
-            # ==========================================================
             if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
-                self.enter("LONG", self.base_high)  # ठीक High वाले प्राइस पर एंट्री!
+                self.enter("LONG", self.base_high)
                 return
 
             if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
-                self.enter("SHORT", self.base_low)  # ठीक Low वाले प्राइस पर एंट्री!
+                self.enter("SHORT", self.base_low)
                 return
 
 BOT_ACCOUNTS = {}
@@ -688,23 +704,80 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=BASE_DIR, **kwargs)
 
     def do_GET(self):
-        if self.path.split("?", 1)[0] == "/api/health":
+        parsed_path = self.path.split("?", 1)[0]
+        if parsed_path == "/api/health":
             self.send_json({"success": True, "online": True})
             return
-        if self.path.split("?", 1)[0] == "/api/dashboard":
+        if parsed_path == "/api/dashboard":
             with ACCOUNTS_LOCK:
                 bots = list(BOT_ACCOUNTS.values())
-            accounts = [{
-                "account_name": b.account_name,
-                "current_price": float(b.last_price) if b.last_price else None,
-                "bot_running": b.bot_enabled,
-                "base_high": float(b.base_high) if b.base_high else None,
-                "base_low": float(b.base_low) if b.base_low else None,
-                "session_start": b.session_start.isoformat() if b.session_start else None
-            } for b in bots]
-            self.send_json({"success": True, "accounts": accounts})
+            accounts_data = []
+            for b in bots:
+                pos = b.refresh_position()
+                history = load_trade_history(b.account_id)
+                stats = calculate_statistics(history)
+                
+                direction = "FLAT"
+                if pos["size"] > 0: direction = "LONG"
+                elif pos["size"] < 0: direction = "SHORT"
+                
+                accounts_data.append({
+                    "account_id": b.account_id,
+                    "account_name": b.account_name,
+                    "account_type": b.account_type,
+                    "balance": float(b.client.balance()) if b.client else 0,
+                    "current_price": float(b.last_price) if b.last_price else None,
+                    "bot_enabled": b.bot_enabled,
+                    "contract_value": 0.001,
+                    "position": {
+                        "size": pos["size"],
+                        "direction": direction,
+                        "entry_price": float(pos["entry"]) if pos.get("entry") else None,
+                        "stop_loss": float(b.base_high) if direction == "SHORT" else (float(b.base_low) if direction == "LONG" else None),
+                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0))
+                    },
+                    "statistics": stats,
+                    "trade_history": history[-50:],
+                    "subscription": {"active": True, "expired": False}
+                })
+            
+            self.send_json({"success": True, "server_online": True, "accounts": accounts_data})
             return
+            
+        # रूट फोल्डर से index.html, style.css और app.js सर्व करने के लिए
+        if parsed_path == "/" or parsed_path == "":
+            self.path = "/index.html"
+            
         return super().do_GET()
+
+    def do_POST(self):
+        parsed_path = self.path.split("?", 1)[0]
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+        
+        if parsed_path == "/api/bot/start":
+            acc_id = body.get("account_id", PRIMARY_ACCOUNT_ID)
+            with ACCOUNTS_LOCK:
+                bot = BOT_ACCOUNTS.get(acc_id)
+                if bot:
+                    res = bot.start_bot()
+                    self.send_json(res)
+                    return
+            self.send_json({"success": False, "message": "Account not found"}, status=404)
+            return
+            
+        if parsed_path == "/api/bot/stop":
+            acc_id = body.get("account_id", PRIMARY_ACCOUNT_ID)
+            with ACCOUNTS_LOCK:
+                bot = BOT_ACCOUNTS.get(acc_id)
+                if bot:
+                    res = bot.stop_bot()
+                    self.send_json(res)
+                    return
+            self.send_json({"success": False, "message": "Account not found"}, status=404)
+            return
+            
+        self.send_json({"success": False, "message": "Not found"}, status=404)
 
     def send_json(self, data, status=200):
         raw = json.dumps(data).encode("utf-8")
@@ -756,7 +829,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD EXACT BREAKOUT BOT STARTING")
+    logging.warning("XAUTUSD FULL BOT + DASHBOARD STARTING")
     start_dashboard()
     load_primary_account()
     threading.Thread(target=background_timer_loop, daemon=True).start()
