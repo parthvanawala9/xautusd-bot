@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + MULTI-CLIENTS + LEVERAGE & PERMANENT HISTORY
+# XAUTUSD BOT + MULTI-CLIENTS + TOKEN LINK + LEVERAGE + STORAGE
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/24.0"
+            "User-Agent": "XAUTUSD-Bot/25.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/24.0"
+            "User-Agent": "XAUTUSD-Bot/25.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -858,6 +858,15 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
+        <!-- Add Client Form (Only on main view) -->
+        <div id="add-client-section" class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
+            <h3 class="font-bold text-sm text-amber-400 uppercase">Add New Client Account</h3>
+            <input type="text" id="c-name" placeholder="Client Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            <input type="text" id="c-key" placeholder="Delta API Key" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            <input type="password" id="c-secret" placeholder="Delta API Secret" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            <button onclick="addClient()" class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg transition text-white">Add Client & Generate Link</button>
+        </div>
+
         <div id="accounts-container" class="space-y-6">
             <div class="text-center text-slate-400">Loading Dashboard...</div>
         </div>
@@ -866,15 +875,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     <script>
         async function fetchDashboard() {
             try {
-                let res = await fetch('/api/dashboard');
+                let urlParams = new URLSearchParams(window.location.search);
+                let token = urlParams.get('token');
+                let fetchUrl = token ? `/api/dashboard?token=${token}` : '/api/dashboard';
+
+                let res = await fetch(fetchUrl);
                 let data = await res.json();
                 if(data.success) {
                     document.getElementById('server-ip').innerText = "Server IP: " + data.server_ip;
+                    
+                    if(token) {
+                        document.getElementById('add-client-section').style.display = 'none';
+                    }
+
                     let container = document.getElementById('accounts-container');
                     container.innerHTML = "";
                     
                     data.accounts.forEach(acc => {
                         let pos = acc.position;
+                        let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : '';
                         
                         let html = `
                         <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
@@ -887,6 +906,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                     ${acc.bot_enabled ? 'RUNNING' : 'STOPPED'}
                                 </span>
                             </div>
+
+                            ${clientLink ? `
+                            <div class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs space-y-1">
+                                <span class="text-slate-400 text-[10px] block">Client Unique Link:</span>
+                                <input type="text" readonly value="${clientLink}" class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all">
+                            </div>
+                            ` : ''}
 
                             <!-- Leverage & Margin Settings Form -->
                             <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
@@ -926,10 +952,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
 
-                            <!-- Control Button -->
-                            <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="w-full py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
-                                ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
-                            </button>
+                            <!-- Control Buttons -->
+                            <div class="flex gap-2">
+                                <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
+                                    ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
+                                </button>
+                                ${acc.account_type == 'client' && !token ? `<button onclick="deleteClient('${acc.account_id}')" class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold transition">Remove</button>` : ''}
+                            </div>
 
                             <!-- Trade History -->
                             <div class="space-y-2 pt-2 border-t border-slate-700">
@@ -956,6 +985,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     });
                 }
             } catch(e) { console.error(e); }
+        }
+
+        async function addClient() {
+            let name = document.getElementById('c-name').value;
+            let key = document.getElementById('c-key').value;
+            let secret = document.getElementById('c-secret').value;
+            if(!name || !key || !secret) { alert("Please fill all fields!"); return; }
+
+            let res = await fetch('/api/client/add', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name, api_key: key, api_secret: secret})
+            });
+            let data = await res.json();
+            alert(data.message);
+            document.getElementById('c-name').value = '';
+            document.getElementById('c-key').value = '';
+            document.getElementById('c-secret').value = '';
+            fetchDashboard();
+        }
+
+        async function deleteClient(accId) {
+            if(!confirm("Are you sure you want to remove this client?")) return;
+            await fetch('/api/client/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({account_id: accId})
+            });
+            fetchDashboard();
         }
 
         async function toggleBot(accId, currentState) {
