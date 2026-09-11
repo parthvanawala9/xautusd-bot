@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + FINAL LEVERAGE & MARGIN PERSISTENCE FIX
+# XAUTUSD BOT + DASHBOARD REFRESH OVERRIDE & SETTINGS FIX
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/29.0"
+            "User-Agent": "XAUTUSD-Bot/30.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/29.0"
+            "User-Agent": "XAUTUSD-Bot/30.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -429,17 +429,17 @@ class AccountBot:
         except Exception:
             return self.cached_position
 
-    def update_settings(self, new_leverage, new_fraction):
+    def update_settings(self, new_lev, new_frac):
         with self.lock:
             try:
-                self.leverage = Decimal(str(new_leverage))
-                self.balance_fraction = Decimal(str(new_fraction))
+                self.leverage = Decimal(str(new_lev))
+                self.balance_fraction = Decimal(str(new_frac))
                 
                 if self.product_id:
                     self.client.set_leverage(self.product_id, self.leverage)
                 
                 self.save()
-                return {"success": True, "message": f"Updated! Leverage: {self.leverage}x, Margin: {float(self.balance_fraction)*100}%"}
+                return {"success": True, "message": f"Saved! Leverage: {int(self.leverage)}x, Margin: {float(self.balance_fraction)*100}%"}
             except Exception as e:
                 return {"success": False, "message": str(e)}
 
@@ -910,7 +910,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     </div>
 
     <script>
+        let isEditingSettings = false;
+
         async function fetchDashboard() {
+            if (isEditingSettings) return; // अगर यूजर सेटिंग्स बदल रहा है, तो रिफ्रेश रोकें ताकि वैल्यू रीसेट न हो
+
             try {
                 let urlParams = new URLSearchParams(window.location.search);
                 let token = urlParams.get('token');
@@ -961,7 +965,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="grid grid-cols-2 gap-2">
                                     <div>
                                         <label class="block text-[10px] text-slate-400 mb-1">Leverage</label>
-                                        <select id="lev-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                        <select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                             <option value="1" ${acc.leverage==1?'selected':''}>1x</option>
                                             <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                                             <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
@@ -972,7 +976,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                     </div>
                                     <div>
                                         <label class="block text-[10px] text-slate-400 mb-1">Margin Fraction</label>
-                                        <select id="frac-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                        <select id="frac-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                             <option value="0.10" ${acc.balance_fraction==0.1?'selected':''}>10%</option>
                                             <option value="0.25" ${acc.balance_fraction==0.25?'selected':''}>25%</option>
                                             <option value="0.50" ${acc.balance_fraction==0.5?'selected':''}>50%</option>
@@ -1091,6 +1095,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         async function updateSettings(accId) {
             let lev = document.getElementById('lev-' + accId).value;
             let frac = document.getElementById('frac-' + accId).value;
+            
+            isEditingSettings = true;
             let res = await fetch('/api/bot/settings', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1098,6 +1104,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             });
             let data = await res.json();
             alert(data.message);
+            isEditingSettings = false;
             fetchDashboard();
         }
 
