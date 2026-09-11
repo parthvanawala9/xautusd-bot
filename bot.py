@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + CLIENT PORTAL & LIVE IP DASHBOARD
+# XAUTUSD BOT + INDEPENDENT LIVE IP DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -128,7 +128,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/12.0"
+            "User-Agent": "XAUTUSD-Bot/13.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -139,7 +139,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/12.0"
+            "User-Agent": "XAUTUSD-Bot/13.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -219,7 +219,6 @@ class DeltaClient:
     def set_leverage(self, product_id):
         try:
             self.api("POST", f"/v2/products/{product_id}/orders/leverage", body={"leverage": str(LEVERAGE)}, auth=True)
-            logging.info(f"{self.account_name} | LEVERAGE = {LEVERAGE}x")
         except Exception as e:
             logging.warning(f"{self.account_name} | LEVERAGE ERROR | {e}")
 
@@ -382,8 +381,13 @@ class AccountBot:
         self.subscription = subscription or {}
         self.client = DeltaClient(api_key, api_secret, account_name)
 
-        self.product = self.client.product()
-        self.product_id = int(self.product["id"])
+        self.product = None
+        self.product_id = 0
+        try:
+            self.product = self.client.product()
+            self.product_id = int(self.product["id"])
+        except Exception:
+            pass
 
         self.session_start = None
         self.base_high = None
@@ -434,6 +438,13 @@ class AccountBot:
         atomic_write_json(account_state_file(self.account_id), data)
 
     def refresh_position(self, force=False):
+        if not self.product_id:
+            try:
+                self.product = self.client.product()
+                self.product_id = int(self.product["id"])
+            except Exception:
+                return self.cached_position
+
         current = time.time()
         if not force and (current - self.position_cache_time) < POSITION_CACHE_SECONDS:
             return self.cached_position
@@ -477,15 +488,16 @@ class AccountBot:
             self.bot_enabled = False
             self.stop_reason = "MANUAL STOP"
             self.save()
-            self.client.cancel_all_orders(self.product_id)
-            try:
-                pos = self.refresh_position(force=True)
-            except Exception:
-                pos = {"size": 0}
-            size = int(pos.get("size", 0))
-            if size != 0:
-                try: self.client.close_position(self.product_id, size)
-                except Exception: pass
+            if self.product_id:
+                self.client.cancel_all_orders(self.product_id)
+                try:
+                    pos = self.refresh_position(force=True)
+                except Exception:
+                    pos = {"size": 0}
+                size = int(pos.get("size", 0))
+                if size != 0:
+                    try: self.client.close_position(self.product_id, size)
+                    except Exception: pass
             exit_p = self.last_price or self.client.last_traded_price()
             self.finish_active_trade(exit_p, "MANUAL_STOP")
             self.last_position = 0
@@ -495,15 +507,16 @@ class AccountBot:
     def check_session_change(self, now):
         current_sess = get_current_session_start(now)
         if self.session_start != current_sess:
-            pos = self.refresh_position(force=True)
-            size = int(pos.get("size", 0))
-            if size != 0:
-                exit_price = self.last_price or self.client.last_traded_price()
-                try:
-                    self.client.close_position(self.product_id, size)
-                    self.finish_active_trade(exit_price, "SESSION_SWITCH_SQUAREOFF")
-                except Exception:
-                    pass
+            if self.product_id:
+                pos = self.refresh_position(force=True)
+                size = int(pos.get("size", 0))
+                if size != 0:
+                    exit_price = self.last_price or self.client.last_traded_price()
+                    try:
+                        self.client.close_position(self.product_id, size)
+                        self.finish_active_trade(exit_price, "SESSION_SWITCH_SQUAREOFF")
+                    except Exception:
+                        pass
             self.session_start = current_sess
             self.base_high = None
             self.base_low = None
@@ -527,7 +540,7 @@ class AccountBot:
 
     def enter(self, direction, price):
         if is_weekend(): return False
-        if not self.bot_enabled or self.base_high is None or self.base_low is None: return False
+        if not self.bot_enabled or self.base_high is None or self.base_low is None or not self.product_id: return False
         pos = self.refresh_position(force=True)
         if pos["size"] != 0:
             self.last_position = pos["size"]
@@ -575,7 +588,7 @@ class AccountBot:
             self.active_trade = None
             self.save()
             return
-        pnl = calculate_trade_pnl(direction, entry_price, exit_price, trade_size, self.product)
+        pnl = calculate_trade_pnl(direction, entry_price, exit_price, trade_size, self.product or {"contract_value": "0.001"})
         trade = {
             "id": f"trade_{int(time.time() * 1000)}",
             "account_id": self.account_id,
@@ -609,16 +622,17 @@ class AccountBot:
             self.prev_price = price
             self.last_price = price
             if is_weekend(now):
-                pos = self.refresh_position()
-                size = int(pos.get("size", 0))
-                if size != 0:
-                    try:
-                        self.client.close_position(self.product_id, size)
-                        self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
-                    except Exception:
-                        pass
-                    self.last_position = 0
-                    self.save()
+                if self.product_id:
+                    pos = self.refresh_position()
+                    size = int(pos.get("size", 0))
+                    if size != 0:
+                        try:
+                            self.client.close_position(self.product_id, size)
+                            self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
+                        except Exception:
+                            pass
+                        self.last_position = 0
+                        self.save()
                 return
             self.check_session_change(now)
             if not self.prepare(now): return
@@ -647,7 +661,6 @@ ACCOUNTS_LOCK = threading.RLock()
 def load_all_accounts():
     with ACCOUNTS_LOCK:
         BOT_ACCOUNTS.clear()
-        # Primary Account
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
             try:
                 primary = AccountBot(
@@ -658,12 +671,10 @@ def load_all_accounts():
                     api_secret=PRIMARY_API_SECRET,
                     subscription={}
                 )
-                primary.client.set_leverage(primary.product_id)
                 BOT_ACCOUNTS[primary.account_id] = primary
             except Exception as e:
                 logging.error(f"Primary account load error: {e}")
 
-        # Client Accounts
         clients_cfg = load_clients_config()
         for cid, cdata in clients_cfg.items():
             try:
@@ -679,7 +690,6 @@ def load_all_accounts():
                         "fee": cdata.get("subscription_fee", 0)
                     }
                 )
-                client_bot.client.set_leverage(client_bot.product_id)
                 BOT_ACCOUNTS[cid] = client_bot
             except Exception as e:
                 logging.error(f"Client {cid} load error: {e}")
@@ -704,7 +714,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             with ACCOUNTS_LOCK:
                 bots = list(BOT_ACCOUNTS.values())
 
-            # यदि क्लाइंट टोकन दिया गया है, तो सिर्फ उसी का डेटा भेजें
             if client_token:
                 target_bot = None
                 clients_cfg = load_clients_config()
@@ -721,20 +730,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             clients_cfg = load_clients_config()
 
             for b in bots:
-                pos = b.refresh_position()
+                # डेल्टा कनेक्शन फेल होने पर भी डैशबोर्ड क्रैश नहीं होगा
+                try:
+                    pos = b.refresh_position()
+                    balance_val = float(b.client.balance()) if b.client else 0
+                except Exception:
+                    pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
+                    balance_val = 0
+
                 history = load_trade_history(b.account_id)
                 stats = calculate_statistics(history)
                 
                 direction = "FLAT"
-                if pos["size"] > 0: direction = "LONG"
-                elif pos["size"] < 0: direction = "SHORT"
+                if pos.get("size", 0) > 0: direction = "LONG"
+                elif pos.get("size", 0) < 0: direction = "SHORT"
 
                 sub_info = b.subscription
-                if b.account_type == "client":
-                    c_data = clients_cfg.get(b.account_id, {})
-                    token = c_data.get("token", "")
-                else:
-                    token = ""
+                token = clients_cfg.get(b.account_id, {}).get("token", "") if b.account_type == "client" else ""
 
                 accounts_data.append({
                     "account_id": b.account_id,
@@ -742,12 +754,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "account_type": b.account_type,
                     "token": token,
                     "server_ip": server_ip,
-                    "balance": float(b.client.balance()) if b.client else 0,
+                    "balance": balance_val,
                     "current_price": float(b.last_price) if b.last_price else None,
                     "bot_enabled": b.bot_enabled,
                     "contract_value": 0.001,
                     "position": {
-                        "size": pos["size"],
+                        "size": pos.get("size", 0),
                         "direction": direction,
                         "entry_price": float(pos["entry"]) if pos.get("entry") else None,
                         "stop_loss": float(b.base_high) if direction == "SHORT" else (float(b.base_low) if direction == "LONG" else None),
@@ -884,8 +896,8 @@ def run_websocket():
             pass
         time.sleep(RECONNECT_SECONDS)
 
-if __name__ == "__main__":
-    logging.warning("XAUTUSD BOT WITH CLIENT PORTAL STARTING")
+if __name__ == "main__":
+    logging.warning("XAUTUSD BOT WITH INDEPENDENT IP STARTING")
     start_dashboard()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
