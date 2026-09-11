@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + FULL HISTORY, RAILWAY LOGS & DASHBOARD
+# XAUTUSD BOT + REVERSAL TRADE HISTORY FIX
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/20.0"
+            "User-Agent": "XAUTUSD-Bot/21.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/20.0"
+            "User-Agent": "XAUTUSD-Bot/21.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -354,6 +354,7 @@ class AccountBot:
         self.ready = False
         self.bot_enabled = True
         self.stop_reason = None
+        self.active_trade = None
 
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -404,10 +405,7 @@ class AccountBot:
             pos = self.client.position(self.product_id)
             self.cached_position = pos
             self.position_cache_time = current
-            
-            # --- रेलवे लॉग्स में रनिंग पोजीशन प्रिंट करें ---
             logging.info(f"[{self.account_name}] Position: Size={pos.get('size')} | Entry={pos.get('entry')} | PnL={pos.get('unrealized_pnl')}")
-            
             return pos
         except Exception:
             return self.cached_position
@@ -566,16 +564,30 @@ class AccountBot:
                 return
             self.check_session_change(now)
             if not self.prepare(now): return
+            
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
-            if size == 0 and self.last_position != 0:
-                self.finish_active_trade(price, "CLOSED_OR_EXITED")
+            
+            # --- रीवरसल या क्लोजर (Reversal or Closure) डिटेक्शन ---
+            if self.last_position != 0 and (size == 0 or (size > 0 and self.last_position < 0) or (size < 0 and self.last_position > 0)):
+                self.finish_active_trade(price, "SL_HIT_OR_REVERSED")
                 self.last_position = 0
                 self.save()
-                return
+            
             if size != 0:
                 self.last_position = size
+                if not getattr(self, 'active_trade', None):
+                    # यदि पोजीशन डायरेक्ट रिकवर हुई है या रीवरसल हुआ है तो एक्टिव ट्रेड सेट करें
+                    direction = "LONG" if size > 0 else "SHORT"
+                    self.active_trade = {
+                        "direction": direction,
+                        "entry_price": float(pos.get("entry") or price),
+                        "entry_time": now_ist().isoformat(),
+                        "size": abs(size)
+                    }
+                    self.save()
                 return
+
             self.last_position = 0
             if not self.bot_enabled: return
             if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
