@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + INDEPENDENT LIVE IP DASHBOARD
+# XAUTUSD BOT + INDEPENDENT IP DASHBOARD (FIXED)
 # ============================================================
 
 load_dotenv()
@@ -128,7 +128,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/13.0"
+            "User-Agent": "XAUTUSD-Bot/14.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -139,7 +139,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/13.0"
+            "User-Agent": "XAUTUSD-Bot/14.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -730,7 +730,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             clients_cfg = load_clients_config()
 
             for b in bots:
-                # डेल्टा कनेक्शन फेल होने पर भी डैशबोर्ड क्रैश नहीं होगा
                 try:
                     pos = b.refresh_position()
                     balance_val = float(b.client.balance()) if b.client else 0
@@ -896,7 +895,7 @@ def run_websocket():
             pass
         time.sleep(RECONNECT_SECONDS)
 
-if __name__ == "main__":
+if __name__ == "__main__":
     logging.warning("XAUTUSD BOT WITH INDEPENDENT IP STARTING")
     start_dashboard()
     load_all_accounts()
