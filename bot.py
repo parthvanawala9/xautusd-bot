@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + FULL HISTORY, LIVE IP & P&L DASHBOARD
+# XAUTUSD BOT + FULL HISTORY, RAILWAY LOGS & DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/19.0"
+            "User-Agent": "XAUTUSD-Bot/20.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/19.0"
+            "User-Agent": "XAUTUSD-Bot/20.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -404,6 +404,10 @@ class AccountBot:
             pos = self.client.position(self.product_id)
             self.cached_position = pos
             self.position_cache_time = current
+            
+            # --- रेलवे लॉग्स में रनिंग पोजीशन प्रिंट करें ---
+            logging.info(f"[{self.account_name}] Position: Size={pos.get('size')} | Entry={pos.get('entry')} | PnL={pos.get('unrealized_pnl')}")
+            
             return pos
         except Exception:
             return self.cached_position
