@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + LEVERAGE & MARGIN FULL FIX + PERMANENT STORAGE
+# XAUTUSD BOT + FINAL LEVERAGE & MARGIN PERSISTENCE FIX
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/28.0"
+            "User-Agent": "XAUTUSD-Bot/29.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/28.0"
+            "User-Agent": "XAUTUSD-Bot/29.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -432,22 +432,14 @@ class AccountBot:
     def update_settings(self, new_leverage, new_fraction):
         with self.lock:
             try:
-                lev_dec = Decimal(str(new_leverage))
-                frac_dec = Decimal(str(new_fraction))
-                
-                # स्वीकृत लीवरेज वैल्यू चेक करें
-                if lev_dec in [Decimal("1"), Decimal("5"), Decimal("10"), Decimal("25"), Decimal("50"), Decimal("100")]:
-                    self.leverage = lev_dec
-                
-                # स्वीकृत मार्जिन फ्रेंक्शन वैल्यू चेक करें (0.10 से 1.00)
-                if frac_dec in [Decimal("0.10"), Decimal("0.25"), Decimal("0.50"), Decimal("0.75"), Decimal("1.00")]:
-                    self.balance_fraction = frac_dec
+                self.leverage = Decimal(str(new_leverage))
+                self.balance_fraction = Decimal(str(new_fraction))
                 
                 if self.product_id:
                     self.client.set_leverage(self.product_id, self.leverage)
                 
                 self.save()
-                return {"success": True, "message": f"Settings updated successfully! Leverage: {self.leverage}x, Margin: {float(self.balance_fraction)*100}%"}
+                return {"success": True, "message": f"Updated! Leverage: {self.leverage}x, Margin: {float(self.balance_fraction)*100}%"}
             except Exception as e:
                 return {"success": False, "message": str(e)}
 
@@ -997,7 +989,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold">${pos.entry || 'N/A'}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
 
@@ -1102,7 +1094,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             let res = await fetch('/api/bot/settings', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({account_id: accId, leverage: parseInt(lev), balance_fraction: parseFloat(frac)})
+                body: JSON.stringify({account_id: accId, leverage: lev, balance_fraction: frac})
             });
             let data = await res.json();
             alert(data.message);
