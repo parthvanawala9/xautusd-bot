@@ -16,14 +16,6 @@ function escapeHtml(value) {
   return String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-function getLiveUnrealizedPnl(account) {
-  const position = account?.position || {};
-  const size = Number(position.size || 0);
-  if (size === 0) return 0;
-  const exchangePnl = Number(position.unrealized_pnl);
-  return Number.isFinite(exchangePnl) ? exchangePnl : 0;
-}
-
 async function apiFetch(url, options = {}) {
   const response = await fetch(url, {
     ...options,
@@ -99,11 +91,79 @@ function copyClientLink(token) {
   alert("Client private link copied to clipboard:\n\n" + link);
 }
 
+function renderPerformance(account) {
+  const stats = account.statistics || {};
+  const today = stats.today || {};
+  const allTime = stats.all_time || {};
+
+  return `
+    <div class="performance-section" style="margin-top:20px; padding-top:15px; border-top:1px solid #e2e8f0;">
+      <h3 style="font-size:15px; font-weight:800; margin-bottom:10px;">Trading Performance</h3>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;">
+        <div style="background:#f8fafc; padding:12px; border-radius:10px; border:1px solid #e2e8f0;">
+          <h4 style="font-size:11px; font-weight:800; color:#64748b; margin-bottom:8px;">TODAY</h4>
+          <div style="font-size:12px; display:flex; flex-direction:column; gap:4px;">
+            <div>Trades: <strong>${today.total_trades || 0}</strong></div>
+            <div>Wins / Losses: <strong style="color:#16a34a;">${today.winning_trades || 0}</strong> / <strong style="color:#dc2626;">${today.losing_trades || 0}</strong></div>
+            <div>Win Rate: <strong>${number(today.win_rate, 1)}%</strong></div>
+            <div>P&L: <strong class="${(today.pnl || 0) >= 0 ? 'trade-profit' : 'trade-loss'}">${money(today.pnl)}</strong></div>
+          </div>
+        </div>
+        <div style="background:#f8fafc; padding:12px; border-radius:10px; border:1px solid #e2e8f0;">
+          <h4 style="font-size:11px; font-weight:800; color:#64748b; margin-bottom:8px;">ALL TIME</h4>
+          <div style="font-size:12px; display:flex; flex-direction:column; gap:4px;">
+            <div>Trades: <strong>${allTime.total_trades || 0}</strong></div>
+            <div>Wins / Losses: <strong style="color:#16a34a;">${allTime.winning_trades || 0}</strong> / <strong style="color:#dc2626;">${allTime.losing_trades || 0}</strong></div>
+            <div>Win Rate: <strong>${number(allTime.win_rate, 1)}%</strong></div>
+            <div>P&L: <strong class="${(allTime.pnl || 0) >= 0 ? 'trade-profit' : 'trade-loss'}">${money(allTime.pnl)}</strong></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTradeHistory(account) {
+  const history = Array.isArray(account.trade_history) ? account.trade_history : [];
+
+  let rows = "";
+  if (history.length > 0) {
+    rows = history.slice(-20).reverse().map(trade => {
+      const pnl = Number(trade.pnl || 0);
+      const pnlClass = pnl > 0 ? "trade-profit" : pnl < 0 ? "trade-loss" : "trade-flat";
+      return `
+        <div style="display:grid; grid-template-columns: 1.2fr 0.8fr 1fr 1fr 0.7fr 1fr; gap:6px; padding:10px; background:#f8fafc; border:1px solid #edf1f5; border-radius:8px; align-items:center; font-size:11px; margin-bottom:6px;">
+          <div><span style="font-size:9px; color:#94a3b8; display:block;">DATE</span><strong>${escapeHtml(trade.date)}</strong></div>
+          <div><span style="font-size:9px; color:#94a3b8; display:block;">SIDE</span><strong style="color:${trade.direction === 'LONG' ? '#16a34a':'#dc2626'}">${escapeHtml(trade.direction)}</strong></div>
+          <div><span style="font-size:9px; color:#94a3b8; display:block;">ENTRY</span><strong>${number(trade.entry_price)}</strong></div>
+          <div><span style="font-size:9px; color:#94a3b8; display:block;">EXIT</span><strong>${number(trade.exit_price)}</strong></div>
+          <div><span style="font-size:9px; color:#94a3b8; display:block;">SIZE</span><strong>${trade.size}</strong></div>
+          <div><span style="font-size:9px; color:#94a3b8; display:block;">P&L</span><strong class="${pnlClass}">${money(pnl)}</strong></div>
+        </div>
+      `;
+    }).join("");
+  } else {
+    rows = `<div style="padding:15px; text-align:center; color:#94a3b8; font-size:12px; background:#f8fafc; border-radius:8px;">No closed trades recorded yet.</div>`;
+  }
+
+  return `
+    <div style="margin-top:20px; padding-top:15px; border-top:1px solid #e2e8f0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="font-size:15px; font-weight:800; margin:0;">Trade History</h3>
+        <span style="font-size:11px; color:#64748b; font-weight:700;">${history.length} Total Closed Trades</span>
+      </div>
+      <div style="max-height:300px; overflow-y:auto; display:flex; flex-direction:column; gap:6px;">
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
 function renderAccount(account) {
   const running = account.bot_enabled === true;
   const primary = account.account_type === "primary";
   const position = account.position || {};
-  const unrealizedPnl = getLiveUnrealizedPnl(account);
+  const unrealizedPnl = Number(position.unrealized_pnl || 0);
 
   let clientLinkBox = "";
   if (!primary && account.token) {
@@ -112,14 +172,14 @@ function renderAccount(account) {
         <span style="font-size:10px; font-weight:800; color:#0369a1;">CLIENT PRIVATE PORTAL LINK:</span>
         <div style="display:flex; gap:8px; margin-top:5px;">
           <input type="text" readonly value="${window.location.origin}/?token=${account.token}" style="width:100%; padding:6px; font-size:11px; border:1px solid #cbd5e1; border-radius:6px; background:#fff;" />
-          <button class="secondary-button" onclick="copyClientLink('${account.token}')">COPY LINK</button>
+          <button class="secondary-button" onclick="copyClientLink('${account.token}')">COPY</button>
         </div>
       </div>
     `;
   }
 
   return `
-    <section class="card account-card">
+    <section class="card account-card" style="margin-bottom:25px;">
       <div class="account-header">
         <div>
           <div class="account-type">${primary ? "PRIMARY ADMIN ACCOUNT" : "CLIENT ACCOUNT"}</div>
@@ -141,13 +201,16 @@ function renderAccount(account) {
         <div><span>Entry</span><strong>${number(position.entry_price)}</strong></div>
         <div><span>Stop Loss</span><strong>${number(position.stop_loss)}</strong></div>
         <div><span>Unrealized P&L</span><strong class="${unrealizedPnl >= 0 ? 'trade-profit' : 'trade-loss'}">${money(unrealizedPnl)}</strong></div>
-        <div><span>All-Time P&L</span><strong>${money(account.statistics?.all_time?.pnl)}</strong></div>
+        <div><span>All-Time P&L</span><strong class="${(account.statistics?.all_time?.pnl || 0) >= 0 ? 'trade-profit' : 'trade-loss'}">${money(account.statistics?.all_time?.pnl)}</strong></div>
       </div>
 
       <div class="account-actions">
         ${running ? `<button class="danger-button" onclick="stopBot('${escapeHtml(account.account_id)}')">■ STOP BOT</button>` : `<button class="success-button" onclick="startBot('${escapeHtml(account.account_id)}')">▶ START BOT</button>`}
         ${!primary ? `<button class="delete-button" onclick="deleteClient('${escapeHtml(account.account_id)}')">DELETE CLIENT</button>` : ""}
       </div>
+
+      ${renderPerformance(account)}
+      ${renderTradeHistory(account)}
     </section>
   `;
 }
