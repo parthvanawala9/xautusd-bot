@@ -1,342 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-
   <meta charset="UTF-8" />
-
-  <meta
-    name="viewport"
-    content="width=device-width, initial-scale=1.0"
-  />
-
-  <title>
-    XAUTUSD Multi Account Dashboard
-  </title>
-
-  <link
-    rel="stylesheet"
-    href="./style.css"
-  />
-
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XAUTUSD Trading Dashboard</title>
+  <link rel="stylesheet" href="./style.css" />
 </head>
-
-
 <body>
-
   <div class="container">
-
-
     <header class="header">
-
       <div>
-
-        <div class="eyebrow">
-          DELTA EXCHANGE
-        </div>
-
-        <h1>
-          XAUTUSD Trading Dashboard
-        </h1>
-
-        <p id="last-update">
-          Connecting...
-        </p>
-
+        <div class="eyebrow">DELTA EXCHANGE</div>
+        <h1>XAUTUSD Trading Dashboard</h1>
+        <p id="last-update">Connecting...</p>
       </div>
-
-
-      <div
-        id="bot-status"
-        class="status online"
-      >
-        CONNECTING
-      </div>
-
+      <div id="bot-status" class="status online">CONNECTING</div>
     </header>
 
-
-    <!-- ====================================================
-         CLIENT MANAGEMENT
-    ===================================================== -->
-
-    <section class="card management-card">
-
-      <div class="management-header">
-
-        <div>
-
-          <h2>
-            Client Accounts
-          </h2>
-
-          <p>
-            Add a client's Delta account and manage
-            their subscription.
-          </p>
-
-        </div>
-
-
-        <button
-          class="add-client-button"
-          onclick="openClientForm()"
-        >
-          + ADD CLIENT
-        </button>
-
-      </div>
-
-
-      <div
-        id="client-form"
-        class="client-form"
-        style="display:none;"
-      >
-
-        <div class="form-grid">
-
-
-          <div class="form-field">
-
-            <label>
-              Client Name
-            </label>
-
-            <input
-              id="client-name"
-              type="text"
-              placeholder="Example: Rahul"
-            />
-
-          </div>
-
-
-          <div class="form-field">
-
-            <label>
-              Delta API Key
-            </label>
-
-            <input
-              id="client-api-key"
-              type="text"
-              autocomplete="off"
-              placeholder="Client API Key"
-            />
-
-          </div>
-
-
-          <div class="form-field">
-
-            <label>
-              Delta API Secret
-            </label>
-
-            <input
-              id="client-api-secret"
-              type="password"
-              autocomplete="new-password"
-              placeholder="Client API Secret"
-            />
-
-          </div>
-
-
-          <div class="form-field">
-
-            <label>
-              Subscription Fee
-            </label>
-
-            <input
-              id="client-fee"
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="Example: 100"
-            />
-
-          </div>
-
-
-          <div class="form-field">
-
-            <label>
-              Subscription Start
-            </label>
-
-            <input
-              id="client-start"
-              type="datetime-local"
-            />
-
-          </div>
-
-
-          <div class="form-field">
-
-            <label>
-              Subscription Expiry
-            </label>
-
-            <input
-              id="client-expiry"
-              type="datetime-local"
-            />
-
-          </div>
-
-
-        </div>
-
-
-        <div class="security-note">
-
-          <strong>
-            Security:
-          </strong>
-
-          Client API credentials are stored by this
-          bot server so it can trade on the client's
-          Delta account. Only use API keys with the
-          minimum permissions required for trading.
-
-        </div>
-
-
-        <div class="form-actions">
-
-          <button
-            class="success-button"
-            onclick="addClient()"
-          >
-            ADD CLIENT ACCOUNT
-          </button>
-
-        </div>
-
-      </div>
-
+    <!-- SERVER IP BANNER -->
+    <section class="card" style="background:#0f172a; color:#fff; padding:15px; margin-bottom:20px;">
+      <div style="font-size:11px; color:#94a3b8; font-weight:800; text-transform:uppercase; letter-spacing:1px;">Server Outbound IP (Whitelist in Delta API)</div>
+      <div id="server-ip-display" style="font-size:18px; font-weight:900; color:#4ade80; margin-top:5px;">Loading IP...</div>
     </section>
 
+    <!-- CLIENT MANAGEMENT (Hidden for individual client view) -->
+    <section class="card management-card" id="admin-management-section">
+      <div class="management-header">
+        <div>
+          <h2>Client Accounts</h2>
+          <p>Add a client's Delta account and get their secret portal link.</p>
+        </div>
+        <button class="add-client-button" onclick="openClientForm()">+ ADD CLIENT</button>
+      </div>
 
-    <!-- ====================================================
-         ACCOUNTS
-    ===================================================== -->
+      <div id="client-form" class="client-form" style="display:none;">
+        <div class="form-grid">
+          <div class="form-field"><label>Client Name</label><input id="client-name" type="text" placeholder="Rahul" /></div>
+          <div class="form-field"><label>Delta API Key</label><input id="client-api-key" type="text" placeholder="API Key" /></div>
+          <div class="form-field"><label>Delta API Secret</label><input id="client-api-secret" type="password" placeholder="API Secret" /></div>
+          <div class="form-field"><label>Subscription Fee</label><input id="client-fee" type="number" placeholder="100" /></div>
+          <div class="form-field"><label>Subscription Start</label><input id="client-start" type="datetime-local" /></div>
+          <div class="form-field"><label>Subscription Expiry</label><input id="client-expiry" type="datetime-local" /></div>
+        </div>
+        <div class="form-actions" style="margin-top:15px;">
+          <button class="success-button" onclick="addClient()">SAVE & GENERATE CLIENT LINK</button>
+        </div>
+      </div>
+    </section>
 
     <main id="accounts-container">
-
-      <section class="card loading-card">
-
-        Loading accounts...
-
-      </section>
-
+      <section class="card loading-card">Loading accounts...</section>
     </main>
-
-
-    <!-- ====================================================
-         STRATEGY INFORMATION
-    ===================================================== -->
-
-    <section class="card strategy-card">
-
-      <h2>
-        Strategy
-      </h2>
-
-
-      <div class="strategy-grid">
-
-        <div>
-
-          <span>
-            Symbol
-          </span>
-
-          <strong>
-            XAUTUSD
-          </strong>
-
-        </div>
-
-
-        <div>
-
-          <span>
-            Leverage
-          </span>
-
-          <strong>
-            50x
-          </strong>
-
-        </div>
-
-
-        <div>
-
-          <span>
-            Balance Used
-          </span>
-
-          <strong>
-            10%
-          </strong>
-
-        </div>
-
-
-        <div>
-
-          <span>
-            Strategy Start
-          </span>
-
-          <strong>
-            05:45 IST
-          </strong>
-
-        </div>
-
-
-        <div>
-
-          <span>
-            Entry
-          </span>
-
-          <strong>
-            New HIGH / New LOW
-          </strong>
-
-        </div>
-
-
-        <div>
-
-          <span>
-            Stop Loss
-          </span>
-
-          <strong>
-            Opposite Session Extreme
-          </strong>
-
-        </div>
-
-      </div>
-
-    </section>
-
-
   </div>
-
-
   <script src="./app.js"></script>
-
 </body>
-
 </html>
