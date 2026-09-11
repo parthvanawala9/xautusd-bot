@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + INSTANT IP DASHBOARD (NON-BLOCKING)
+# XAUTUSD BOT + RAILWAY LOG IP PRINTER
 # ============================================================
 
 load_dotenv()
@@ -52,15 +52,25 @@ logging.basicConfig(
     force=True
 )
 
+CACHED_SERVER_IP = "Detecting..."
+
+def update_server_ip():
+    global CACHED_SERVER_IP
+    try:
+        res = requests.get("https://api.ipify.org?format=json", timeout=5)
+        ip = res.json().get("ip")
+        if ip:
+            CACHED_SERVER_IP = ip
+            # यह सीधे रेलवे के कंसोल/लॉग्स में प्रिंट हो जाएगा!
+            logging.warning(f"==================================================")
+            logging.warning(f" RAILWAY OUTBOUND IP --> {ip}")
+            logging.warning(f" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
+            logging.warning(f"==================================================")
+    except Exception as e:
+        logging.warning(f"IP FETCH ERROR | {e}")
+
 def now_ist():
     return datetime.now(IST)
-
-def get_outbound_ip():
-    try:
-        res = requests.get("https://api.ipify.org?format=json", timeout=3)
-        return res.json().get("ip", "Unknown")
-    except Exception:
-        return "Detecting..."
 
 def is_weekend(dt=None):
     dt = dt or now_ist()
@@ -129,7 +139,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/15.0"
+            "User-Agent": "XAUTUSD-Bot/17.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -140,7 +150,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/15.0"
+            "User-Agent": "XAUTUSD-Bot/17.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -576,44 +586,40 @@ BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
 
 def load_all_accounts():
-    # बैकग्राउंड में सेफली लोड करेगा ताकि सर्वर हैंग न हो
-    def background_load():
-        with ACCOUNTS_LOCK:
-            BOT_ACCOUNTS.clear()
-            if PRIMARY_API_KEY and PRIMARY_API_SECRET:
-                try:
-                    primary = AccountBot(
-                        account_id=PRIMARY_ACCOUNT_ID,
-                        account_name=PRIMARY_ACCOUNT_NAME,
-                        account_type="primary",
-                        api_key=PRIMARY_API_KEY,
-                        api_secret=PRIMARY_API_SECRET,
-                        subscription={}
-                    )
-                    BOT_ACCOUNTS[primary.account_id] = primary
-                except Exception as e:
-                    logging.error(f"Primary account load error: {e}")
+    with ACCOUNTS_LOCK:
+        BOT_ACCOUNTS.clear()
+        if PRIMARY_API_KEY and PRIMARY_API_SECRET:
+            try:
+                primary = AccountBot(
+                    account_id=PRIMARY_ACCOUNT_ID,
+                    account_name=PRIMARY_ACCOUNT_NAME,
+                    account_type="primary",
+                    api_key=PRIMARY_API_KEY,
+                    api_secret=PRIMARY_API_SECRET,
+                    subscription={}
+                )
+                BOT_ACCOUNTS[primary.account_id] = primary
+            except Exception as e:
+                logging.error(f"Primary account load error: {e}")
 
-            clients_cfg = load_clients_config()
-            for cid, cdata in clients_cfg.items():
-                try:
-                    client_bot = AccountBot(
-                        account_id=cid,
-                        account_name=cdata.get("name", "Client"),
-                        account_type="client",
-                        api_key=cdata.get("api_key"),
-                        api_secret=cdata.get("api_secret"),
-                        subscription={
-                            "start": cdata.get("subscription_start"),
-                            "expiry": cdata.get("subscription_expiry"),
-                            "fee": cdata.get("subscription_fee", 0)
-                        }
-                    )
-                    BOT_ACCOUNTS[cid] = client_bot
-                except Exception as e:
-                    logging.error(f"Client {cid} load error: {e}")
-    
-    threading.Thread(target=background_load, daemon=True).start()
+        clients_cfg = load_clients_config()
+        for cid, cdata in clients_cfg.items():
+            try:
+                client_bot = AccountBot(
+                    account_id=cid,
+                    account_name=cdata.get("name", "Client"),
+                    account_type="client",
+                    api_key=cdata.get("api_key"),
+                    api_secret=cdata.get("api_secret"),
+                    subscription={
+                        "start": cdata.get("subscription_start"),
+                        "expiry": cdata.get("subscription_expiry"),
+                        "fee": cdata.get("subscription_fee", 0)
+                    }
+                )
+                BOT_ACCOUNTS[cid] = client_bot
+            except Exception as e:
+                logging.error(f"Client {cid} load error: {e}")
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -630,7 +636,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/dashboard":
             client_token = query.get("token", [None])[0]
-            server_ip = get_outbound_ip()
+            server_ip = CACHED_SERVER_IP
 
             with ACCOUNTS_LOCK:
                 bots = list(BOT_ACCOUNTS.values())
@@ -778,7 +784,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def start_dashboard():
     port = int(os.getenv("PORT", DASHBOARD_PORT))
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
-    logging.warning(f"WEB SERVER STARTED INSTANTLY ON PORT {port}")
+    logging.warning(f"WEB SERVER STARTED ON PORT {port}")
+    server.serve_fullscreen = True
     server.serve_forever()
 
 def background_timer_loop():
@@ -813,7 +820,11 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD BOT STARTING INSTANTLY")
+    logging.warning("XAUTUSD BOT STARTING...")
+    
+    # सबसे पहले रेलवे के लॉग्स में आईपी प्रिंट करने के लिए फंक्शन कॉल करें
+    update_server_ip()
+    
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
     threading.Thread(target=run_websocket, daemon=True).start()
