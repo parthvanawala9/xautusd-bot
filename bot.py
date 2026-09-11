@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + MULTI-CLIENTS + EXPIRY CHECK + LEVERAGE + STORAGE
+# XAUTUSD BOT + LEVERAGE & MARGIN FULL FIX + PERMANENT STORAGE
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/27.0"
+            "User-Agent": "XAUTUSD-Bot/28.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/27.0"
+            "User-Agent": "XAUTUSD-Bot/28.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -434,8 +434,12 @@ class AccountBot:
             try:
                 lev_dec = Decimal(str(new_leverage))
                 frac_dec = Decimal(str(new_fraction))
+                
+                # स्वीकृत लीवरेज वैल्यू चेक करें
                 if lev_dec in [Decimal("1"), Decimal("5"), Decimal("10"), Decimal("25"), Decimal("50"), Decimal("100")]:
                     self.leverage = lev_dec
+                
+                # स्वीकृत मार्जिन फ्रेंक्शन वैल्यू चेक करें (0.10 से 1.00)
                 if frac_dec in [Decimal("0.10"), Decimal("0.25"), Decimal("0.50"), Decimal("0.75"), Decimal("1.00")]:
                     self.balance_fraction = frac_dec
                 
@@ -443,7 +447,7 @@ class AccountBot:
                     self.client.set_leverage(self.product_id, self.leverage)
                 
                 self.save()
-                return {"success": True, "message": "Settings updated successfully."}
+                return {"success": True, "message": f"Settings updated successfully! Leverage: {self.leverage}x, Margin: {float(self.balance_fraction)*100}%"}
             except Exception as e:
                 return {"success": False, "message": str(e)}
 
@@ -585,10 +589,8 @@ class AccountBot:
 
     def evaluate(self, price=None):
         with self.lock:
-            # एक्सपायरी चेक: यदि क्लाइंट की एक्सपायरी डेट निकल गई है, तो पोजीशन स्क्वायर-ऑफ करके बॉट बंद कर दें
             if self.is_expired():
                 if self.bot_enabled:
-                    logging.warning(f"[{self.account_name}] Subscription expired! Stopping bot and squaring off.")
                     if self.product_id:
                         self.client.cancel_all_orders(self.product_id)
                         try:
