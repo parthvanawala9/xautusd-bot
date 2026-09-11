@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + RAILWAY LOG IP PRINTER
+# XAUTUSD BOT + FULL HISTORY & LIVE P&L DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -61,7 +61,6 @@ def update_server_ip():
         ip = res.json().get("ip")
         if ip:
             CACHED_SERVER_IP = ip
-            # यह सीधे रेलवे के कंसोल/लॉग्स में प्रिंट हो जाएगा!
             logging.warning(f"==================================================")
             logging.warning(f" RAILWAY OUTBOUND IP --> {ip}")
             logging.warning(f" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
@@ -139,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/17.0"
+            "User-Agent": "XAUTUSD-Bot/18.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -150,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/17.0"
+            "User-Agent": "XAUTUSD-Bot/18.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -217,8 +216,8 @@ class DeltaClient:
         bal = self.balance()
         margin = bal * BALANCE_FRACTION
         notional = margin * LEVERAGE
-        contract_value = Decimal(str(product_info.get("contract_value") or product_info.get("contract_value_usd") or "1"))
-        if contract_value <= 0: contract_value = Decimal("1")
+        contract_value = Decimal(str(product_info.get("contract_value") or product_info.get("contract_value_usd") or "0.001"))
+        if contract_value <= 0: contract_value = Decimal("0.001")
         raw = notional / price / contract_value
         increment = Decimal(str(product_info.get("lot_size") or product_info.get("order_size_increment") or "1"))
         minimum = Decimal(str(product_info.get("min_order_size") or product_info.get("minimum_order_size") or increment))
@@ -664,6 +663,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
+                # Fallback P&L calculation if Delta returns 0
+                exchange_pnl = float(pos.get("unrealized_pnl", 0))
+                if exchange_pnl == 0 and pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
+                    try:
+                        entry = Decimal(str(pos["entry"]))
+                        cur = Decimal(str(b.last_price))
+                        sz = Decimal(str(pos["size"]))
+                        cv = Decimal("0.001")
+                        if sz > 0:
+                            exchange_pnl = float((cur - entry) * sz * cv)
+                        else:
+                            exchange_pnl = float((entry - cur) * abs(sz) * cv)
+                    except Exception:
+                        pass
+
                 history = load_trade_history(b.account_id)
                 stats = calculate_statistics(history)
                 
@@ -689,10 +703,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "direction": direction,
                         "entry_price": float(pos["entry"]) if pos.get("entry") else None,
                         "stop_loss": float(b.base_high) if direction == "SHORT" else (float(b.base_low) if direction == "LONG" else None),
-                        "unrealized_pnl": float(pos.get("unrealized_pnl", 0))
+                        "unrealized_pnl": exchange_pnl
                     },
                     "statistics": stats,
-                    "trade_history": history[-50:],
+                    "trade_history": history,
                     "subscription": sub_info
                 })
             
@@ -785,7 +799,6 @@ def start_dashboard():
     port = int(os.getenv("PORT", DASHBOARD_PORT))
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
     logging.warning(f"WEB SERVER STARTED ON PORT {port}")
-    server.serve_fullscreen = True
     server.serve_forever()
 
 def background_timer_loop():
@@ -821,10 +834,7 @@ def run_websocket():
 
 if __name__ == "__main__":
     logging.warning("XAUTUSD BOT STARTING...")
-    
-    # सबसे पहले रेलवे के लॉग्स में आईपी प्रिंट करने के लिए फंक्शन कॉल करें
     update_server_ip()
-    
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
     threading.Thread(target=run_websocket, daemon=True).start()
