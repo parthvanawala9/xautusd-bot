@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + MULTI-CLIENTS + LEVERAGE + STATS + PERMANENT STORAGE
+# XAUTUSD BOT + MULTI-CLIENTS + EXPIRY CHECK + LEVERAGE + STORAGE
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/26.0"
+            "User-Agent": "XAUTUSD-Bot/27.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/26.0"
+            "User-Agent": "XAUTUSD-Bot/27.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -366,6 +366,19 @@ class AccountBot:
         self.load_state()
         self.save()
 
+    def is_expired(self):
+        if self.account_type == "primary":
+            return False
+        expiry_str = self.subscription.get("expiry")
+        if not expiry_str:
+            return False
+        try:
+            exp_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+            today_date = now_ist().date()
+            return today_date > exp_date
+        except Exception:
+            return False
+
     def load_state(self):
         filename = account_state_file(self.account_id)
         if not os.path.exists(filename): return
@@ -412,7 +425,6 @@ class AccountBot:
             pos = self.client.position(self.product_id)
             self.cached_position = pos
             self.position_cache_time = current
-            logging.info(f"[{self.account_name}] Position: Size={pos.get('size')} | Entry={pos.get('entry')} | PnL={pos.get('unrealized_pnl')}")
             return pos
         except Exception:
             return self.cached_position
@@ -437,6 +449,8 @@ class AccountBot:
 
     def start_bot(self):
         with self.lock:
+            if self.is_expired():
+                return {"success": False, "message": "Subscription expired. Cannot start bot."}
             pos = self.refresh_position(force=True)
             size = int(pos.get("size", 0))
             if size != 0:
@@ -508,6 +522,10 @@ class AccountBot:
         return False
 
     def enter(self, direction, price):
+        if self.is_expired():
+            if self.bot_enabled:
+                self.stop_bot()
+            return False
         if is_weekend() or not self.bot_enabled or self.base_high is None or self.base_low is None or not self.product_id: return False
         pos = self.refresh_position(force=True)
         if pos["size"] != 0:
@@ -567,6 +585,25 @@ class AccountBot:
 
     def evaluate(self, price=None):
         with self.lock:
+            # एक्सपायरी चेक: यदि क्लाइंट की एक्सपायरी डेट निकल गई है, तो पोजीशन स्क्वायर-ऑफ करके बॉट बंद कर दें
+            if self.is_expired():
+                if self.bot_enabled:
+                    logging.warning(f"[{self.account_name}] Subscription expired! Stopping bot and squaring off.")
+                    if self.product_id:
+                        self.client.cancel_all_orders(self.product_id)
+                        try:
+                            pos = self.refresh_position(force=True)
+                            sz = int(pos.get("size", 0))
+                            if sz != 0:
+                                self.client.close_position(self.product_id, sz)
+                                exit_p = price or self.client.last_traded_price()
+                                self.finish_active_trade(exit_p, "SUBSCRIPTION_EXPIRED")
+                        except Exception: pass
+                    self.bot_enabled = False
+                    self.stop_reason = "EXPIRED"
+                    self.save()
+                return
+
             now = now_ist()
             if price is None: price = self.last_price or self.client.last_traded_price()
             if price is None: return
@@ -737,7 +774,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "server_ip": server_ip,
                     "balance": balance_val,
                     "current_price": float(b.last_price) if b.last_price else None,
-                    "bot_enabled": b.bot_enabled,
+                    "bot_enabled": b.bot_enabled and not b.is_expired(),
+                    "is_expired": b.is_expired(),
                     "leverage": int(b.leverage),
                     "balance_fraction": float(b.balance_fraction),
                     "contract_value": 0.001,
@@ -806,6 +844,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             name = body.get("name")
             api_key = body.get("api_key")
             api_secret = body.get("api_secret")
+            expiry = body.get("subscription_expiry")
             if not name or not api_key or not api_secret:
                 self.send_json({"success": False, "message": "Missing fields"}, status=400)
                 return
@@ -816,13 +855,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             clients_cfg = load_clients_config()
             clients_cfg[cid] = {
                 "name": name, "api_key": api_key, "api_secret": api_secret, "token": token,
-                "subscription_start": body.get("subscription_start"),
-                "subscription_expiry": body.get("subscription_expiry"),
-                "subscription_fee": body.get("subscription_fee", 0)
+                "subscription_start": now_ist().strftime("%Y-%m-%d"),
+                "subscription_expiry": expiry or "2099-12-31",
+                "subscription_fee": 0
             }
             save_clients_config(clients_cfg)
             load_all_accounts()
-            self.send_json({"success": True, "message": "Client added successfully"})
+            self.send_json({"success": True, "message": "Client added successfully with expiry date!"})
             return
 
         if parsed_path == "/api/client/delete":
@@ -858,12 +897,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
-        <!-- Add Client Form (Only on main view) -->
+        <!-- Add Client Form with Expiry Date -->
         <div id="add-client-section" class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
             <h3 class="font-bold text-sm text-amber-400 uppercase">Add New Client Account</h3>
             <input type="text" id="c-name" placeholder="Client Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
             <input type="text" id="c-key" placeholder="Delta API Key" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
             <input type="password" id="c-secret" placeholder="Delta API Secret" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            <div>
+                <label class="block text-[10px] text-slate-400 mb-1">Subscription Expiry Date</label>
+                <input type="date" id="c-expiry" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            </div>
             <button onclick="addClient()" class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg transition text-white">Add Client & Generate Link</button>
         </div>
 
@@ -896,6 +939,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         let pos = acc.position;
                         let stats = acc.statistics;
                         let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : '';
+                        let expiryText = acc.subscription && acc.subscription.expiry ? acc.subscription.expiry : 'N/A';
                         
                         let html = `
                         <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
@@ -903,9 +947,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div>
                                     <h2 class="font-bold text-lg">${acc.account_name}</h2>
                                     <p class="text-xs text-slate-400">Balance: $${acc.balance.toFixed(2)} | Price: ${acc.current_price || 'N/A'}</p>
+                                    ${acc.account_type == 'client' ? `<p class="text-[10px] text-amber-400 mt-0.5">Expiry: ${expiryText} ${acc.is_expired ? '(EXPIRED)' : ''}</p>` : ''}
                                 </div>
-                                <span class="px-3 py-1 rounded-full text-xs font-semibold ${acc.bot_enabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">
-                                    ${acc.bot_enabled ? 'RUNNING' : 'STOPPED'}
+                                <span class="px-3 py-1 rounded-full text-xs font-semibold ${acc.is_expired ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : (acc.bot_enabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30')}">
+                                    ${acc.is_expired ? 'EXPIRED' : (acc.bot_enabled ? 'RUNNING' : 'STOPPED')}
                                 </span>
                             </div>
 
@@ -975,8 +1020,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                             <!-- Control Buttons -->
                             <div class="flex gap-2">
-                                <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
-                                    ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
+                                <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${acc.is_expired ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : (acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white')}">
+                                    ${acc.is_expired ? 'EXPIRED' : (acc.bot_enabled ? 'STOP BOT' : 'START BOT')}
                                 </button>
                                 ${acc.account_type == 'client' && !token ? `<button onclick="deleteClient('${acc.account_id}')" class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold transition">Remove</button>` : ''}
                             </div>
@@ -1012,18 +1057,20 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             let name = document.getElementById('c-name').value;
             let key = document.getElementById('c-key').value;
             let secret = document.getElementById('c-secret').value;
-            if(!name || !key || !secret) { alert("Please fill all fields!"); return; }
+            let expiry = document.getElementById('c-expiry').value;
+            if(!name || !key || !secret || !expiry) { alert("Please fill all fields including expiry date!"); return; }
 
             let res = await fetch('/api/client/add', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name, api_key: key, api_secret: secret})
+                body: JSON.stringify({name, api_key: key, api_secret: secret, subscription_expiry: expiry})
             });
             let data = await res.json();
             alert(data.message);
             document.getElementById('c-name').value = '';
             document.getElementById('c-key').value = '';
             document.getElementById('c-secret').value = '';
+            document.getElementById('c-expiry').value = '';
             fetchDashboard();
         }
 
