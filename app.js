@@ -1,5 +1,4 @@
 const $ = (id) => document.getElementById(id);
-let adminPin = "";
 let dashboardLoading = false;
 
 function number(value, decimals = 2) {
@@ -171,7 +170,7 @@ async function loadDashboard(force = false) {
     }
 
     if ($("server-ip-display")) {
-      $("server-ip-display.textContent = data.server_ip || "Unknown";
+      $("server-ip-display").textContent = data.server_ip || "Unknown";
     }
 
     const container = $("accounts-container");
