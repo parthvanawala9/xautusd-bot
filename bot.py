@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + REVERSAL TRADE HISTORY FIX
+# XAUTUSD BOT + DYNAMIC LEVERAGE + PERMANENT HISTORY STORAGE
 # ============================================================
 
 load_dotenv()
@@ -24,19 +24,20 @@ load_dotenv()
 IST = ZoneInfo("Asia/Kolkata")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# रेलवे पर परसिस्टेंट स्टोरेज सुनिश्चित करने के लिए स्थाई पाथ
+PERSISTENT_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR)
+
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
 WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.exchange")
 SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD").strip()
-LEVERAGE = Decimal(os.getenv("LEVERAGE", "50"))
-BALANCE_FRACTION = Decimal(os.getenv("BALANCE_FRACTION", "0.10"))
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
 
 RECONNECT_SECONDS = 3
 POSITION_CACHE_SECONDS = float(os.getenv("POSITION_CACHE_SECONDS", "1.0"))
 
-STATE_DIR = os.getenv("STATE_DIR", os.path.join(BASE_DIR, "account_states"))
-HISTORY_DIR = os.getenv("HISTORY_DIR", os.path.join(BASE_DIR, "account_history"))
-CLIENTS_FILE = os.path.join(BASE_DIR, "clients_config.json")
+STATE_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_states")
+HISTORY_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_history")
+CLIENTS_FILE = os.path.join(PERSISTENT_DATA_DIR, "clients_config.json")
 
 PRIMARY_ACCOUNT_ID = os.getenv("ACCOUNT_ID", "primary").strip()
 PRIMARY_ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "Primary Account").strip()
@@ -138,7 +139,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/21.0"
+            "User-Agent": "XAUTUSD-Bot/23.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +150,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/21.0"
+            "User-Agent": "XAUTUSD-Bot/23.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -206,16 +207,16 @@ class DeltaClient:
                     return Decimal(str(value))
         raise RuntimeError("USD/USDT balance not found.")
 
-    def set_leverage(self, product_id):
+    def set_leverage(self, product_id, leverage_val):
         try:
-            self.api("POST", f"/v2/products/{product_id}/orders/leverage", body={"leverage": str(LEVERAGE)}, auth=True)
+            self.api("POST", f"/v2/products/{product_id}/orders/leverage", body={"leverage": str(leverage_val)}, auth=True)
         except Exception:
             pass
 
-    def order_size(self, product_info, price):
+    def order_size(self, product_info, price, leverage, balance_fraction):
         bal = self.balance()
-        margin = bal * BALANCE_FRACTION
-        notional = margin * LEVERAGE
+        margin = bal * balance_fraction
+        notional = margin * leverage
         contract_value = Decimal(str(product_info.get("contract_value") or product_info.get("contract_value_usd") or "0.001"))
         if contract_value <= 0: contract_value = Decimal("0.001")
         raw = notional / price / contract_value
@@ -356,6 +357,9 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
+        self.leverage = Decimal(os.getenv("LEVERAGE", "50"))
+        self.balance_fraction = Decimal(os.getenv("BALANCE_FRACTION", "0.10"))
+
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
         self.position_cache_time = 0
@@ -373,6 +377,8 @@ class AccountBot:
             if state.get("base_high") is not None: self.base_high = Decimal(str(state["base_high"]))
             if state.get("base_low") is not None: self.base_low = Decimal(str(state["base_low"]))
             if state.get("active_trade"): self.active_trade = state["active_trade"]
+            if state.get("leverage") is not None: self.leverage = Decimal(str(state["leverage"]))
+            if state.get("balance_fraction") is not None: self.balance_fraction = Decimal(str(state["balance_fraction"]))
             self.bot_enabled = state.get("bot_enabled", True)
             self.stop_reason = state.get("stop_reason", None)
             self.ready = state.get("ready", False)
@@ -386,6 +392,8 @@ class AccountBot:
             "base_high": str(self.base_high) if self.base_high is not None else None,
             "base_low": str(self.base_low) if self.base_low is not None else None,
             "active_trade": getattr(self, 'active_trade', None),
+            "leverage": int(self.leverage),
+            "balance_fraction": float(self.balance_fraction),
             "bot_enabled": self.bot_enabled, "stop_reason": self.stop_reason, "ready": self.ready
         }
         atomic_write_json(account_state_file(self.account_id), data)
@@ -409,6 +417,24 @@ class AccountBot:
             return pos
         except Exception:
             return self.cached_position
+
+    def update_settings(self, new_leverage, new_fraction):
+        with self.lock:
+            try:
+                lev_dec = Decimal(str(new_leverage))
+                frac_dec = Decimal(str(new_fraction))
+                if lev_dec in [Decimal("1"), Decimal("5"), Decimal("10"), Decimal("25"), Decimal("50"), Decimal("100")]:
+                    self.leverage = lev_dec
+                if frac_dec in [Decimal("0.10"), Decimal("0.25"), Decimal("0.50"), Decimal("0.75"), Decimal("1.00")]:
+                    self.balance_fraction = frac_dec
+                
+                if self.product_id:
+                    self.client.set_leverage(self.product_id, self.leverage)
+                
+                self.save()
+                return {"success": True, "message": "Settings updated successfully."}
+            except Exception as e:
+                return {"success": False, "message": str(e)}
 
     def start_bot(self):
         with self.lock:
@@ -488,6 +514,9 @@ class AccountBot:
         if pos["size"] != 0:
             self.last_position = pos["size"]
             return False
+        
+        self.client.set_leverage(self.product_id, self.leverage)
+
         side = "buy" if direction == "LONG" else "sell"
         if direction == "LONG":
             sl = self.base_low
@@ -496,7 +525,7 @@ class AccountBot:
             sl = self.base_high
             tp = price - ((sl - price) * Decimal("5"))
         try:
-            size = self.client.order_size(self.product, price)
+            size = self.client.order_size(self.product, price, self.leverage, self.balance_fraction)
             self.client.market_entry(self.product_id, side, size, sl, tp)
         except Exception:
             return False
@@ -568,7 +597,6 @@ class AccountBot:
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
             
-            # --- रीवरसल या क्लोजर (Reversal or Closure) डिटेक्शन ---
             if self.last_position != 0 and (size == 0 or (size > 0 and self.last_position < 0) or (size < 0 and self.last_position > 0)):
                 self.finish_active_trade(price, "SL_HIT_OR_REVERSED")
                 self.last_position = 0
@@ -577,7 +605,6 @@ class AccountBot:
             if size != 0:
                 self.last_position = size
                 if not getattr(self, 'active_trade', None):
-                    # यदि पोजीशन डायरेक्ट रिकवर हुई है या रीवरसल हुआ है तो एक्टिव ट्रेड सेट करें
                     direction = "LONG" if size > 0 else "SHORT"
                     self.active_trade = {
                         "direction": direction,
@@ -712,6 +739,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "balance": balance_val,
                     "current_price": float(b.last_price) if b.last_price else None,
                     "bot_enabled": b.bot_enabled,
+                    "leverage": int(b.leverage),
+                    "balance_fraction": float(b.balance_fraction),
                     "contract_value": 0.001,
                     "position": {
                         "size": pos.get("size", 0),
@@ -729,7 +758,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/" or path == "":
-            self.path = "/index.html"
+            self.send_html_dashboard()
+            return
             
         return super().do_GET()
 
@@ -760,45 +790,170 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json({"success": False, "message": "Account not found"}, status=404)
             return
 
-        if parsed_path == "/api/client/add":
-            name = body.get("name")
-            api_key = body.get("api_key")
-            api_secret = body.get("api_secret")
-            if not name or not api_key or not api_secret:
-                self.send_json({"success": False, "message": "Missing fields"}, status=400)
-                return
-            
-            cid = f"client_{int(time.time())}"
-            token = hashlib.sha256(f"{cid}_{time.time()}".encode()).hexdigest()[:16]
-            
-            clients_cfg = load_clients_config()
-            clients_cfg[cid] = {
-                "name": name, "api_key": api_key, "api_secret": api_secret, "token": token,
-                "subscription_start": body.get("subscription_start"),
-                "subscription_expiry": body.get("subscription_expiry"),
-                "subscription_fee": body.get("subscription_fee", 0)
-            }
-            save_clients_config(clients_cfg)
-            load_all_accounts()
-            self.send_json({"success": True, "message": "Client added successfully"})
+        if parsed_path == "/api/bot/settings":
+            acc_id = body.get("account_id")
+            new_lev = body.get("leverage")
+            new_frac = body.get("balance_fraction")
+            with ACCOUNTS_LOCK:
+                bot = BOT_ACCOUNTS.get(acc_id)
+                if bot:
+                    res = bot.update_settings(new_lev, new_frac)
+                    self.send_json(res)
+                    return
+            self.send_json({"success": False, "message": "Account not found"}, status=404)
             return
 
-        if parsed_path == "/api/client/delete":
-            acc_id = body.get("account_id")
-            clients_cfg = load_clients_config()
-            if acc_id in clients_cfg:
-                del clients_cfg[acc_id]
-                save_clients_config(clients_cfg)
-                with ACCOUNTS_LOCK:
-                    if acc_id in BOT_ACCOUNTS:
-                        BOT_ACCOUNTS[acc_id].stop_bot()
-                        del BOT_ACCOUNTS[acc_id]
-                self.send_json({"success": True, "message": "Client removed"})
-                return
-            self.send_json({"success": False, "message": "Client not found"}, status=404)
-            return
-            
         self.send_json({"success": False, "message": "Not found"}, status=404)
+
+    def send_html_dashboard(self):
+        html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XAUTUSD Bot Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4">
+    <div class="max-w-md mx-auto space-y-6">
+        <header class="text-center">
+            <h1 class="text-2xl font-bold text-amber-400">XAUTUSD Trading Bot</h1>
+            <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
+        </header>
+
+        <div id="accounts-container" class="space-y-6">
+            <div class="text-center text-slate-400">Loading Dashboard...</div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchDashboard() {
+            try {
+                let res = await fetch('/api/dashboard');
+                let data = await res.json();
+                if(data.success) {
+                    document.getElementById('server-ip').innerText = "Server IP: " + data.server_ip;
+                    let container = document.getElementById('accounts-container');
+                    container.innerHTML = "";
+                    
+                    data.accounts.forEach(acc => {
+                        let pos = acc.position;
+                        
+                        let html = `
+                        <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
+                            <div class="flex justify-between items-center border-b border-slate-700 pb-3">
+                                <div>
+                                    <h2 class="font-bold text-lg">${acc.account_name}</h2>
+                                    <p class="text-xs text-slate-400">Balance: $${acc.balance.toFixed(2)} | Price: ${acc.current_price || 'N/A'}</p>
+                                </div>
+                                <span class="px-3 py-1 rounded-full text-xs font-semibold ${acc.bot_enabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">
+                                    ${acc.bot_enabled ? 'RUNNING' : 'STOPPED'}
+                                </span>
+                            </div>
+
+                            <!-- Leverage & Margin Settings Form -->
+                            <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
+                                <div class="text-xs font-semibold text-amber-400 uppercase tracking-wider">Bot Risk Settings</div>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label class="block text-[10px] text-slate-400 mb-1">Leverage</label>
+                                        <select id="lev-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                            <option value="1" ${acc.leverage==1?'selected':''}>1x</option>
+                                            <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
+                                            <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
+                                            <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
+                                            <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
+                                            <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label class="block text-[10px] text-slate-400 mb-1">Margin Fraction</label>
+                                        <select id="frac-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                            <option value="0.10" ${acc.balance_fraction==0.1?'selected':''}>10%</option>
+                                            <option value="0.25" ${acc.balance_fraction==0.25?'selected':''}>25%</option>
+                                            <option value="0.50" ${acc.balance_fraction==0.5?'selected':''}>50%</option>
+                                            <option value="0.75" ${acc.balance_fraction==0.75?'selected':''}>75%</option>
+                                            <option value="1.00" ${acc.balance_fraction==1.0?'selected':''}>100%</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <button onclick="updateSettings('${acc.account_id}')" class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg transition">Save Settings</button>
+                            </div>
+
+                            <!-- Position Status -->
+                            <div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
+                                <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold">${pos.entry || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
+                            </div>
+
+                            <!-- Control Button -->
+                            <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="w-full py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
+                                ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
+                            </button>
+
+                            <!-- Trade History -->
+                            <div class="space-y-2 pt-2 border-t border-slate-700">
+                                <div class="text-xs font-bold text-slate-400 uppercase">Trade History (${acc.trade_history.length})</div>
+                                <div class="max-h-40 overflow-y-auto space-y-1.5 text-xs">
+                                    ${acc.trade_history.length === 0 ? '<div class="text-slate-500 text-center py-2">No closed trades yet.</div>' : ''}
+                                    ${acc.trade_history.slice().reverse().map(t => `
+                                        <div class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between items-center">
+                                            <div>
+                                                <span class="font-bold ${t.direction=='LONG'?'text-emerald-400':'text-rose-400'}">${t.direction}</span>
+                                                <span class="text-slate-400 ml-1">(${t.date})</span>
+                                                <div class="text-[10px] text-slate-500">Entry: ${t.entry_price} → Exit: ${t.exit_price}</div>
+                                            </div>
+                                            <div class="text-right font-bold ${t.pnl>=0?'text-emerald-400':'text-rose-400'}">
+                                                $${t.pnl.toFixed(2)}
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        </div>
+                        `;
+                        container.innerHTML += html;
+                    });
+                }
+            } catch(e) { console.error(e); }
+        }
+
+        async function toggleBot(accId, currentState) {
+            let endpoint = currentState ? '/api/bot/stop' : '/api/bot/start';
+            await fetch(endpoint, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({account_id: accId})
+            });
+            fetchDashboard();
+        }
+
+        async function updateSettings(accId) {
+            let lev = document.getElementById('lev-' + accId).value;
+            let frac = document.getElementById('frac-' + accId).value;
+            let res = await fetch('/api/bot/settings', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({account_id: accId, leverage: parseInt(lev), balance_fraction: parseFloat(frac)})
+            });
+            let data = await res.json();
+            alert(data.message);
+            fetchDashboard();
+        }
+
+        setInterval(fetchDashboard, 3000);
+        fetchDashboard();
+    </script>
+</body>
+</html>
+"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
 
     def send_json(self, data, status=200):
         raw = json.dumps(data).encode("utf-8")
