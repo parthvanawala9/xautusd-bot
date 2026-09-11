@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + MULTI-CLIENTS + TOKEN LINK + LEVERAGE + STORAGE
+# XAUTUSD BOT + MULTI-CLIENTS + LEVERAGE + STATS + PERMANENT STORAGE
 # ============================================================
 
 load_dotenv()
@@ -138,7 +138,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/25.0"
+            "User-Agent": "XAUTUSD-Bot/26.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/25.0"
+            "User-Agent": "XAUTUSD-Bot/26.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -885,7 +885,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     document.getElementById('server-ip').innerText = "Server IP: " + data.server_ip;
                     
                     if(token) {
-                        document.getElementById('add-client-section').style.display = 'none';
+                        let addSec = document.getElementById('add-client-section');
+                        if(addSec) addSec.style.display = 'none';
                     }
 
                     let container = document.getElementById('accounts-container');
@@ -893,6 +894,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     
                     data.accounts.forEach(acc => {
                         let pos = acc.position;
+                        let stats = acc.statistics;
                         let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : '';
                         
                         let html = `
@@ -950,6 +952,25 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold">${pos.entry || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold">${pos.stop_loss || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
+                            </div>
+
+                            <!-- Trading Performance Cards -->
+                            <div class="space-y-2">
+                                <div class="text-xs font-bold text-slate-400 uppercase">Trading Performance</div>
+                                <div class="grid grid-cols-2 gap-2 text-xs">
+                                    <div class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60 space-y-1">
+                                        <div class="font-semibold text-amber-400">TODAY</div>
+                                        <div class="text-slate-400">Trades: ${stats.today.total_trades}</div>
+                                        <div class="text-slate-400">Win Rate: ${stats.today.win_rate.toFixed(1)}%</div>
+                                        <div class="font-bold ${stats.today.pnl>=0?'text-emerald-400':'text-rose-400'}">P&L: $${stats.today.pnl.toFixed(2)}</div>
+                                    </div>
+                                    <div class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60 space-y-1">
+                                        <div class="font-semibold text-amber-400">ALL TIME</div>
+                                        <div class="text-slate-400">Trades: ${stats.all_time.total_trades}</div>
+                                        <div class="text-slate-400">Win Rate: ${stats.all_time.win_rate.toFixed(1)}%</div>
+                                        <div class="font-bold ${stats.all_time.pnl>=0?'text-emerald-400':'text-rose-400'}">P&L: $${stats.all_time.pnl.toFixed(2)}</div>
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- Control Buttons -->
