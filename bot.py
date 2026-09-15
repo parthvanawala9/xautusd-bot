@@ -750,7 +750,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
+                # SMART PNL CALCULATION (API PnL or Direct Fallback Calculation)
                 exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
+                if exchange_pnl == 0.0 and pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
+                    direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
+                    exchange_pnl = float(calculate_trade_pnl(direction, pos.get("entry"), b.last_price, pos.get("size"), b.product or {"contract_value": "0.001"}))
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1148,7 +1152,6 @@ def background_timer_loop():
             with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
             if not bots: continue
             for b in bots:
-                # Direct REST API Polling fallback for price to ensure bot never misses evaluation
                 try:
                     p = b.client.last_traded_price()
                     if p:
