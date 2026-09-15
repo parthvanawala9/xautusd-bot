@@ -185,11 +185,13 @@ class DeltaClient:
         if not isinstance(result, dict):
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
         
+        # Comprehensive search across all possible API keys for entry price
         entry_val = (
             result.get("entry_price") or 
             result.get("average_price") or 
             result.get("entryPrice") or 
-            result.get("avg_entry_price")
+            result.get("avg_entry_price") or
+            result.get("price")
         )
         
         return {
@@ -433,6 +435,13 @@ class AccountBot:
             return self.cached_position
         try:
             pos = self.client.position(self.product_id)
+            # FORCE BACKUP ENTRY FROM ACTIVE TRADE OR LAST PRICE IF API RETURNS NULL
+            if pos.get("size", 0) != 0 and pos.get("entry") is None:
+                if self.active_trade and self.active_trade.get("entry_price"):
+                    pos["entry"] = self.active_trade.get("entry_price")
+                elif self.last_price:
+                    pos["entry"] = float(self.last_price)
+            
             self.cached_position = pos
             self.position_cache_time = current
             return pos
@@ -461,8 +470,7 @@ class AccountBot:
             size = int(pos.get("size", 0))
             if size != 0:
                 direction = "LONG" if size > 0 else "SHORT"
-                recovered_entry = pos.get("entry")
-                if recovered_entry is None: recovered_entry = self.last_price or self.client.last_traded_price()
+                recovered_entry = pos.get("entry") or self.last_price or self.client.last_traded_price()
                 self.active_trade = {"direction": direction, "entry_price": float(recovered_entry) if recovered_entry else None, "entry_time": now_ist().isoformat(), "size": abs(size)}
                 self.last_position = size
                 self.bot_enabled = True
@@ -772,6 +780,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 entry_price_val = pos.get("entry")
                 if entry_price_val is None and b.active_trade:
                     entry_price_val = b.active_trade.get("entry_price")
+                if entry_price_val is None and pos.get("size", 0) != 0 and b.last_price:
+                    entry_price_val = float(b.last_price)
 
                 accounts_data.append({
                     "account_id": b.unique_id,
