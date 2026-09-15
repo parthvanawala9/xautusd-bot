@@ -182,16 +182,20 @@ class DeltaClient:
     def position(self, product_id):
         data = self.api("GET", "/v2/positions", params={"product_id": int(product_id)}, auth=True)
         result = data.get("result")
+        
+        # DEBUG LOG TO CHECK EXACT RAW RESPONSE FROM DELTA API
+        logging.info(f"DEBUG POSITION API RESPONSE [{self.symbol}]: {result}")
+
         if not isinstance(result, dict):
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
         
-        # Comprehensive search across all possible API keys for entry price
         entry_val = (
             result.get("entry_price") or 
             result.get("average_price") or 
             result.get("entryPrice") or 
             result.get("avg_entry_price") or
-            result.get("price")
+            result.get("price") or
+            result.get("cost_price")
         )
         
         return {
@@ -435,7 +439,6 @@ class AccountBot:
             return self.cached_position
         try:
             pos = self.client.position(self.product_id)
-            # FORCE BACKUP ENTRY FROM ACTIVE TRADE OR LAST PRICE IF API RETURNS NULL
             if pos.get("size", 0) != 0 and pos.get("entry") is None:
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry"] = self.active_trade.get("entry_price")
