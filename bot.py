@@ -983,6 +983,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                             <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
                                             <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                                             <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                                            <option value="200" ${acc.leverage==200?'selected':''}>200x</option>
                                         </select>
                                     </div>
                                     <div>
