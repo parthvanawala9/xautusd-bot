@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD BOT + DASHBOARD REFRESH OVERRIDE & SETTINGS FIX
+# XAUTUSD & BTCUSD MULTI-SYMBOL BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -28,7 +28,6 @@ PERSISTENT_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR)
 
 BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
 WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.exchange")
-SYMBOL = os.getenv("DELTA_SYMBOL", "XAUTUSD").strip()
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
 
 RECONNECT_SECONDS = 3
@@ -105,11 +104,11 @@ def safe_filename(value):
             result += "_"
     return result or "account"
 
-def account_state_file(account_id):
-    return os.path.join(STATE_DIR, safe_filename(account_id) + ".json")
+def account_state_file(unique_id):
+    return os.path.join(STATE_DIR, safe_filename(unique_id) + ".json")
 
-def account_history_file(account_id):
-    return os.path.join(HISTORY_DIR, safe_filename(account_id) + ".json")
+def account_history_file(unique_id):
+    return os.path.join(HISTORY_DIR, safe_filename(unique_id) + ".json")
 
 def atomic_write_json(filename, data):
     tmp = filename + ".tmp"
@@ -130,15 +129,16 @@ def save_clients_config(cfg):
     atomic_write_json(CLIENTS_FILE, cfg)
 
 class DeltaClient:
-    def __init__(self, api_key, api_secret, account_name):
+    def __init__(self, api_key, api_secret, account_name, symbol):
         self.api_key = (api_key or "").strip()
         self.api_secret = (api_secret or "").strip()
         self.account_name = (account_name or "Account").strip()
+        self.symbol = symbol.strip().upper()
         self.session = requests.Session()
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Bot/30.0"
+            "User-Agent": "MultiBot/30.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +149,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Bot/30.0"
+            "User-Agent": "MultiBot/30.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -173,7 +173,7 @@ class DeltaClient:
         return data
 
     def product(self):
-        data = self.api("GET", f"/v2/products/{SYMBOL}")
+        data = self.api("GET", f"/v2/products/{self.symbol}")
         result = data.get("result")
         if not isinstance(result, dict):
             raise RuntimeError(f"Invalid product response: {data}")
@@ -237,7 +237,7 @@ class DeltaClient:
     def market_entry(self, product_id, side, size, sl, tp):
         body = {
             "product_id": int(product_id),
-            "product_symbol": SYMBOL,
+            "product_symbol": self.symbol,
             "size": int(abs(size)),
             "side": side,
             "order_type": "market_order",
@@ -255,7 +255,7 @@ class DeltaClient:
         side = "sell" if size > 0 else "buy"
         body = {
             "product_id": int(product_id),
-            "product_symbol": SYMBOL,
+            "product_symbol": self.symbol,
             "size": abs(int(size)),
             "side": side,
             "order_type": "market_order",
@@ -269,7 +269,7 @@ class DeltaClient:
             start_time = session_start
             end_time = start_time + timedelta(minutes=30)
             data = self.api("GET", "/v2/history/candles", params={
-                "resolution": "15m", "symbol": SYMBOL,
+                "resolution": "15m", "symbol": self.symbol,
                 "start": int(start_time.timestamp()), "end": int(end_time.timestamp())
             })
             candles = data.get("result", [])
@@ -286,7 +286,7 @@ class DeltaClient:
 
     def last_traded_price(self):
         try:
-            data = self.api("GET", f"/v2/tickers/{SYMBOL}")
+            data = self.api("GET", f"/v2/tickers/{self.symbol}")
             res = data.get("result")
             if isinstance(res, dict):
                 p = res.get("close") or res.get("spot_price") or res.get("ltp")
@@ -295,8 +295,8 @@ class DeltaClient:
             pass
         return None
 
-def load_trade_history(account_id):
-    filename = account_history_file(account_id)
+def load_trade_history(unique_id):
+    filename = account_history_file(unique_id)
     if not os.path.exists(filename): return []
     try:
         with open(filename, "r", encoding="utf-8") as f:
@@ -306,8 +306,8 @@ def load_trade_history(account_id):
         pass
     return []
 
-def save_trade_history(account_id, history):
-    atomic_write_json(account_history_file(account_id), history)
+def save_trade_history(unique_id, history):
+    atomic_write_json(account_history_file(unique_id), history)
 
 def calculate_trade_pnl(direction, entry_price, exit_price, size, product_info):
     try:
@@ -336,12 +336,14 @@ def calculate_statistics(history):
     return {"today": compute_stats(today_trades), "all_time": compute_stats(history)}
 
 class AccountBot:
-    def __init__(self, account_id, account_name, account_type, api_key, api_secret, subscription=None):
-        self.account_id = account_id
-        self.account_name = account_name
+    def __init__(self, account_id, account_name, account_type, api_key, api_secret, symbol="XAUTUSD", subscription=None):
+        self.base_account_id = account_id
+        self.symbol = symbol.strip().upper()
+        self.unique_id = f"{account_id}_{self.symbol}"
+        self.account_name = f"{account_name} [{self.symbol}]"
         self.account_type = account_type
         self.subscription = subscription or {}
-        self.client = DeltaClient(api_key, api_secret, account_name)
+        self.client = DeltaClient(api_key, api_secret, account_name, self.symbol)
 
         self.product = None
         self.product_id = 0
@@ -380,7 +382,7 @@ class AccountBot:
             return False
 
     def load_state(self):
-        filename = account_state_file(self.account_id)
+        filename = account_state_file(self.unique_id)
         if not os.path.exists(filename): return
         try:
             with open(filename, "r", encoding="utf-8") as f:
@@ -399,7 +401,7 @@ class AccountBot:
 
     def save(self):
         data = {
-            "account_id": self.account_id, "account_name": self.account_name, "symbol": SYMBOL,
+            "account_id": self.unique_id, "account_name": self.account_name, "symbol": self.symbol,
             "session_start": self.session_start.isoformat() if self.session_start else None,
             "base_high": str(self.base_high) if self.base_high is not None else None,
             "base_low": str(self.base_low) if self.base_low is not None else None,
@@ -408,7 +410,7 @@ class AccountBot:
             "balance_fraction": float(self.balance_fraction),
             "bot_enabled": self.bot_enabled, "stop_reason": self.stop_reason, "ready": self.ready
         }
-        atomic_write_json(account_state_file(self.account_id), data)
+        atomic_write_json(account_state_file(self.unique_id), data)
 
     def refresh_position(self, force=False):
         if not self.product_id:
@@ -439,7 +441,7 @@ class AccountBot:
                     self.client.set_leverage(self.product_id, self.leverage)
                 
                 self.save()
-                return {"success": True, "message": f"Saved! Leverage: {int(self.leverage)}x, Margin: {float(self.balance_fraction)*100}%"}
+                return {"success": True, "message": f"Saved [{self.symbol}]! Leverage: {int(self.leverage)}x, Margin: {float(self.balance_fraction)*100}%"}
             except Exception as e:
                 return {"success": False, "message": str(e)}
 
@@ -460,12 +462,12 @@ class AccountBot:
                 self.last_position = size
                 self.bot_enabled = True
                 self.save()
-                return {"success": True, "bot_enabled": True, "message": "Bot started with existing position."}
+                return {"success": True, "bot_enabled": True, "message": f"Bot [{self.symbol}] started with existing position."}
             self.last_position = 0
             self.active_trade = None
             self.bot_enabled = True
             self.save()
-            return {"success": True, "bot_enabled": True, "message": "Bot started."}
+            return {"success": True, "bot_enabled": True, "message": f"Bot [{self.symbol}] started."}
 
     def stop_bot(self):
         with self.lock:
@@ -484,7 +486,7 @@ class AccountBot:
             self.finish_active_trade(exit_p, "MANUAL_STOP")
             self.last_position = 0
             self.save()
-            return {"success": True, "bot_enabled": False, "message": "Bot stopped."}
+            return {"success": True, "bot_enabled": False, "message": f"Bot [{self.symbol}] stopped."}
 
     def check_session_change(self, now):
         current_sess = get_current_session_start(now)
@@ -568,14 +570,14 @@ class AccountBot:
             return
         pnl = calculate_trade_pnl(direction, entry_price, exit_price, trade_size, self.product or {"contract_value": "0.001"})
         trade = {
-            "id": f"trade_{int(time.time() * 1000)}", "account_id": self.account_id, "account": self.account_name,
-            "symbol": SYMBOL, "date": now_ist().strftime("%Y-%m-%d %H:%M"), "direction": direction,
+            "id": f"trade_{int(time.time() * 1000)}", "account_id": self.unique_id, "account": self.account_name,
+            "symbol": self.symbol, "date": now_ist().strftime("%Y-%m-%d %H:%M"), "direction": direction,
             "entry_price": float(entry_price), "exit_price": float(exit_price), "size": abs(int(trade_size)),
             "pnl": float(pnl), "reason": reason
         }
-        history = load_trade_history(self.account_id)
+        history = load_trade_history(self.unique_id)
         history.append(trade)
-        save_trade_history(self.account_id, history)
+        save_trade_history(self.unique_id, history)
         self.active_trade = None
         self.save()
 
@@ -656,42 +658,47 @@ class AccountBot:
 
 BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
+SYMBOLS_LIST = ["XAUTUSD", "BTCUSD"]
 
 def load_all_accounts():
     with ACCOUNTS_LOCK:
         BOT_ACCOUNTS.clear()
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
-            try:
-                primary = AccountBot(
-                    account_id=PRIMARY_ACCOUNT_ID,
-                    account_name=PRIMARY_ACCOUNT_NAME,
-                    account_type="primary",
-                    api_key=PRIMARY_API_KEY,
-                    api_secret=PRIMARY_API_SECRET,
-                    subscription={}
-                )
-                BOT_ACCOUNTS[primary.account_id] = primary
-            except Exception as e:
-                logging.error(f"Primary account load error: {e}")
+            for sym in SYMBOLS_LIST:
+                try:
+                    primary = AccountBot(
+                        account_id=PRIMARY_ACCOUNT_ID,
+                        account_name=PRIMARY_ACCOUNT_NAME,
+                        account_type="primary",
+                        api_key=PRIMARY_API_KEY,
+                        api_secret=PRIMARY_API_SECRET,
+                        symbol=sym,
+                        subscription={}
+                    )
+                    BOT_ACCOUNTS[primary.unique_id] = primary
+                except Exception as e:
+                    logging.error(f"Primary account load error for {sym}: {e}")
 
         clients_cfg = load_clients_config()
         for cid, cdata in clients_cfg.items():
-            try:
-                client_bot = AccountBot(
-                    account_id=cid,
-                    account_name=cdata.get("name", "Client"),
-                    account_type="client",
-                    api_key=cdata.get("api_key"),
-                    api_secret=cdata.get("api_secret"),
-                    subscription={
-                        "start": cdata.get("subscription_start"),
-                        "expiry": cdata.get("subscription_expiry"),
-                        "fee": cdata.get("subscription_fee", 0)
-                    }
-                )
-                BOT_ACCOUNTS[cid] = client_bot
-            except Exception as e:
-                logging.error(f"Client {cid} load error: {e}")
+            for sym in SYMBOLS_LIST:
+                try:
+                    client_bot = AccountBot(
+                        account_id=cid,
+                        account_name=cdata.get("name", "Client"),
+                        account_type="client",
+                        api_key=cdata.get("api_key"),
+                        api_secret=cdata.get("api_secret"),
+                        symbol=sym,
+                        subscription={
+                            "start": cdata.get("subscription_start"),
+                            "expiry": cdata.get("subscription_expiry"),
+                            "fee": cdata.get("subscription_fee", 0)
+                        }
+                    )
+                    BOT_ACCOUNTS[client_bot.unique_id] = client_bot
+                except Exception as e:
+                    logging.error(f"Client {cid} load error for {sym}: {e}")
 
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -714,16 +721,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 bots = list(BOT_ACCOUNTS.values())
 
             if client_token:
-                target_bot = None
+                target_bots = []
                 clients_cfg = load_clients_config()
+                target_cid = None
                 for cid, cdata in clients_cfg.items():
                     if cdata.get("token") == client_token:
-                        target_bot = BOT_ACCOUNTS.get(cid)
+                        target_cid = cid
                         break
-                if not target_bot:
+                if not target_cid:
                     self.send_json({"success": False, "message": "Unauthorized client token"}, status=403)
                     return
-                bots = [target_bot]
+                bots = [b for b in bots if b.base_account_id == target_cid]
 
             accounts_data = []
             clients_cfg = load_clients_config()
@@ -742,7 +750,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         entry = Decimal(str(pos["entry"]))
                         cur = Decimal(str(b.last_price))
                         sz = Decimal(str(pos["size"]))
-                        cv = Decimal("0.001")
+                        cv = Decimal("0.001" if b.symbol == "XAUTUSD" else "0.0001")
                         if sz > 0:
                             exchange_pnl = float((cur - entry) * sz * cv)
                         else:
@@ -750,7 +758,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     except Exception:
                         pass
 
-                history = load_trade_history(b.account_id)
+                history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
                 
                 direction = "FLAT"
@@ -758,12 +766,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 elif pos.get("size", 0) < 0: direction = "SHORT"
 
                 sub_info = b.subscription
-                token = clients_cfg.get(b.account_id, {}).get("token", "") if b.account_type == "client" else ""
+                token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
 
                 accounts_data.append({
-                    "account_id": b.account_id,
+                    "account_id": b.unique_id,
                     "account_name": b.account_name,
                     "account_type": b.account_type,
+                    "symbol": b.symbol,
                     "token": token,
                     "server_ip": server_ip,
                     "balance": balance_val,
@@ -860,14 +869,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         if parsed_path == "/api/client/delete":
             acc_id = body.get("account_id")
+            base_cid = acc_id.split("_")[0] + "_" + acc_id.split("_")[1] if "_" in acc_id else acc_id
             clients_cfg = load_clients_config()
-            if acc_id in clients_cfg:
-                del clients_cfg[acc_id]
+            if base_cid in clients_cfg:
+                del clients_cfg[base_cid]
                 save_clients_config(clients_cfg)
                 with ACCOUNTS_LOCK:
-                    if acc_id in BOT_ACCOUNTS:
-                        BOT_ACCOUNTS[acc_id].stop_bot()
-                        del BOT_ACCOUNTS[acc_id]
+                    keys_to_del = [k for k in BOT_ACCOUNTS if k.startswith(base_cid)]
+                    for k in keys_to_del:
+                        BOT_ACCOUNTS[k].stop_bot()
+                        del BOT_ACCOUNTS[k]
                 self.send_json({"success": True, "message": "Client removed"})
                 return
             self.send_json({"success": False, "message": "Client not found"}, status=404)
@@ -881,13 +892,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XAUTUSD Bot Dashboard</title>
+    <title>Multi-Bot Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">XAUTUSD Trading Bot</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Trading Bot Dashboard</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1149,16 +1160,19 @@ def run_websocket():
     while True:
         try:
             def on_open(ws):
-                ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": [SYMBOL]}]}}))
+                ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
                 data = json.loads(message)
                 if data.get("type") != "trades": return
+                sym = data.get("symbol") or data.get("data", {}).get("symbol")
                 p_val = data.get("p") or (data.get("data", {}).get("p") if isinstance(data.get("data"), dict) else None)
                 if p_val is None: return
                 price = Decimal(str(p_val))
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
-                for b in bots: b.evaluate(price)
+                for b in bots:
+                    if sym and b.symbol == sym:
+                        b.evaluate(price)
 
             ws = websocket.WebSocketApp(WS_URL, on_open=on_open, on_message=on_message)
             ws.run_forever(ping_interval=30, ping_timeout=10)
@@ -1167,7 +1181,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("XAUTUSD BOT STARTING...")
+    logging.warning("MULTI-SYMBOL BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
