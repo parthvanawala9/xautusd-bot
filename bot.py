@@ -601,16 +601,19 @@ class AccountBot:
                 return
 
             now = now_ist()
-            if price is None: price = self.last_price or self.client.last_traded_price()
+            if price is None: 
+                price = self.client.last_traded_price()
             if price is None: return
+            
+            self.last_price = price
             if self.prev_price is None:
                 self.prev_price = price
-                self.last_price = price
                 return
+                
             old_price = self.prev_price
             new_price = price
             self.prev_price = price
-            self.last_price = price
+            
             if is_weekend(now):
                 if self.product_id:
                     pos = self.refresh_position()
@@ -740,16 +743,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 try:
                     pos = b.refresh_position()
                     balance_val = float(b.client.balance()) if b.client else 0
+                    current_p = b.client.last_traded_price()
+                    if current_p:
+                        b.last_price = current_p
                 except Exception:
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # SAFE & ACCURATE PNL FROM DELTA API DIRECTLY
                 exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
-                
-                # Fallback to ticker price if last_price is missing
-                if b.last_price is None:
-                    b.last_price = b.client.last_traded_price()
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1146,7 +1147,14 @@ def background_timer_loop():
         try:
             with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
             if not bots: continue
-            for b in bots: b.evaluate()
+            for b in bots:
+                # Direct REST API Polling fallback for price to ensure bot never misses evaluation
+                try:
+                    p = b.client.last_traded_price()
+                    if p:
+                        b.evaluate(p)
+                except Exception:
+                    b.evaluate()
         except Exception:
             pass
 
@@ -1164,13 +1172,12 @@ def run_websocket():
                 sym = payload.get("symbol") or data.get("symbol") or payload.get("product_symbol")
                 p_val = payload.get("p") or payload.get("price") or data.get("p")
                 
-                if p_val is None or not sym: return
+                if p_val is None: return
                 price = Decimal(str(p_val))
                 
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
                 for b in bots:
-                    # STRICT SEPARATION: Only pass price to the exact matching symbol bot
-                    if b.symbol.upper() in str(sym).upper():
+                    if sym and b.symbol.upper() in str(sym).upper():
                         b.evaluate(price)
 
             ws = websocket.WebSocketApp(WS_URL, on_open=on_open, on_message=on_message)
