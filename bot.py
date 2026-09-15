@@ -913,7 +913,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         let isEditingSettings = false;
 
         async function fetchDashboard() {
-            if (isEditingSettings) return; // अगर यूजर सेटिंग्स बदल रहा है, तो रिफ्रेश रोकें ताकि वैल्यू रीसेट न हो
+            if (isEditingSettings) return;
 
             try {
                 let urlParams = new URLSearchParams(window.location.search);
