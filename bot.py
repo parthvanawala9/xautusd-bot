@@ -744,8 +744,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # RELIABLE EXCHANGE PNL (Direct from API to prevent wrong custom calculations)
+                # SAFE & ACCURATE PNL FROM DELTA API DIRECTLY
                 exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
+                
+                # Fallback to ticker price if last_price is missing
+                if b.last_price is None:
+                    b.last_price = b.client.last_traded_price()
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1160,16 +1164,13 @@ def run_websocket():
                 sym = payload.get("symbol") or data.get("symbol") or payload.get("product_symbol")
                 p_val = payload.get("p") or payload.get("price") or data.get("p")
                 
-                if p_val is None: return
+                if p_val is None or not sym: return
                 price = Decimal(str(p_val))
                 
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
                 for b in bots:
-                    # ROBUST ROUTING: Match symbol if present, otherwise update both independently via API backup
-                    if sym:
-                        if b.symbol.upper() in str(sym).upper():
-                            b.evaluate(price)
-                    else:
+                    # STRICT SEPARATION: Only pass price to the exact matching symbol bot
+                    if b.symbol.upper() in str(sym).upper():
                         b.evaluate(price)
 
             ws = websocket.WebSocketApp(WS_URL, on_open=on_open, on_message=on_message)
