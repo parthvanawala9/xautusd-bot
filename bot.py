@@ -180,13 +180,9 @@ class DeltaClient:
         return result
 
     def position(self, product_id):
-        # Delta positions API often returns a list of positions or a dictionary inside result
         data = self.api("GET", "/v2/positions", params={"product_id": int(product_id)}, auth=True)
         result = data.get("result")
         
-        # Print raw response to railway logs so we can see exact structure
-        logging.warning(f"RAW POSITION RESPONSE FOR {self.symbol}: {json.dumps(result)}")
-
         pos_item = {}
         if isinstance(result, list):
             for p in result:
@@ -201,15 +197,13 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
-        # Exhaustive keys check for entry price in Delta Exchange
         entry_val = (
             pos_item.get("entry_price") or 
             pos_item.get("average_price") or 
             pos_item.get("entryPrice") or 
             pos_item.get("avg_entry_price") or
             pos_item.get("price") or
-            pos_item.get("cost_price") or
-            pos_item.get("liquidation_price")
+            pos_item.get("cost_price")
         )
 
         return {
@@ -794,6 +788,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 sub_info = b.subscription
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
 
+                # FORCE ENTRY PRICE FALLBACK: CHECK POSITION, THEN ACTIVE TRADE STATE, THEN LOG/TICKER
                 entry_price_val = pos.get("entry")
                 if entry_price_val is None and b.active_trade:
                     entry_price_val = b.active_trade.get("entry_price")
@@ -1036,7 +1031,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             <div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold">${pos.entry !== null ? pos.entry : 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold text-amber-300">${pos.entry !== null ? pos.entry : 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
