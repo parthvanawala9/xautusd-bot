@@ -358,7 +358,6 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        # Default leverage set to 50x for XAUTUSD, but loaded from state if saved
         self.leverage = Decimal("50")
         self.balance_fraction = Decimal("0.10")
 
@@ -745,30 +744,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # ISOLATED & ACCURATE PNL CALCULATION PER SYMBOL
-                exchange_pnl = 0.0
-                sz = pos.get("size", 0)
-                entry_p = pos.get("entry")
-                
-                if sz != 0 and entry_p is not None and b.last_price is not None:
-                    try:
-                        entry = Decimal(str(entry_p))
-                        cur = Decimal(str(b.last_price))
-                        qty = Decimal(str(sz))
-                        
-                        # Independent contract multiplier per symbol
-                        cv = Decimal("0.001" if b.symbol == "XAUTUSD" else "0.0001")
-                        if b.product:
-                            cv = Decimal(str(b.product.get("contract_value") or b.product.get("contract_value_usd") or ("0.001" if b.symbol == "XAUTUSD" else "0.0001")))
-                        
-                        if qty > 0:
-                            exchange_pnl = float((cur - entry) * qty * cv)
-                        else:
-                            exchange_pnl = float((entry - cur) * abs(qty) * cv)
-                    except Exception:
-                        exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
-                else:
-                    exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
+                # RELIABLE EXCHANGE PNL (Direct from API to prevent wrong custom calculations)
+                exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1180,16 +1157,19 @@ def run_websocket():
                 if data.get("type") != "trades": return
                 
                 payload = data.get("data", data)
-                sym = payload.get("symbol") or data.get("symbol")
+                sym = payload.get("symbol") or data.get("symbol") or payload.get("product_symbol")
                 p_val = payload.get("p") or payload.get("price") or data.get("p")
                 
-                if p_val is None or not sym: return
+                if p_val is None: return
                 price = Decimal(str(p_val))
                 
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
                 for b in bots:
-                    # STRICT SYMBOL ROUTING: Prevent cross-contamination between XAUTUSD and BTCUSD
-                    if b.symbol.upper() == sym.upper():
+                    # ROBUST ROUTING: Match symbol if present, otherwise update both independently via API backup
+                    if sym:
+                        if b.symbol.upper() in str(sym).upper():
+                            b.evaluate(price)
+                    else:
                         b.evaluate(price)
 
             ws = websocket.WebSocketApp(WS_URL, on_open=on_open, on_message=on_message)
