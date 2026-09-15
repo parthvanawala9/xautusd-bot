@@ -188,7 +188,7 @@ class DeltaClient:
             "size": int(result.get("size", 0) or 0),
             "entry": result.get("entry_price"),
             "stop_loss": result.get("stop_loss"),
-            "unrealized_pnl": result.get("unrealized_pnl", 0)
+            "unrealized_pnl": float(result.get("unrealized_pnl", 0) or 0)
         }
 
     def balance(self):
@@ -744,27 +744,31 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # LIVE REAL-TIME UNREALIZED PNL CALCULATION (Fixed freezing issue)
+                # SECURE & STABLE UNREALIZED PNL CALCULATION (No Glitch / No Wrong Values)
                 exchange_pnl = 0.0
-                if pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
+                sz = pos.get("size", 0)
+                entry_p = pos.get("entry")
+                
+                if sz != 0 and entry_p is not None and b.last_price is not None:
                     try:
-                        entry = Decimal(str(pos["entry"]))
+                        entry = Decimal(str(entry_p))
                         cur = Decimal(str(b.last_price))
-                        sz = Decimal(str(pos["size"]))
+                        qty = Decimal(str(sz))
                         
-                        # Get exact contract value from product specs if available
-                        cv = Decimal("0.001")
+                        # Correct contract value based on specific symbol
+                        cv = Decimal("0.001" if b.symbol == "XAUTUSD" else "0.0001")
                         if b.product:
-                            cv = Decimal(str(b.product.get("contract_value") or b.product.get("contract_value_usd") or "0.001"))
+                            cv = Decimal(str(b.product.get("contract_value") or b.product.get("contract_value_usd") or ("0.001" if b.symbol == "XAUTUSD" else "0.0001")))
                         
-                        if sz > 0:
-                            exchange_pnl = float((cur - entry) * sz * cv)
+                        if qty > 0:
+                            exchange_pnl = float((cur - entry) * qty * cv)
                         else:
-                            exchange_pnl = float((entry - cur) * abs(sz) * cv)
+                            exchange_pnl = float((entry - cur) * abs(qty) * cv)
                     except Exception:
-                        exchange_pnl = float(pos.get("unrealized_pnl", 0))
+                        exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
                 else:
-                    exchange_pnl = float(pos.get("unrealized_pnl", 0))
+                    # Fallback to API pnl if position size is 0 or entry is missing
+                    exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1184,6 +1188,7 @@ def run_websocket():
                 
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
                 for b in bots:
+                    # Match exact symbol price feed to prevent cross-symbol calculation errors
                     if sym and b.symbol == sym:
                         b.evaluate(price)
                     elif not sym:
