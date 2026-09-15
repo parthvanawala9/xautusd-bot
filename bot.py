@@ -60,8 +60,12 @@ def update_server_ip():
         ip = res.json().get("ip")
         if ip:
             CACHED_SERVER_IP = ip
-    except Exception:
-        pass
+            logging.warning(f"==================================================")
+            logging.warning(f" RAILWAY OUTBOUND IP --> {ip}")
+            logging.warning(f" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
+            logging.warning(f"==================================================")
+    except Exception as e:
+        logging.warning(f"IP FETCH ERROR | {e}")
 
 def now_ist():
     return datetime.now(IST)
@@ -181,7 +185,6 @@ class DeltaClient:
         if not isinstance(result, dict):
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
         
-        # FIXED ENTRY PRICE EXTRACTION FROM ALL POSSIBLE DELTA API FIELDS
         entry_val = (
             result.get("entry_price") or 
             result.get("average_price") or 
@@ -766,7 +769,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 sub_info = b.subscription
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
 
-                # Fallback entry from active trade state if API position entry is missing
                 entry_price_val = pos.get("entry")
                 if entry_price_val is None and b.active_trade:
                     entry_price_val = b.active_trade.get("entry_price")
@@ -1147,6 +1149,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def start_dashboard():
     port = int(os.getenv("PORT", DASHBOARD_PORT))
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
+    logging.warning(f"WEB SERVER STARTED ON PORT {port}")
     server.serve_forever()
 
 def background_timer_loop():
@@ -1194,6 +1197,8 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
+    logging.warning("MULTI-SYMBOL BOT STARTING...")
+    update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
     threading.Thread(target=run_websocket, daemon=True).start()
