@@ -60,12 +60,8 @@ def update_server_ip():
         ip = res.json().get("ip")
         if ip:
             CACHED_SERVER_IP = ip
-            logging.warning(f"==================================================")
-            logging.warning(f" RAILWAY OUTBOUND IP --> {ip}")
-            logging.warning(f" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
-            logging.warning(f"==================================================")
-    except Exception as e:
-        logging.warning(f"IP FETCH ERROR | {e}")
+    except Exception:
+        pass
 
 def now_ist():
     return datetime.now(IST)
@@ -184,9 +180,18 @@ class DeltaClient:
         result = data.get("result")
         if not isinstance(result, dict):
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
+        
+        # FIXED ENTRY PRICE EXTRACTION FROM ALL POSSIBLE DELTA API FIELDS
+        entry_val = (
+            result.get("entry_price") or 
+            result.get("average_price") or 
+            result.get("entryPrice") or 
+            result.get("avg_entry_price")
+        )
+        
         return {
             "size": int(result.get("size", 0) or 0),
-            "entry": result.get("entry_price"),
+            "entry": float(entry_val) if entry_val is not None else None,
             "stop_loss": result.get("stop_loss"),
             "unrealized_pnl": float(result.get("unrealized_pnl", 0) or 0)
         }
@@ -454,9 +459,6 @@ class AccountBot:
             if size != 0:
                 direction = "LONG" if size > 0 else "SHORT"
                 recovered_entry = pos.get("entry")
-                if recovered_entry is not None:
-                    try: recovered_entry = Decimal(str(recovered_entry))
-                    except Exception: recovered_entry = None
                 if recovered_entry is None: recovered_entry = self.last_price or self.client.last_traded_price()
                 self.active_trade = {"direction": direction, "entry_price": float(recovered_entry) if recovered_entry else None, "entry_time": now_ist().isoformat(), "size": abs(size)}
                 self.last_position = size
@@ -724,7 +726,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 bots = list(BOT_ACCOUNTS.values())
 
             if client_token:
-                target_bots = []
                 clients_cfg = load_clients_config()
                 target_cid = None
                 for cid, cdata in clients_cfg.items():
@@ -750,7 +751,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # SMART PNL CALCULATION (API PnL or Direct Fallback Calculation)
                 exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
                 if exchange_pnl == 0.0 and pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
                     direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
@@ -765,6 +765,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                 sub_info = b.subscription
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
+
+                # Fallback entry from active trade state if API position entry is missing
+                entry_price_val = pos.get("entry")
+                if entry_price_val is None and b.active_trade:
+                    entry_price_val = b.active_trade.get("entry_price")
 
                 accounts_data.append({
                     "account_id": b.unique_id,
@@ -783,7 +788,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "position": {
                         "size": pos.get("size", 0),
                         "direction": direction,
-                        "entry_price": float(pos["entry"]) if pos.get("entry") else None,
+                        "entry_price": float(entry_price_val) if entry_price_val is not None else None,
                         "stop_loss": float(b.base_high) if direction == "SHORT" else (float(b.base_low) if direction == "LONG" else None),
                         "unrealized_pnl": exchange_pnl
                     },
@@ -862,7 +867,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             }
             save_clients_config(clients_cfg)
             load_all_accounts()
-            self.send_json({"success": True, "message": "Client added successfully with expiry date!"})
+            self.send_json({"success": True, "message": "Client added successfully!"})
             return
 
         if parsed_path == "/api/client/delete":
@@ -1142,7 +1147,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 def start_dashboard():
     port = int(os.getenv("PORT", DASHBOARD_PORT))
     server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
-    logging.warning(f"WEB SERVER STARTED ON PORT {port}")
     server.serve_forever()
 
 def background_timer_loop():
@@ -1190,8 +1194,6 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("MULTI-SYMBOL BOT STARTING...")
-    update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
     threading.Thread(target=run_websocket, daemon=True).start()
