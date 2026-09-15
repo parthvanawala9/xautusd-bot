@@ -744,19 +744,27 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                exchange_pnl = float(pos.get("unrealized_pnl", 0))
-                if exchange_pnl == 0 and pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
+                # LIVE REAL-TIME UNREALIZED PNL CALCULATION (Fixed freezing issue)
+                exchange_pnl = 0.0
+                if pos.get("size", 0) != 0 and pos.get("entry") and b.last_price:
                     try:
                         entry = Decimal(str(pos["entry"]))
                         cur = Decimal(str(b.last_price))
                         sz = Decimal(str(pos["size"]))
-                        cv = Decimal("0.001" if b.symbol == "XAUTUSD" else "0.0001")
+                        
+                        # Get exact contract value from product specs if available
+                        cv = Decimal("0.001")
+                        if b.product:
+                            cv = Decimal(str(b.product.get("contract_value") or b.product.get("contract_value_usd") or "0.001"))
+                        
                         if sz > 0:
                             exchange_pnl = float((cur - entry) * sz * cv)
                         else:
                             exchange_pnl = float((entry - cur) * abs(sz) * cv)
                     except Exception:
-                        pass
+                        exchange_pnl = float(pos.get("unrealized_pnl", 0))
+                else:
+                    exchange_pnl = float(pos.get("unrealized_pnl", 0))
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1166,13 +1174,19 @@ def run_websocket():
             def on_message(ws, message):
                 data = json.loads(message)
                 if data.get("type") != "trades": return
-                sym = data.get("symbol") or data.get("data", {}).get("symbol")
-                p_val = data.get("p") or (data.get("data", {}).get("p") if isinstance(data.get("data"), dict) else None)
+                
+                payload = data.get("data", data)
+                sym = payload.get("symbol") or data.get("symbol")
+                p_val = payload.get("p") or payload.get("price") or data.get("p")
+                
                 if p_val is None: return
                 price = Decimal(str(p_val))
+                
                 with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
                 for b in bots:
                     if sym and b.symbol == sym:
+                        b.evaluate(price)
+                    elif not sym:
                         b.evaluate(price)
 
             ws = websocket.WebSocketApp(WS_URL, on_open=on_open, on_message=on_message)
