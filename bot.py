@@ -180,29 +180,43 @@ class DeltaClient:
         return result
 
     def position(self, product_id):
+        # Delta positions API often returns a list of positions or a dictionary inside result
         data = self.api("GET", "/v2/positions", params={"product_id": int(product_id)}, auth=True)
         result = data.get("result")
         
-        # DEBUG LOG TO CHECK EXACT RAW RESPONSE FROM DELTA API
-        logging.info(f"DEBUG POSITION API RESPONSE [{self.symbol}]: {result}")
+        # Print raw response to railway logs so we can see exact structure
+        logging.warning(f"RAW POSITION RESPONSE FOR {self.symbol}: {json.dumps(result)}")
 
-        if not isinstance(result, dict):
+        pos_item = {}
+        if isinstance(result, list):
+            for p in result:
+                if isinstance(p, dict) and int(p.get("product_id", 0)) == int(product_id):
+                    pos_item = p
+                    break
+            if not pos_item and result:
+                pos_item = result[0] if isinstance(result[0], dict) else {}
+        elif isinstance(result, dict):
+            pos_item = result
+
+        if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
-        
+
+        # Exhaustive keys check for entry price in Delta Exchange
         entry_val = (
-            result.get("entry_price") or 
-            result.get("average_price") or 
-            result.get("entryPrice") or 
-            result.get("avg_entry_price") or
-            result.get("price") or
-            result.get("cost_price")
+            pos_item.get("entry_price") or 
+            pos_item.get("average_price") or 
+            pos_item.get("entryPrice") or 
+            pos_item.get("avg_entry_price") or
+            pos_item.get("price") or
+            pos_item.get("cost_price") or
+            pos_item.get("liquidation_price")
         )
-        
+
         return {
-            "size": int(result.get("size", 0) or 0),
+            "size": int(pos_item.get("size", 0) or 0),
             "entry": float(entry_val) if entry_val is not None else None,
-            "stop_loss": result.get("stop_loss"),
-            "unrealized_pnl": float(result.get("unrealized_pnl", 0) or 0)
+            "stop_loss": pos_item.get("stop_loss"),
+            "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
 
     def balance(self):
@@ -1022,7 +1036,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             <div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold">${pos.entry || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold">${pos.entry !== null ? pos.entry : 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
