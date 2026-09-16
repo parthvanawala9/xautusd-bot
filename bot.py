@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD & BTCUSD MULTI-SYMBOL BOT + DASHBOARD
+# XAUTUSD & BTCUSD REVERSED STOP-LOSS / PEAK STRATEGY BOT
 # ============================================================
 
 load_dotenv()
@@ -83,17 +83,15 @@ def is_weekend(dt=None):
     return False
 
 def get_current_session_start(dt=None):
+    """हर दिन सुबह 5:30 बजे से नया सेशन शुरू होता है"""
     dt = dt or now_ist()
     t = dt.time()
     m530 = dt.replace(hour=5, minute=30, second=0, microsecond=0)
-    m1730 = dt.replace(hour=17, minute=30, second=0, microsecond=0)
     
-    if t >= dtime(5, 30) and t < dtime(17, 30):
+    if t >= dtime(5, 30):
         return m530
-    elif t >= dtime(17, 30):
-        return m1730
     else:
-        return m1730 - timedelta(days=1)
+        return m530 - timedelta(days=1)
 
 def safe_filename(value):
     result = ""
@@ -138,7 +136,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/30.0"
+            "User-Agent": "MultiBot/31.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -149,7 +147,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/30.0"
+            "User-Agent": "MultiBot/31.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -256,7 +254,8 @@ class DeltaClient:
         except Exception:
             pass
 
-    def market_entry(self, product_id, side, size, sl, tp):
+    def market_entry_no_tp(self, product_id, side, size, sl):
+        """बिना टारगेट (No Take Profit) के केवल स्टॉप लॉस के साथ आर्डर प्लेस करना"""
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
@@ -265,9 +264,7 @@ class DeltaClient:
             "order_type": "market_order",
             "bracket_stop_loss_price": str(sl),
             "bracket_stop_trigger_method": "last_traded_price",
-            "bracket_take_profit_price": str(tp),
-            "bracket_take_profit_trigger_method": "last_traded_price",
-            "client_order_id": (f"exact_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"rev_{int(time.time() * 1000)}")[-32:]
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
@@ -286,10 +283,11 @@ class DeltaClient:
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def fetch_session_candle(self, session_start):
+    def fetch_530_candle(self, session_start):
+        """सुबह 5:30 से 5:45 वाली 15-मिनट कैंडल का High और Low फेच करना"""
         try:
             start_time = session_start
-            end_time = start_time + timedelta(minutes=30)
+            end_time = start_time + timedelta(minutes=15)
             data = self.api("GET", "/v2/history/candles", params={
                 "resolution": "15m", "symbol": self.symbol,
                 "start": int(start_time.timestamp()), "end": int(end_time.timestamp())
@@ -464,10 +462,8 @@ class AccountBot:
             try:
                 self.leverage = Decimal(str(new_lev))
                 self.balance_fraction = Decimal(str(new_frac))
-                
                 if self.product_id:
                     self.client.set_leverage(self.product_id, self.leverage)
-                
                 self.save()
                 return {"success": True, "message": f"Saved [{self.symbol}]! Leverage: {int(self.leverage)}x, Margin: {float(self.balance_fraction)*100}%"}
             except Exception as e:
@@ -513,6 +509,7 @@ class AccountBot:
             return {"success": True, "bot_enabled": False, "message": f"Bot [{self.symbol}] stopped."}
 
     def check_session_change(self, now):
+        """सुबह 5:30 बजे पोजीशन को स्क्वायर-ऑफ करना और नया सेशन शुरू करना"""
         current_sess = get_current_session_start(now)
         if self.session_start != current_sess:
             if self.product_id:
@@ -522,7 +519,7 @@ class AccountBot:
                     exit_price = self.last_price or self.client.last_traded_price()
                     try:
                         self.client.close_position(self.product_id, size)
-                        self.finish_active_trade(exit_price, "SESSION_SWITCH_SQUAREOFF")
+                        self.finish_active_trade(exit_price, "SESSION_530_SQUAREOFF")
                     except Exception: pass
             self.session_start = current_sess
             self.base_high = None
@@ -532,9 +529,10 @@ class AccountBot:
             self.save()
 
     def prepare(self, now):
+        """सुबह 5:45 बजे (5:30 से 5:45 कैंडल के बाद) High और Low निकालना"""
         if self.ready: return True
         if now < self.session_start + timedelta(minutes=15): return False
-        high, low = self.client.fetch_session_candle(self.session_start)
+        high, low = self.client.fetch_530_candle(self.session_start)
         if high is not None and low is not None:
             self.base_high = high
             self.base_low = low
@@ -543,31 +541,21 @@ class AccountBot:
             return True
         return False
 
-    def enter(self, direction, price):
+    def enter(self, direction, price, sl_level):
         if self.is_expired():
-            if self.bot_enabled:
-                self.stop_bot()
+            if self.bot_enabled: self.stop_bot()
             return False
-        if is_weekend() or not self.bot_enabled or self.base_high is None or self.base_low is None or not self.product_id: return False
-        pos = self.refresh_position(force=True)
-        if pos["size"] != 0:
-            self.last_position = pos["size"]
-            return False
+        if is_weekend() or not self.bot_enabled or not self.product_id: return False
         
         self.client.set_leverage(self.product_id, self.leverage)
-
         side = "buy" if direction == "LONG" else "sell"
-        if direction == "LONG":
-            sl = self.base_low
-            tp = price + ((price - sl) * Decimal("5"))
-        else:
-            sl = self.base_high
-            tp = price - ((sl - price) * Decimal("5"))
+        
         try:
             size = self.client.order_size(self.product, price, self.leverage, self.balance_fraction)
-            self.client.market_entry(self.product_id, side, size, sl, tp)
+            self.client.market_entry_no_tp(self.product_id, side, size, sl_level)
         except Exception:
             return False
+
         confirmed = False
         for _ in range(15):
             time.sleep(0.1)
@@ -579,7 +567,14 @@ class AccountBot:
                     break
             except Exception: pass
         if not confirmed: return False
-        self.active_trade = {"direction": direction, "entry_price": float(price), "entry_time": now_ist().isoformat(), "size": abs(int(self.last_position))}
+        
+        self.active_trade = {
+            "direction": direction, 
+            "entry_price": float(price), 
+            "entry_time": now_ist().isoformat(), 
+            "size": abs(int(self.last_position)),
+            "sl": float(sl_level)
+        }
         self.save()
         return True
 
@@ -625,8 +620,7 @@ class AccountBot:
                 return
 
             now = now_ist()
-            if price is None: 
-                price = self.client.last_traded_price()
+            if price is None: price = self.client.last_traded_price()
             if price is None: return
             
             self.last_price = price
@@ -650,38 +644,49 @@ class AccountBot:
                         self.last_position = 0
                         self.save()
                 return
+
+            # 1. Check 5:30 AM Session Reset
             self.check_session_change(now)
+            
+            # 2. Check 5:45 AM Preparation (High/Low fetch)
             if not self.prepare(now): return
             
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
             
+            # ट्रैक करें कि क्या पोजीशन का एसएल हिट हुआ है या पोजीशन पलट गई है (Reverse Logic)
             if self.last_position != 0 and (size == 0 or (size > 0 and self.last_position < 0) or (size < 0 and self.last_position > 0)):
-                self.finish_active_trade(price, "SL_HIT_OR_REVERSED")
+                self.finish_active_trade(price, "REVERSED_OR_SL_HIT")
                 self.last_position = 0
                 self.save()
-            
-            if size != 0:
-                self.last_position = size
-                if not getattr(self, 'active_trade', None):
-                    direction = "LONG" if size > 0 else "SHORT"
-                    self.active_trade = {
-                        "direction": direction,
-                        "entry_price": float(pos.get("entry") or price),
-                        "entry_time": now_ist().isoformat(),
-                        "size": abs(size)
-                    }
-                    self.save()
-                return
 
-            self.last_position = 0
-            if not self.bot_enabled: return
-            if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
-                self.enter("LONG", self.base_high)
-                return
-            if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
-                self.enter("SHORT", self.base_low)
-                return
+            # यदि मार्केट फ्लैट है और कोई पोजीशन नहीं है (यानी ठीक 5:45 बजे पहली एंट्री)
+            if size == 0:
+                self.last_position = 0
+                if not self.bot_enabled: return
+                
+                # 5:45 पर या जब भी मार्केट फ्लैट हो, ब्रेकआउट पर पहली ट्रेड लेंगे
+                if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
+                    self.enter("LONG", self.base_high, self.base_low) # Long का SL लो बनेगा या पिछला पीक
+                    return
+                if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
+                    self.enter("SHORT", self.base_low, self.base_high) # Short का SL हाई बनेगा
+                    return
+            else:
+                # रनिंग ट्रेड के दौरान रिवर्सल चेक करना (जब मार्केट घूमकर एसएल तोड़े)
+                self.last_position = size
+                current_dir = "LONG" if size > 0 else "SHORT"
+                
+                if current_dir == "LONG" and self.base_high is not None and new_price <= self.base_low:
+                    # Long का एसएल हिट हुआ -> तुरंत Short में पलट जाओ
+                    self.client.close_position(self.product_id, size)
+                    self.finish_active_trade(price, "LONG_SL_HIT_REVERSE_SHORT")
+                    self.enter("SHORT", price, self.base_high)
+                elif current_dir == "SHORT" and self.base_low is not None and new_price >= self.base_high:
+                    # Short का एसएल हिट हुआ -> तुरंत Long में पलट जाओ
+                    self.client.close_position(self.product_id, size)
+                    self.finish_active_trade(price, "SHORT_SL_HIT_REVERSE_LONG")
+                    self.enter("LONG", price, self.base_low)
 
 BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
@@ -788,19 +793,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 sub_info = b.subscription
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
 
-                # ABSOLUTE FORCE FALLBACK FOR ENTRY PRICE (BACKEND LEVEL)
                 entry_price_val = pos.get("entry")
                 if entry_price_val is None and b.active_trade and b.active_trade.get("entry_price"):
                     entry_price_val = b.active_trade.get("entry_price")
                 if entry_price_val is None and pos.get("size", 0) != 0:
-                    if b.last_price:
-                        entry_price_val = float(b.last_price)
-                    else:
-                        try:
-                            lp = b.client.last_traded_price()
-                            if lp: entry_price_val = float(lp)
-                        except Exception:
-                            pass
+                    if b.last_price: entry_price_val = float(b.last_price)
 
                 accounts_data.append({
                     "account_id": b.unique_id,
@@ -932,11 +929,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Trading Bot Dashboard</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Reversal Strategy Dashboard</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
-        <!-- Add Client Form with Expiry Date -->
         <div id="add-client-section" class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
             <h3 class="font-bold text-sm text-amber-400 uppercase">Add New Client Account</h3>
             <input type="text" id="c-name" placeholder="Client Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
@@ -959,7 +955,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         async function fetchDashboard() {
             if (isEditingSettings) return;
-
             try {
                 let urlParams = new URLSearchParams(window.location.search);
                 let token = urlParams.get('token');
@@ -969,7 +964,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 let data = await res.json();
                 if(data.success) {
                     document.getElementById('server-ip').innerText = "Server IP: " + data.server_ip;
-                    
                     if(token) {
                         let addSec = document.getElementById('add-client-section');
                         if(addSec) addSec.style.display = 'none';
@@ -1004,7 +998,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             </div>
                             ` : ''}
 
-                            <!-- Leverage & Margin Settings Form -->
                             <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
                                 <div class="text-xs font-semibold text-amber-400 uppercase tracking-wider">Bot Risk Settings</div>
                                 <div class="grid grid-cols-2 gap-2">
@@ -1034,7 +1027,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <button onclick="updateSettings('${acc.account_id}')" class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg transition">Save Settings</button>
                             </div>
 
-                            <!-- Position Status -->
                             <div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
@@ -1043,7 +1035,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
 
-                            <!-- Trading Performance Cards -->
                             <div class="space-y-2">
                                 <div class="text-xs font-bold text-slate-400 uppercase">Trading Performance</div>
                                 <div class="grid grid-cols-2 gap-2 text-xs">
@@ -1062,7 +1053,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 </div>
                             </div>
 
-                            <!-- Control Buttons -->
                             <div class="flex gap-2">
                                 <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${acc.is_expired ? 'bg-slate-700 text-slate-500 cursor-not-allowed' : (acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white')}">
                                     ${acc.is_expired ? 'EXPIRED' : (acc.bot_enabled ? 'STOP BOT' : 'START BOT')}
@@ -1070,7 +1060,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 ${acc.account_type == 'client' && !token ? `<button onclick="deleteClient('${acc.account_id}')" class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold transition">Remove</button>` : ''}
                             </div>
 
-                            <!-- Trade History -->
                             <div class="space-y-2 pt-2 border-t border-slate-700">
                                 <div class="text-xs font-bold text-slate-400 uppercase">Trade History (${acc.trade_history.length})</div>
                                 <div class="max-h-40 overflow-y-auto space-y-1.5 text-xs">
@@ -1141,7 +1130,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         async function updateSettings(accId) {
             let lev = document.getElementById('lev-' + accId).value;
             let frac = document.getElementById('frac-' + accId).value;
-            
             isEditingSettings = true;
             let res = await fetch('/api/bot/settings', {
                 method: 'POST',
@@ -1206,11 +1194,9 @@ def run_websocket():
             def on_message(ws, message):
                 data = json.loads(message)
                 if data.get("type") != "trades": return
-                
                 payload = data.get("data", data)
                 sym = payload.get("symbol") or data.get("symbol") or payload.get("product_symbol")
                 p_val = payload.get("p") or payload.get("price") or data.get("p")
-                
                 if p_val is None: return
                 price = Decimal(str(p_val) or "0")
                 
@@ -1226,7 +1212,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("MULTI-SYMBOL BOT STARTING...")
+    logging.warning("REVERSAL STRATEGY BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
