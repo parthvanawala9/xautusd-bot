@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# LOGGING DEBUGGER BOT FOR DELTA POSITION API
+# FINAL EXACT ENTRY_PRICE MAPPED BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/42.0"
+            "User-Agent": "MultiBot/43.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/42.0"
+            "User-Agent": "MultiBot/43.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -193,22 +193,14 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
-        # यहाँ रेलवे के लॉग्स में डेल्टा का पूरा पोजीशन ऑब्जेक्ट प्रिंट हो जाएगा
-        logging.warning(f"=== RAW DELTA POSITION OBJECT FOR {self.symbol} ===")
-        logging.warning(json.dumps(pos_item, indent=2))
-        logging.warning("==================================================")
-
+        # रेलवे लॉग्स से कन्फर्म हुआ सटीक की-वर्ड: entry_price
+        raw_entry = pos_item.get("entry_price")
         entry_val = None
-        for key, val in pos_item.items():
-            if any(k in key.lower() for k in ["entry", "price", "avg", "cost"]) and val is not None and str(val).strip() != "" and str(val).strip() != "0":
-                try:
-                    # यदि यह कोई कीमत है (यानी संख्या है जो 1 से बड़ी है)
-                    f_val = float(val)
-                    if f_val > 1.0: 
-                        entry_val = f_val
-                        break
-                except Exception:
-                    pass
+        if raw_entry is not None and str(raw_entry).strip() != "" and str(raw_entry).strip() != "None":
+            try:
+                entry_val = float(raw_entry)
+            except Exception:
+                pass
 
         return {
             "size": int(pos_item.get("size", 0) or 0),
@@ -1269,7 +1261,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("LOGGING DEBUGGER BOT STARTING...")
+    logging.warning("FINAL EXACT ENTRY_PRICE BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
