@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# 10-STEP FINE LEVERAGE LADDER BOT + DASHBOARD (v66.0)
+# INSTANT FLIP FORCED CHECK BOT + DASHBOARD (v67.0)
 # =====================================================================
 
 load_dotenv()
@@ -31,7 +31,7 @@ WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.excha
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
 
 RECONNECT_SECONDS = 3
-POSITION_CACHE_SECONDS = float(os.getenv("POSITION_CACHE_SECONDS", "1.0"))
+POSITION_CACHE_SECONDS = float(os.getenv("POSITION_CACHE_SECONDS", "0.5"))
 
 STATE_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_states")
 HISTORY_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_history")
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/66.0"
+            "User-Agent": "MultiBot/67.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/66.0"
+            "User-Agent": "MultiBot/67.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -676,7 +676,6 @@ class AccountBot:
         if is_weekend() or not self.bot_enabled or not self.product_id:
             return False
 
-        # 10-STEP FINE LEVERAGE LADDER: 10 TO 200 FOR BTC, 10 TO 100 FOR XAUT
         if "BTC" in self.symbol:
             ladder = [200, 190, 180, 170, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
         else:
@@ -694,7 +693,6 @@ class AccountBot:
             if candidate_liq is None:
                 continue
 
-            # Ensure liquidation price is strictly inside the Stop-Loss boundary
             if direction == "LONG" and candidate_liq >= Decimal(str(sl_level)):
                 continue
             if direction == "SHORT" and candidate_liq <= Decimal(str(sl_level)):
@@ -825,6 +823,7 @@ class AccountBot:
                     if self.product_id:
                         self.client.cancel_all_orders(self.product_id)
                         try:
+                            # FORCED REFRESH TO CATCH EXIT
                             pos = self.refresh_position(force=True)
                             sz = int(pos.get("size", 0))
                             if sz != 0:
@@ -846,7 +845,8 @@ class AccountBot:
                 return
             
             self.last_price = price
-            pos = self.refresh_position()
+            # FORCE POSITION REFRESH EVERY SECOND TO NEVER MISS AN SL HIT OR FLIP
+            pos = self.refresh_position(force=True)
             size = int(pos.get("size", 0))
 
             if self.prev_price is None:
@@ -881,10 +881,7 @@ class AccountBot:
                 self.day_low = new_price
                 self.save()
 
-            session_target_time = self.session_start + timedelta(minutes=15)
-            if now < session_target_time:
-                return
-
+            # INSTANT FLIP: FORCE CHECKED EVERY SECOND VIA REFRESH POSITION
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
@@ -1015,7 +1012,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             for b in bots:
                 try:
-                    pos = b.refresh_position()
+                    pos = b.refresh_position(force=True)
                     balance_val = float(b.client.balance()) if b.client else 0
                     current_p = b.client.last_traded_price()
                     if current_p:
@@ -1194,7 +1191,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">10-Step Fine Leverage Bot (v66.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Instant Flip Forced Bot (v67.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1474,7 +1471,6 @@ def run_websocket():
                 ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
-                data = json.dumps(message) # safe check
                 data = json.loads(message)
                 if data.get("type") != "trades":
                     return
@@ -1498,7 +1494,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("10-STEP FINE LEVERAGE BOT v66.0 STARTING...")
+    logging.warning("INSTANT FLIP FORCED BOT v67.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
