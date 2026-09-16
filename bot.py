@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DYNAMIC RUNNING HIGH/LOW BOT + DASHBOARD (v60.0)
+# 5:45 START FILTER BOT + DYNAMIC HIGH/LOW (v61.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/60.0"
+            "User-Agent": "MultiBot/61.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/60.0"
+            "User-Agent": "MultiBot/61.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -607,12 +607,11 @@ class AccountBot:
             self.prev_price = None
             self.last_position = 0
             self.active_trade = None
-            self.manual_squareoff_flag = False  # Reset flag so trading starts fresh at 5:30 AM
+            self.manual_squareoff_flag = False
             self.ready = False
             self.save()
 
     def prepare(self, now):
-        # 5:30 AM पर नया सेशन शुरू होने पर बिना किसी पुरानी कैंडल के इंतज़ार के तुरंत लाइव प्राइस से रनिंग हाई/लो शुरू करें
         if self.ready:
             return True
         if now < self.session_start:
@@ -872,13 +871,18 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
-            # 3. RUNNING DAY HIGH / LOW UPDATES (MUST RUN CONTINUOUSLY TO TRACK REAL-TIME MARKET EXTREMES)
+            # RUNNING DAY HIGH / LOW UPDATES (CONTINUOUSLY TRACKS MARKET EXTREMES)
             if self.day_high is None or new_price > self.day_high:
                 self.day_high = new_price
                 self.save()
             if self.day_low is None or new_price < self.day_low:
                 self.day_low = new_price
                 self.save()
+
+            # 5:45 AM TIME FILTER: DO NOT TAKE NEW TRADES UNTIL 5:45 AM (FIRST 15 MINUTES FLAT)
+            session_target_time = self.session_start + timedelta(minutes=15)
+            if now < session_target_time:
+                return
 
             # INSTANT FLIP: ONCE POSITION BECOMES FLAT FROM BRACKET SL HIT, IMMEDIATELY REVERSE
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
@@ -903,7 +907,7 @@ class AccountBot:
                     self.active_trade = None
                     self.save()
 
-            # 1. INITIAL BREAKOUT CHECK AGAINST CURRENT DYNAMIC DAY HIGH / LOW (WHEN FLAT)
+            # 1. INITIAL BREAKOUT CHECK AGAINST CURRENT DYNAMIC DAY HIGH / LOW (WHEN FLAT, AFTER 5:45 AM)
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -1194,7 +1198,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Dynamic Running High/Low Bot (v60.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">5:45 Start Filter Bot (v61.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1499,7 +1503,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DYNAMIC HIGH/LOW BOT v60.0 STARTING...")
+    logging.warning("5:45 FILTER BOT v61.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
