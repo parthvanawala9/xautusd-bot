@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD & BTCUSD REVERSED STOP-LOSS / PEAK STRATEGY BOT
+# XAUTUSD & BTCUSD DYNAMIC AUTO-LEVERAGE REVERSAL BOT
 # ============================================================
 
 load_dotenv()
@@ -83,11 +83,9 @@ def is_weekend(dt=None):
     return False
 
 def get_current_session_start(dt=None):
-    """हर दिन सुबह 5:30 बजे से नया सेशन शुरू होता है"""
     dt = dt or now_ist()
     t = dt.time()
     m530 = dt.replace(hour=5, minute=30, second=0, microsecond=0)
-    
     if t >= dtime(5, 30):
         return m530
     else:
@@ -136,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/31.0"
+            "User-Agent": "MultiBot/32.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -147,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/31.0"
+            "User-Agent": "MultiBot/32.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -255,7 +253,6 @@ class DeltaClient:
             pass
 
     def market_entry_no_tp(self, product_id, side, size, sl):
-        """बिना टारगेट (No Take Profit) के केवल स्टॉप लॉस के साथ आर्डर प्लेस करना"""
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
@@ -284,7 +281,6 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def fetch_530_candle(self, session_start):
-        """सुबह 5:30 से 5:45 वाली 15-मिनट कैंडल का High और Low फेच करना"""
         try:
             start_time = session_start
             end_time = start_time + timedelta(minutes=15)
@@ -378,7 +374,7 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        self.leverage = Decimal("50")
+        self.leverage = Decimal("100") # डिफ़ॉल्ट रूप से मैक्सिमम 100x से शुरू करेंगे
         self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
@@ -509,7 +505,6 @@ class AccountBot:
             return {"success": True, "bot_enabled": False, "message": f"Bot [{self.symbol}] stopped."}
 
     def check_session_change(self, now):
-        """सुबह 5:30 बजे पोजीशन को स्क्वायर-ऑफ करना और नया सेशन शुरू करना"""
         current_sess = get_current_session_start(now)
         if self.session_start != current_sess:
             if self.product_id:
@@ -529,7 +524,6 @@ class AccountBot:
             self.save()
 
     def prepare(self, now):
-        """सुबह 5:45 बजे (5:30 से 5:45 कैंडल के बाद) High और Low निकालना"""
         if self.ready: return True
         if now < self.session_start + timedelta(minutes=15): return False
         high, low = self.client.fetch_530_candle(self.session_start)
@@ -541,19 +535,59 @@ class AccountBot:
             return True
         return False
 
+    def calculate_approx_liquidation(self, entry_price, lev, direction):
+        """लिक्विडेशन प्राइस का अनुमान लगाना (isolated margin आधार पर)"""
+        l = float(lev)
+        if l <= 0: return entry_price
+        # 0.9 सुरक्षा बफर (maintenance margin को ध्यान में रखते हुए)
+        if direction == "LONG":
+            return entry_price * (1.0 - (0.9 / l))
+        else:
+            return entry_price * (1.0 + (0.9 / l))
+
+    def get_safe_leverage(self, entry_price, sl_price, direction):
+        """
+        यूज़र की मांग के अनुसार 100x से शुरू करके चेक करेगा:
+        100x -> 50x -> 25x -> 10x -> 5x
+        यदि लिक्विडेशन प्राइस एसएल के दायरे में या ऊपर आ रही है, तो लीवरेज घटा देगा।
+        """
+        ladder = [100, 50, 25, 10, 5, 1]
+        entry = float(entry_price)
+        sl = float(sl_price)
+
+        for lev in ladder:
+            liq = self.calculate_approx_liquidation(entry, lev, direction)
+            if direction == "LONG":
+                # लॉन्ग में लिक्विडेशन प्राइस, स्टॉप लॉस से नीचे (सुरक्षित दूरी पर) होनी चाहिए
+                if liq < sl:
+                    return Decimal(str(lev))
+            else:
+                # शॉर्ट में लिक्विडेशन प्राइस, स्टॉप लॉस से ऊपर (सुरक्षित दूरी पर) होनी चाहिए
+                if liq > sl:
+                    return Decimal(str(lev))
+        
+        return Decimal("1") # यदि हर जगह पास हो तो सबसे सुरक्षित 1x
+
     def enter(self, direction, price, sl_level):
         if self.is_expired():
             if self.bot_enabled: self.stop_bot()
             return False
         if is_weekend() or not self.bot_enabled or not self.product_id: return False
         
+        # 1. 100x से शुरू करके ऑटोमैटिक सेफ लीवरेज ढूंढना
+        safe_lev = self.get_safe_leverage(price, sl_level, direction)
+        self.leverage = safe_lev
+        
+        # एक्सचेंज पर लीवरेज सेट करना
         self.client.set_leverage(self.product_id, self.leverage)
         side = "buy" if direction == "LONG" else "sell"
         
         try:
             size = self.client.order_size(self.product, price, self.leverage, self.balance_fraction)
             self.client.market_entry_no_tp(self.product_id, side, size, sl_level)
-        except Exception:
+            logging.info(f"[{self.symbol}] Entered {direction} at {price} with Auto-Selected Leverage: {int(self.leverage)}x (SL: {sl_level})")
+        except Exception as e:
+            logging.error(f"[{self.symbol}] Order entry error: {e}")
             return False
 
         confirmed = False
@@ -573,7 +607,8 @@ class AccountBot:
             "entry_price": float(price), 
             "entry_time": now_ist().isoformat(), 
             "size": abs(int(self.last_position)),
-            "sl": float(sl_level)
+            "sl": float(sl_level),
+            "leverage": int(self.leverage)
         }
         self.save()
         return True
@@ -645,45 +680,36 @@ class AccountBot:
                         self.save()
                 return
 
-            # 1. Check 5:30 AM Session Reset
             self.check_session_change(now)
-            
-            # 2. Check 5:45 AM Preparation (High/Low fetch)
             if not self.prepare(now): return
             
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
             
-            # ट्रैक करें कि क्या पोजीशन का एसएल हिट हुआ है या पोजीशन पलट गई है (Reverse Logic)
             if self.last_position != 0 and (size == 0 or (size > 0 and self.last_position < 0) or (size < 0 and self.last_position > 0)):
                 self.finish_active_trade(price, "REVERSED_OR_SL_HIT")
                 self.last_position = 0
                 self.save()
 
-            # यदि मार्केट फ्लैट है और कोई पोजीशन नहीं है (यानी ठीक 5:45 बजे पहली एंट्री)
             if size == 0:
                 self.last_position = 0
                 if not self.bot_enabled: return
                 
-                # 5:45 पर या जब भी मार्केट फ्लैट हो, ब्रेकआउट पर पहली ट्रेड लेंगे
                 if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
-                    self.enter("LONG", self.base_high, self.base_low) # Long का SL लो बनेगा या पिछला पीक
+                    self.enter("LONG", self.base_high, self.base_low)
                     return
                 if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
-                    self.enter("SHORT", self.base_low, self.base_high) # Short का SL हाई बनेगा
+                    self.enter("SHORT", self.base_low, self.base_high)
                     return
             else:
-                # रनिंग ट्रेड के दौरान रिवर्सल चेक करना (जब मार्केट घूमकर एसएल तोड़े)
                 self.last_position = size
                 current_dir = "LONG" if size > 0 else "SHORT"
                 
                 if current_dir == "LONG" and self.base_high is not None and new_price <= self.base_low:
-                    # Long का एसएल हिट हुआ -> तुरंत Short में पलट जाओ
                     self.client.close_position(self.product_id, size)
                     self.finish_active_trade(price, "LONG_SL_HIT_REVERSE_SHORT")
                     self.enter("SHORT", price, self.base_high)
                 elif current_dir == "SHORT" and self.base_low is not None and new_price >= self.base_high:
-                    # Short का एसएल हिट हुआ -> तुरंत Long में पलट जाओ
                     self.client.close_position(self.product_id, size)
                     self.finish_active_trade(price, "SHORT_SL_HIT_REVERSE_LONG")
                     self.enter("LONG", price, self.base_low)
@@ -810,7 +836,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "current_price": float(b.last_price) if b.last_price else None,
                     "bot_enabled": b.bot_enabled and not b.is_expired(),
                     "is_expired": b.is_expired(),
-                    "leverage": int(b.leverage),
+                    "leverage": int(b.active_trade.get("leverage", b.leverage) if b.active_trade else b.leverage),
                     "balance_fraction": float(b.balance_fraction),
                     "contract_value": 0.001,
                     "position": {
@@ -929,7 +955,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Reversal Strategy Dashboard</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Auto-Leverage Reversal Bot</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1002,15 +1028,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="text-xs font-semibold text-amber-400 uppercase tracking-wider">Bot Risk Settings</div>
                                 <div class="grid grid-cols-2 gap-2">
                                     <div>
-                                        <label class="block text-[10px] text-slate-400 mb-1">Leverage</label>
+                                        <label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
                                         <select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
-                                            <option value="1" ${acc.leverage==1?'selected':''}>1x</option>
-                                            <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
-                                            <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
-                                            <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
-                                            <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                                             <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
-                                            <option value="200" ${acc.leverage==200?'selected':''}>200x</option>
+                                            <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
+                                            <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
+                                            <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
+                                            <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                                         </select>
                                     </div>
                                     <div>
@@ -1211,8 +1235,11 @@ def run_websocket():
             pass
         time.sleep(RECONNECT_SECONDS)
 
+def __main__():
+    pass
+
 if __name__ == "__main__":
-    logging.warning("REVERSAL STRATEGY BOT STARTING...")
+    logging.warning("AUTO-LEVERAGE REVERSAL BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
