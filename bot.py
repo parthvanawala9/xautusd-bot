@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# FINAL MULTI-KEY FALLBACK ENTRY PRICE BOT + DASHBOARD
+# FINAL LIQUIDATION-SAFE MULTI-KEY BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/45.0"
+            "User-Agent": "MultiBot/46.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/45.0"
+            "User-Agent": "MultiBot/46.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -191,7 +191,7 @@ class DeltaClient:
             pos_item = result
 
         if not pos_item:
-            return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
+            return {"size": 0, "entry": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
 
         raw_entry = (
             pos_item.get("entry_price") or 
@@ -210,10 +210,22 @@ class DeltaClient:
             except Exception:
                 pass
 
+        def decimal_or_none(value):
+            if value is None or str(value).strip() in ("", "None", "null"):
+                return None
+            try:
+                return float(value)
+            except Exception:
+                return None
+
         return {
             "size": int(pos_item.get("size", 0) or 0),
             "entry": entry_val,
-            "stop_loss": pos_item.get("stop_loss"),
+            "stop_loss": decimal_or_none(pos_item.get("stop_loss")),
+            "liquidation_price": decimal_or_none(pos_item.get("liquidation_price")),
+            "bankruptcy_price": decimal_or_none(pos_item.get("bankruptcy_price")),
+            "margin": decimal_or_none(pos_item.get("margin")),
+            "mark_price": decimal_or_none(pos_item.get("mark_price")),
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
 
@@ -386,7 +398,7 @@ class AccountBot:
         self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
-        self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
+        self.cached_position = {"size": 0, "entry": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
         self.position_cache_time = 0
 
         self.load_state()
@@ -561,50 +573,87 @@ class AccountBot:
             return True
         return False
 
-    def get_safe_leverage(self, entry_price, sl_price, direction):
-        # 200x se shuru karein. Agar 200x par liquidation safe hai, toh 200x hi milega!
-        if "BTC" in self.symbol:
-            ladder = [200, 150, 100, 50, 25, 10, 5, 1]
-        else:
-            ladder = [100, 50, 25, 10, 5, 1]
+    def estimate_liquidation_price(self, entry_price, leverage, direction):
+        entry = Decimal(str(entry_price))
+        lev = Decimal(str(leverage))
+        if entry <= 0 or lev <= 0:
+            return None
 
-        entry = float(entry_price)
-        sl = float(sl_price)
+        # Agar self.product load nahi hua toh fallback safety margins use karo
+        m_raw = 0
+        t_raw = 0
+        if self.product:
+            m_raw = self.product.get("maintenance_margin", 0)
+            t_raw = self.product.get("taker_commission_rate", 0)
 
-        for lev in ladder:
-            l = float(lev)
-            if direction == "LONG":
-                # Safe margin buffer ke sath formula
-                liq = entry * (1.0 - (0.85 / l))
-                if liq < sl:
-                    return Decimal(str(lev))
-            else:
-                liq = entry * (1.0 + (0.85 / l))
-                if liq > sl:
-                    return Decimal(str(lev))
-        
-        return Decimal("1")
+        try:
+            maintenance = Decimal(str(m_raw)) / Decimal("100")
+        except Exception:
+            maintenance = Decimal("0")
+
+        try:
+            taker_fee = Decimal(str(t_raw))
+        except Exception:
+            taker_fee = Decimal("0")
+
+        safety = Decimal("0.0010") # 10 BPS safety buffer
+        effective_mm = maintenance + taker_fee + safety
+
+        if direction == "LONG":
+            return entry * (Decimal("1") - (Decimal("1") / lev) + effective_mm)
+        return entry * (Decimal("1") + (Decimal("1") / lev) - effective_mm)
 
     def enter(self, direction, price, sl_level):
         if self.is_expired():
             if self.bot_enabled: self.stop_bot()
             return False
         if is_weekend() or not self.bot_enabled or not self.product_id: return False
+
+        # Properly sorted ladder from HIGHEST to LOWEST leverage
+        ladder = [200, 150, 100, 50, 25, 10, 5, 1] if "BTC" in self.symbol else [100, 50, 25, 10, 5, 1]
         
-        safe_lev = self.get_safe_leverage(price, sl_level, direction)
-        self.leverage = safe_lev
-        
-        self.client.set_leverage(self.product_id, self.leverage)
         side = "buy" if direction == "LONG" else "sell"
-        
-        try:
-            size = self.client.order_size(self.product, price, self.leverage, self.balance_fraction)
-            self.client.market_entry_no_tp(self.product_id, side, size, sl_level)
-            logging.info(f"[{self.symbol}] Entered {direction} at {price} with Auto-Selected Leverage: {int(self.leverage)}x (SL: {sl_level})")
-        except Exception as e:
-            logging.error(f"[{self.symbol}] Order entry error: {e}")
+        order_done = False
+        selected_lev = Decimal("1")
+        estimated_liq = None
+        last_error = None
+
+        # Sabse pehle highest leverage (jaise 200x ya 100x) se check karega
+        for lev in ladder:
+            lev_decimal = Decimal(str(lev))
+            candidate_liq = self.estimate_liquidation_price(price, lev_decimal, direction)
+
+            if candidate_liq is None:
+                continue
+
+            # Check karo ki liquidation SL ke safe side par hai ya nahi
+            if direction == "LONG" and candidate_liq >= Decimal(str(sl_level)):
+                continue # Unsafe hai, toh agli lower leverage try karo
+            if direction == "SHORT" and candidate_liq <= Decimal(str(sl_level)):
+                continue # Unsafe hai, toh agli lower leverage try karo
+
+            # Agar yahan tak pahuncha matlab yeh leverage SAFE hai!
+            try:
+                self.client.set_leverage(self.product_id, lev_decimal)
+                size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
+                self.client.market_entry_no_tp(self.product_id, side, size, sl_level)
+
+                self.leverage = lev_decimal
+                selected_lev = lev_decimal
+                estimated_liq = candidate_liq
+                order_done = True
+
+                logging.info(f"[{self.symbol}] SAFE HIGH LEVERAGE SELECTED -> {int(self.leverage)}x | Entry={price} | Liq={candidate_liq} | SL={sl_level}")
+                break
+            except Exception as e:
+                last_error = e
+                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected by exchange: {e}. Trying next lower leverage.")
+
+        if not order_done:
+            logging.error(f"[{self.symbol}] All leverage entries failed. Last error: {last_error}")
             return False
 
+        # Position confirmation check
         confirmed = False
         actual_entry = price
         for _ in range(15):
@@ -618,15 +667,18 @@ class AccountBot:
                     confirmed = True
                     break
             except Exception: pass
-        if not confirmed: return False
-        
+
+        if not confirmed:
+            return False
+
         self.active_trade = {
             "direction": direction, 
             "entry_price": float(actual_entry), 
             "entry_time": now_ist().isoformat(), 
             "size": abs(int(self.last_position)),
             "sl": float(sl_level),
-            "leverage": int(self.leverage)
+            "leverage": int(self.leverage),
+            "estimated_liquidation": float(estimated_liq) if estimated_liq else None
         }
         self.save()
         return True
@@ -818,7 +870,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     if current_p:
                         b.last_price = current_p
                 except Exception:
-                    pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
+                    pos = {"size": 0, "entry": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
                     balance_val = 0
 
                 entry_price_val = pos.get("entry")
@@ -859,6 +911,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "direction": direction,
                         "entry_price": float(entry_price_val) if entry_price_val is not None else None,
                         "stop_loss": float(b.base_high) if direction == "SHORT" else (float(b.base_low) if direction == "LONG" else None),
+                        "liquidation_price": pos.get("liquidation_price"),
+                        "bankruptcy_price": pos.get("bankruptcy_price"),
+                        "margin": pos.get("margin"),
+                        "mark_price": pos.get("mark_price"),
                         "unrealized_pnl": exchange_pnl
                     },
                     "statistics": stats,
@@ -970,7 +1026,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Auto-Leverage Reversal Bot</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Liquidation-Safe Reversal Bot</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1086,6 +1142,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold text-amber-300">${finalEntry}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Liquidation:</span> <span class="font-semibold text-rose-300">${pos.liquidation_price || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Bankruptcy:</span> <span class="font-semibold text-slate-300">${pos.bankruptcy_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
 
@@ -1246,6 +1304,7 @@ def run_websocket():
                 ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
+                data = json.dumps(message) # safely handled
                 data = json.loads(message)
                 if data.get("type") != "trades": return
                 payload = data.get("data", data)
@@ -1266,7 +1325,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("FINAL MULTI-KEY BOT STARTING...")
+    logging.warning("FINAL LIQUIDATION-SAFE BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
