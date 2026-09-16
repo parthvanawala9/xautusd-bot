@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# FINAL PRODUCTION-GRADE BULLETPROOF FLIP BOT + DASHBOARD (v55.0)
+# FINAL CLEAN BULLETPROOF FLIP BOT + DASHBOARD (v56.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/55.0"
+            "User-Agent": "MultiBot/56.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/55.0"
+            "User-Agent": "MultiBot/56.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -717,7 +717,6 @@ class AccountBot:
             logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
             return False
 
-        # ROBUST RECONCILIATION FOR ENTRY FILL CONFIRMATION
         confirmed = False
         actual_entry = price
         actual_size = 0
@@ -875,20 +874,13 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
-            # PRECISE SL-HIT & EXACT TRIGGER LEVEL PRESERVATION FOR FLIP
+            # EXCLUSIVE EXCHANGE-DRIVEN SL HIT & REVERSAL (NO DUP BOT CHECK)
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
 
-                sl_breached = False
                 if stored_sl is not None:
-                    if old_dir == "LONG" and new_price <= stored_sl:
-                        sl_breached = True
-                    elif old_dir == "SHORT" and new_price >= stored_sl:
-                        sl_breached = True
-
-                if sl_breached:
-                    trigger_exit_price = stored_sl # Use exact preserved SL trigger level
+                    trigger_exit_price = stored_sl
                     self.finish_active_trade(trigger_exit_price, f"{old_dir}_EXCHANGE_SL_HIT_FLIP")
                     self.last_position = 0
                     self.save()
@@ -924,27 +916,9 @@ class AccountBot:
                             self.save()
                         return
 
-            # 2. ACTIVE POSITION FLIP CHECK WITH EXACT TRIGGER PRICE PRESERVATION
+            # 2. TRACK LIVE POSITION SIZE SYNC
             if size != 0:
                 self.last_position = size
-                current_dir = "LONG" if size > 0 else "SHORT"
-                
-                if current_dir == "LONG" and self.day_low is not None and new_price <= self.day_low:
-                    trigger_exit_price = self.day_low
-                    self.client.close_position(self.product_id, size)
-                    if self.wait_until_flat():
-                        self.finish_active_trade(trigger_exit_price, "LONG_SL_HIT_FLIP_SHORT")
-                        new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
-                        self.enter("SHORT", trigger_exit_price, new_sl)
-                    return
-                elif current_dir == "SHORT" and self.day_high is not None and new_price >= self.day_high:
-                    trigger_exit_price = self.day_high
-                    self.client.close_position(self.product_id, size)
-                    if self.wait_until_flat():
-                        self.finish_active_trade(trigger_exit_price, "SHORT_SL_HIT_FLIP_LONG")
-                        new_sl = self.day_low if self.day_low is not None else trigger_exit_price * Decimal("0.99")
-                        self.enter("LONG", trigger_exit_price, new_sl)
-                    return
 
             # 3. RUNNING DAY HIGH / LOW UPDATES
             if self.day_high is None or new_price > self.day_high:
@@ -960,7 +934,6 @@ SYMBOLS_LIST = ["XAUTUSD", "BTCUSD"]
 
 def load_all_accounts():
     with ACCOUNTS_LOCK:
-        # Properly stop and clean up existing bot instances to prevent duplicate background execution
         for b_id, b_obj in list(BOT_ACCOUNTS.items()):
             try:
                 b_obj.stop_bot()
@@ -1080,7 +1053,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 sub_info = b.subscription
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
 
-                # Dynamic contract value extraction instead of hardcoded 0.001
                 c_val_extracted = 0.001
                 if b.product:
                     try:
@@ -1132,11 +1104,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         content_length = int(self.headers.get('Content-Length', 0))
         body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
         
-        # Security Guard Check for API mutations
-        query = parse_qs(urlparse(self.path).query)
-        client_token = query.get("token", [None])[0] or body.get("token")
-        
-        # If accessing client accounts, verify token ownership or allow if primary session
         clients_cfg = load_clients_config()
         
         if parsed_path == "/api/bot/start":
@@ -1532,7 +1499,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("REFINED BULLETPROOF BOT v55.0 STARTING...")
+    logging.warning("REFINED BULLETPROOF BOT v56.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
