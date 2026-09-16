@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# XAUTUSD & BTCUSD DYNAMIC AUTO-LEVERAGE REVERSAL BOT
+# SYMBOL-SPECIFIC DYNAMIC AUTO-LEVERAGE REVERSAL BOT
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/32.0"
+            "User-Agent": "MultiBot/34.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/32.0"
+            "User-Agent": "MultiBot/34.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -374,7 +374,8 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        self.leverage = Decimal("100") # डिफ़ॉल्ट रूप से मैक्सिमम 100x से शुरू करेंगे
+        # BTCUSD के लिए डिफ़ॉल्ट 200x और XAUTUSD के लिए 100x सेट किया गया है
+        self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
         self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
@@ -446,6 +447,9 @@ class AccountBot:
                     pos["entry"] = self.active_trade.get("entry_price")
                 elif self.last_price:
                     pos["entry"] = float(self.last_price)
+                else:
+                    lp = self.client.last_traded_price()
+                    if lp: pos["entry"] = float(lp)
             
             self.cached_position = pos
             self.position_cache_time = current
@@ -536,37 +540,33 @@ class AccountBot:
         return False
 
     def calculate_approx_liquidation(self, entry_price, lev, direction):
-        """लिक्विडेशन प्राइस का अनुमान लगाना (isolated margin आधार पर)"""
         l = float(lev)
         if l <= 0: return entry_price
-        # 0.9 सुरक्षा बफर (maintenance margin को ध्यान में रखते हुए)
         if direction == "LONG":
             return entry_price * (1.0 - (0.9 / l))
         else:
             return entry_price * (1.0 + (0.9 / l))
 
     def get_safe_leverage(self, entry_price, sl_price, direction):
-        """
-        यूज़र की मांग के अनुसार 100x से शुरू करके चेक करेगा:
-        100x -> 50x -> 25x -> 10x -> 5x
-        यदि लिक्विडेशन प्राइस एसएल के दायरे में या ऊपर आ रही है, तो लीवरेज घटा देगा।
-        """
-        ladder = [100, 50, 25, 10, 5, 1]
+        # BTCUSD के लिए 200x तक की सीढ़ी, और XAUTUSD के लिए 100x तक की सीढ़ी
+        if "BTC" in self.symbol:
+            ladder = [200, 150, 100, 50, 25, 10, 5, 1]
+        else:
+            ladder = [100, 50, 25, 10, 5, 1]
+
         entry = float(entry_price)
         sl = float(sl_price)
 
         for lev in ladder:
             liq = self.calculate_approx_liquidation(entry, lev, direction)
             if direction == "LONG":
-                # लॉन्ग में लिक्विडेशन प्राइस, स्टॉप लॉस से नीचे (सुरक्षित दूरी पर) होनी चाहिए
                 if liq < sl:
                     return Decimal(str(lev))
             else:
-                # शॉर्ट में लिक्विडेशन प्राइस, स्टॉप लॉस से ऊपर (सुरक्षित दूरी पर) होनी चाहिए
                 if liq > sl:
                     return Decimal(str(lev))
         
-        return Decimal("1") # यदि हर जगह पास हो तो सबसे सुरक्षित 1x
+        return Decimal("1")
 
     def enter(self, direction, price, sl_level):
         if self.is_expired():
@@ -574,11 +574,9 @@ class AccountBot:
             return False
         if is_weekend() or not self.bot_enabled or not self.product_id: return False
         
-        # 1. 100x से शुरू करके ऑटोमैटिक सेफ लीवरेज ढूंढना
         safe_lev = self.get_safe_leverage(price, sl_level, direction)
         self.leverage = safe_lev
         
-        # एक्सचेंज पर लीवरेज सेट करना
         self.client.set_leverage(self.product_id, self.leverage)
         side = "buy" if direction == "LONG" else "sell"
         
@@ -1004,6 +1002,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : '';
                         let expiryText = acc.subscription && acc.subscription.expiry ? acc.subscription.expiry : 'N/A';
                         
+                        // सिंबल के आधार पर ड्रॉपडाउन में लिवरेज के विकल्प दिखाना (BTC के लिए 200x तक, Gold के लिए 100x तक)
+                        let isBtc = acc.symbol.includes('BTC');
+                        let levOptions = isBtc ? 
+                            `<option value="200" ${acc.leverage==200?'selected':''}>200x</option>
+                             <option value="150" ${acc.leverage==150?'selected':''}>150x</option>
+                             <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                             <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
+                             <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
+                             <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
+                             <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
+                             <option value="1" ${acc.leverage==1?'selected':''}>1x</option>` :
+                            `<option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                             <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
+                             <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
+                             <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
+                             <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
+                             <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
+
                         let html = `
                         <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
                             <div class="flex justify-between items-center border-b border-slate-700 pb-3">
@@ -1030,11 +1046,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                     <div>
                                         <label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
                                         <select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
-                                            <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
-                                            <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
-                                            <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
-                                            <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
-                                            <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
+                                            ${levOptions}
                                         </select>
                                     </div>
                                     <div>
@@ -1216,6 +1228,7 @@ def run_websocket():
                 ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
+                data = json.dumps(message) # safely handled
                 data = json.loads(message)
                 if data.get("type") != "trades": return
                 payload = data.get("data", data)
@@ -1235,11 +1248,8 @@ def run_websocket():
             pass
         time.sleep(RECONNECT_SECONDS)
 
-def __main__():
-    pass
-
 if __name__ == "__main__":
-    logging.warning("AUTO-LEVERAGE REVERSAL BOT STARTING...")
+    logging.warning("SYMBOL-SPECIFIC LEVERAGE BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
