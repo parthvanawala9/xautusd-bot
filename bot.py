@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# SYMBOL-SPECIFIC DYNAMIC AUTO-LEVERAGE REVERSAL BOT
+# SYMBOL-SPECIFIC DYNAMIC AUTO-LEVERAGE REVERSAL BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/34.0"
+            "User-Agent": "MultiBot/35.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/34.0"
+            "User-Agent": "MultiBot/35.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -374,7 +374,6 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        # BTCUSD के लिए डिफ़ॉल्ट 200x और XAUTUSD के लिए 100x सेट किया गया है
         self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
         self.balance_fraction = Decimal("0.10")
 
@@ -442,6 +441,8 @@ class AccountBot:
             return self.cached_position
         try:
             pos = self.client.position(self.product_id)
+            
+            # Robust Fallback for Entry Price so it never shows undefined if position exists
             if pos.get("size", 0) != 0 and pos.get("entry") is None:
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry"] = self.active_trade.get("entry_price")
@@ -548,7 +549,6 @@ class AccountBot:
             return entry_price * (1.0 + (0.9 / l))
 
     def get_safe_leverage(self, entry_price, sl_price, direction):
-        # BTCUSD के लिए 200x तक की सीढ़ी, और XAUTUSD के लिए 100x तक की सीढ़ी
         if "BTC" in self.symbol:
             ladder = [200, 150, 100, 50, 25, 10, 5, 1]
         else:
@@ -1002,7 +1002,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : '';
                         let expiryText = acc.subscription && acc.subscription.expiry ? acc.subscription.expiry : 'N/A';
                         
-                        // सिंबल के आधार पर ड्रॉपडाउन में लिवरेज के विकल्प दिखाना (BTC के लिए 200x तक, Gold के लिए 100x तक)
                         let isBtc = acc.symbol.includes('BTC');
                         let levOptions = isBtc ? 
                             `<option value="200" ${acc.leverage==200?'selected':''}>200x</option>
@@ -1228,7 +1227,6 @@ def run_websocket():
                 ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
-                data = json.dumps(message) # safely handled
                 data = json.loads(message)
                 if data.get("type") != "trades": return
                 payload = data.get("data", data)
@@ -1249,7 +1247,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("SYMBOL-SPECIFIC LEVERAGE BOT STARTING...")
+    logging.warning("FINAL AUTO-LEVERAGE REVERSAL BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
