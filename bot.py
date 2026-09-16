@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# FINAL CLEAN BULLETPROOF FLIP BOT + DASHBOARD (v56.0)
+# FINAL INSTANT-FLIP BULLETPROOF BOT + DASHBOARD (v57.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/56.0"
+            "User-Agent": "MultiBot/57.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/56.0"
+            "User-Agent": "MultiBot/57.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -874,17 +874,18 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
-            # EXCLUSIVE EXCHANGE-DRIVEN SL HIT & REVERSAL (NO DUP BOT CHECK)
+            # INSTANT FLIP: ONCE POSITION BECOMES FLAT FROM BRACKET SL HIT, IMMEDIATELY REVERSE
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
 
                 if stored_sl is not None:
                     trigger_exit_price = stored_sl
-                    self.finish_active_trade(trigger_exit_price, f"{old_dir}_EXCHANGE_SL_HIT_FLIP")
+                    self.finish_active_trade(trigger_exit_price, f"{old_dir}_EXCHANGE_SL_HIT_INSTANT_FLIP")
                     self.last_position = 0
                     self.save()
 
+                    # INSTANTLY OPEN OPPOSITE POSITION
                     if old_dir == "LONG":
                         new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
                         self.enter("SHORT", trigger_exit_price, new_sl)
@@ -897,7 +898,7 @@ class AccountBot:
                     self.active_trade = None
                     self.save()
 
-            # 1. BREAKOUT CHECK AGAINST CURRENT DAY HIGH / LOW
+            # 1. INITIAL BREAKOUT CHECK AGAINST CURRENT DAY HIGH / LOW (WHEN FLAT)
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -1194,7 +1195,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Refined Bulletproof Bot</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Instant-Flip Bot (v57.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1499,7 +1500,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("REFINED BULLETPROOF BOT v56.0 STARTING...")
+    logging.warning("INSTANT-FLIP BULLETPROOF BOT v57.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
