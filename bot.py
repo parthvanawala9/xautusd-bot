@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v69.1 - PURE SLM + AUTO-CLEANUP ON SL HIT)
+# DELTA PRO AUTOTRADER (v69.2 - UNCONDITIONAL INSTANT FLIP ON SL HIT)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/69.1"
+            "User-Agent": "MultiBot/69.2"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/69.1"
+            "User-Agent": "MultiBot/69.2"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -940,11 +940,8 @@ class AccountBot:
                         if half_size > 0:
                             try:
                                 logging.info(f"[{self.symbol}] 1:5 TARGET HIT! Booking half lot ({half_size}) at price {new_price}")
-                                # Cancel existing full-size SLM
                                 self.client.cancel_all_orders(self.product_id)
-                                # Execute partial market booking
                                 self.client.reduce_position_market(self.product_id, half_size, direction)
-                                # Place new SLM for remaining half lot
                                 if remaining_size > 0:
                                     self.client.place_slm_order(self.product_id, remaining_size, direction, sl_p)
                                     logging.info(f"[{self.symbol}] SLM order modified for remaining size {remaining_size} at {sl_p}")
@@ -955,35 +952,32 @@ class AccountBot:
                                 logging.error(f"[{self.symbol}] Partial booking & SLM update error: {e}")
 
             # ==========================================
-            # INSTANT FLIP & SLM HIT LOGIC (WITH CLEANUP)
+            # UNCONDITIONAL INSTANT FLIP ON SL HIT
             # ==========================================
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
 
-                if stored_sl is not None:
-                    trigger_exit_price = stored_sl
-                    
-                    # CRITICAL: Clean up all pending/leftover orders (like half-SLM or anything) on exchange
-                    if self.product_id:
-                        self.client.cancel_all_orders(self.product_id)
+                trigger_exit_price = stored_sl if stored_sl is not None else new_price
+                
+                # Clean up any leftover orders on exchange
+                if self.product_id:
+                    self.client.cancel_all_orders(self.product_id)
 
-                    self.finish_active_trade(trigger_exit_price, f"{old_dir}_SLM_HIT_INSTANT_FLIP")
-                    self.last_position = 0
-                    self.save()
+                self.finish_active_trade(trigger_exit_price, f"{old_dir}_SL_HIT_UNCONDITIONAL_FLIP")
+                self.last_position = 0
+                self.save()
 
-                    if old_dir == "LONG":
-                        new_sl = self.day_low if self.day_low is not None else trigger_exit_price * Decimal("0.99")
-                        self.enter("SHORT", trigger_exit_price, new_sl)
-                    else:
-                        new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
-                        self.enter("LONG", trigger_exit_price, new_sl)
-                    return
+                # IMMEDIATELY REVERSE WITHOUT WAITING FOR HIGH/LOW BREAK
+                if old_dir == "LONG":
+                    new_sl = new_price * Decimal("0.99") # Fallback SL below current price
+                    self.enter("SHORT", new_price, new_sl)
                 else:
-                    self.last_position = 0
-                    self.active_trade = None
-                    self.save()
+                    new_sl = new_price * Decimal("1.01") # Fallback SL above current price
+                    self.enter("LONG", new_price, new_sl)
+                return
 
+            # Normal fresh entry if no active position
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -1574,7 +1568,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v69.1 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v69.2 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
