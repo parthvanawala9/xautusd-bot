@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# ROBUST ENTRY-PRICE BULLETPROOF BOT + DASHBOARD (v59.0)
+# DYNAMIC RUNNING HIGH/LOW BOT + DASHBOARD (v60.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/59.0"
+            "User-Agent": "MultiBot/60.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/59.0"
+            "User-Agent": "MultiBot/60.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -196,7 +196,6 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
 
-        # ROBUST ENTRY PRICE EXTRACTION ACROSS MULTIPLE POSSIBLE KEYS
         raw_entry = (
             pos_item.get("entry_price") 
             or pos_item.get("entry") 
@@ -326,24 +325,6 @@ class DeltaClient:
             "client_order_id": (f"close_{int(time.time() * 1000)}")[-32:]
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
-
-    def fetch_530_candle(self, session_start):
-        try:
-            start_time = session_start
-            end_time = start_time + timedelta(minutes=15)
-            data = self.api("GET", "/v2/history/candles", params={
-                "resolution": "15m", "symbol": self.symbol,
-                "start": int(start_time.timestamp()), "end": int(end_time.timestamp())
-            })
-            candles = data.get("result", [])
-            target_ts = int(start_time.timestamp())
-            for candle in candles:
-                c_time = candle.get("time") or candle.get("timestamp") or candle.get("start")
-                if c_time and int(c_time) == target_ts:
-                    return Decimal(str(candle["high"])), Decimal(str(candle["low"]))
-            return None, None
-        except Exception:
-            return None, None
 
     def last_traded_price(self):
         try:
@@ -505,7 +486,6 @@ class AccountBot:
             pos["margin"] = margined.get("margin") or pos.get("margin")
             pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
 
-            # ROBUST ENTRY PRICE SYNC WITH ACTIVE TRADE FALLBACK
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
                 if (cur_entry is None or cur_entry <= 0) and self.active_trade and self.active_trade.get("entry_price"):
@@ -531,7 +511,6 @@ class AccountBot:
                         self.active_trade["sl"] = float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high)
                     self.save()
 
-                # Ensure backend position dict also reflects authoritative active_trade entry if pos lacked it
                 if (pos.get("entry_price") is None or pos.get("entry_price") <= 0) and self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry_price"] = float(self.active_trade["entry_price"])
 
@@ -628,19 +607,21 @@ class AccountBot:
             self.prev_price = None
             self.last_position = 0
             self.active_trade = None
-            self.manual_squareoff_flag = True
+            self.manual_squareoff_flag = False  # Reset flag so trading starts fresh at 5:30 AM
             self.ready = False
             self.save()
 
     def prepare(self, now):
+        # 5:30 AM पर नया सेशन शुरू होने पर बिना किसी पुरानी कैंडल के इंतज़ार के तुरंत लाइव प्राइस से रनिंग हाई/लो शुरू करें
         if self.ready:
             return True
-        if now < self.session_start + timedelta(minutes=15):
+        if now < self.session_start:
             return False
-        high, low = self.client.fetch_530_candle(self.session_start)
-        if high is not None and low is not None:
-            self.day_high = high
-            self.day_low = low
+        
+        current_price = self.last_price or self.client.last_traded_price()
+        if current_price is not None:
+            self.day_high = current_price
+            self.day_low = current_price
             self.manual_squareoff_flag = False
             self.ready = True
             self.save()
@@ -891,6 +872,14 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
+            # 3. RUNNING DAY HIGH / LOW UPDATES (MUST RUN CONTINUOUSLY TO TRACK REAL-TIME MARKET EXTREMES)
+            if self.day_high is None or new_price > self.day_high:
+                self.day_high = new_price
+                self.save()
+            if self.day_low is None or new_price < self.day_low:
+                self.day_low = new_price
+                self.save()
+
             # INSTANT FLIP: ONCE POSITION BECOMES FLAT FROM BRACKET SL HIT, IMMEDIATELY REVERSE
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
@@ -903,10 +892,10 @@ class AccountBot:
                     self.save()
 
                     if old_dir == "LONG":
-                        new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
+                        new_sl = self.day_low if self.day_low is not None else trigger_exit_price * Decimal("0.99")
                         self.enter("SHORT", trigger_exit_price, new_sl)
                     else:
-                        new_sl = self.day_low if self.day_low is not None else trigger_exit_price * Decimal("0.99")
+                        new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
                         self.enter("LONG", trigger_exit_price, new_sl)
                     return
                 else:
@@ -914,7 +903,7 @@ class AccountBot:
                     self.active_trade = None
                     self.save()
 
-            # 1. INITIAL BREAKOUT CHECK AGAINST CURRENT DAY HIGH / LOW (WHEN FLAT)
+            # 1. INITIAL BREAKOUT CHECK AGAINST CURRENT DYNAMIC DAY HIGH / LOW (WHEN FLAT)
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -936,14 +925,6 @@ class AccountBot:
             # 2. TRACK LIVE POSITION SIZE SYNC
             if size != 0:
                 self.last_position = size
-
-            # 3. RUNNING DAY HIGH / LOW UPDATES
-            if self.day_high is None or new_price > self.day_high:
-                self.day_high = new_price
-                self.save()
-            if self.day_low is None or new_price < self.day_low:
-                self.day_low = new_price
-                self.save()
 
 BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
@@ -1041,7 +1022,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # AUTHORITATIVE BACKEND RESOLVED ENTRY PRICE
                 entry_price_val = None
                 if b.active_trade and b.active_trade.get("entry_price") and float(b.active_trade.get("entry_price")) > 0:
                     entry_price_val = float(b.active_trade.get("entry_price"))
@@ -1214,7 +1194,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Robust Entry Bot (v59.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Dynamic Running High/Low Bot (v60.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1280,7 +1260,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                              <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
 
-                        // FRONTEND ROBUST ENTRY RESOLUTION
                         let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : 'N/A';
 
                         let html = `
@@ -1520,7 +1499,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("ROBUST ENTRY PRICE BOT v59.0 STARTING...")
+    logging.warning("DYNAMIC HIGH/LOW BOT v60.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
