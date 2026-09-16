@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DIRECT ENTRY LOCK BOT + DASHBOARD (v64.0)
+# 10-STEP FINE LEVERAGE LADDER BOT + DASHBOARD (v66.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/64.0"
+            "User-Agent": "MultiBot/66.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/64.0"
+            "User-Agent": "MultiBot/66.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -489,12 +489,10 @@ class AccountBot:
             pos["margin"] = margined.get("margin") or pos.get("margin")
             pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
 
-            # ABSOLUTE AUTHORITATIVE ENTRY LOCKING FROM ACTIVE TRADE STATE
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
                 
                 if not self.active_trade:
-                    # Fallback locking if bot restarted while position was open
                     fallback_ep = float(cur_entry) if cur_entry is not None and cur_entry > 0 else (float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low))
                     self.active_trade = {
                         "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
@@ -510,7 +508,6 @@ class AccountBot:
                         if cur_entry is not None and cur_entry > 0:
                             self.active_trade["entry_price"] = float(cur_entry)
                         else:
-                            # Use breakout level (day high/low) as the exact entry price if API doesn't provide it
                             self.active_trade["entry_price"] = float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low)
                         self.save()
 
@@ -679,7 +676,12 @@ class AccountBot:
         if is_weekend() or not self.bot_enabled or not self.product_id:
             return False
 
-        ladder = [200, 150, 100, 50, 25, 10, 5, 1] if "BTC" in self.symbol else [100, 50, 25, 10, 5, 1]
+        # 10-STEP FINE LEVERAGE LADDER: 10 TO 200 FOR BTC, 10 TO 100 FOR XAUT
+        if "BTC" in self.symbol:
+            ladder = [200, 190, 180, 170, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+        else:
+            ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+
         side = "buy" if direction == "LONG" else "sell"
         order_done = False
         estimated_liq = None
@@ -692,6 +694,7 @@ class AccountBot:
             if candidate_liq is None:
                 continue
 
+            # Ensure liquidation price is strictly inside the Stop-Loss boundary
             if direction == "LONG" and candidate_liq >= Decimal(str(sl_level)):
                 continue
             if direction == "SHORT" and candidate_liq <= Decimal(str(sl_level)):
@@ -705,17 +708,16 @@ class AccountBot:
                 self.leverage = lev_decimal
                 estimated_liq = candidate_liq
                 order_done = True
-                logging.info(f"[{self.symbol}] SAFE LIQ ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
+                logging.info(f"[{self.symbol}] 10-STEP FINE LEV ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
                 break
             except Exception as e:
                 last_error = e
-                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying lower.")
+                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying next 10x step down.")
 
         if not order_done:
             logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
             return False
 
-        # INSTANTLY LOCK THE EXACT BREAKOUT PRICE AS THE DEFINITIVE ENTRY PRICE
         actual_entry = float(price)
 
         confirmed = False
@@ -872,7 +874,6 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
-            # RUNNING DAY HIGH / LOW UPDATES
             if self.day_high is None or new_price > self.day_high:
                 self.day_high = new_price
                 self.save()
@@ -880,12 +881,10 @@ class AccountBot:
                 self.day_low = new_price
                 self.save()
 
-            # 5:45 AM TIME FILTER
             session_target_time = self.session_start + timedelta(minutes=15)
             if now < session_target_time:
                 return
 
-            # INSTANT FLIP: ONCE POSITION BECOMES FLAT FROM BRACKET SL HIT, IMMEDIATELY REVERSE
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
@@ -908,7 +907,6 @@ class AccountBot:
                     self.active_trade = None
                     self.save()
 
-            # 1. INITIAL BREAKOUT CHECK AGAINST CURRENT DYNAMIC DAY HIGH / LOW (WHEN FLAT, AFTER 5:45 AM)
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -927,7 +925,6 @@ class AccountBot:
                             self.save()
                         return
 
-            # 2. TRACK LIVE POSITION SIZE SYNC
             if size != 0:
                 self.last_position = size
 
@@ -1027,7 +1024,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # ABSOLUTE ENTRY PRICE GUARANTEE FROM ACTIVE TRADE STATE
                 entry_price_val = None
                 if b.active_trade and b.active_trade.get("entry_price") and float(b.active_trade.get("entry_price")) > 0:
                     entry_price_val = float(b.active_trade.get("entry_price"))
@@ -1198,7 +1194,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Direct Entry Lock Bot (v64.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">10-Step Fine Leverage Bot (v66.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1255,13 +1251,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                              <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                              <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
                              <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
-                             <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>` :
                             `<option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                              <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                              <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
                              <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
-                             <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
 
                         let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : 'N/A';
@@ -1480,6 +1474,7 @@ def run_websocket():
                 ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
+                data = json.dumps(message) # safe check
                 data = json.loads(message)
                 if data.get("type") != "trades":
                     return
@@ -1503,7 +1498,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DIRECT ENTRY LOCK BOT v64.0 STARTING...")
+    logging.warning("10-STEP FINE LEVERAGE BOT v66.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
