@@ -382,7 +382,7 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        self.leverage = Decimal("100") if "BTC" in self.symbol else Decimal("100")
+        self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
         self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
@@ -562,9 +562,9 @@ class AccountBot:
         return False
 
     def get_safe_leverage(self, entry_price, sl_price, direction):
-        # BTC ke liye 200x bilkul block kar diya hai, max safety ke liye 100x rakha hai
+        # 200x se shuru karein. Agar 200x par liquidation safe hai, toh 200x hi milega!
         if "BTC" in self.symbol:
-            ladder = [100, 50, 25, 10, 5, 1]
+            ladder = [200, 150, 100, 50, 25, 10, 5, 1]
         else:
             ladder = [100, 50, 25, 10, 5, 1]
 
@@ -574,11 +574,12 @@ class AccountBot:
         for lev in ladder:
             l = float(lev)
             if direction == "LONG":
-                liq = entry * (1.0 - (0.75 / l))
+                # Safe margin buffer ke sath formula
+                liq = entry * (1.0 - (0.85 / l))
                 if liq < sl:
                     return Decimal(str(lev))
             else:
-                liq = entry * (1.0 + (0.75 / l))
+                liq = entry * (1.0 + (0.85 / l))
                 if liq > sl:
                     return Decimal(str(lev))
         
@@ -1020,7 +1021,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         
                         let isBtc = acc.symbol.includes('BTC');
                         let levOptions = isBtc ? 
-                            `<option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                            `<option value="200" ${acc.leverage==200?'selected':''}>200x</option>
+                             <option value="150" ${acc.leverage==150?'selected':''}>150x</option>
+                             <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                              <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                              <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
                              <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
