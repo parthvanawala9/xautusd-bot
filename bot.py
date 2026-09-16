@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# FINAL INSTANT-FLIP BULLETPROOF BOT + DASHBOARD (v58.0)
+# ROBUST ENTRY-PRICE BULLETPROOF BOT + DASHBOARD (v59.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/58.0"
+            "User-Agent": "MultiBot/59.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/58.0"
+            "User-Agent": "MultiBot/59.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -196,7 +196,14 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
 
-        raw_entry = pos_item.get("entry_price") or pos_item.get("entry") or pos_item.get("avg_price") or pos_item.get("average_price")
+        # ROBUST ENTRY PRICE EXTRACTION ACROSS MULTIPLE POSSIBLE KEYS
+        raw_entry = (
+            pos_item.get("entry_price") 
+            or pos_item.get("entry") 
+            or pos_item.get("avg_price") 
+            or pos_item.get("average_price")
+            or pos_item.get("price")
+        )
         entry_val = None
         if raw_entry is not None and str(raw_entry).strip() not in ("", "None", "null"):
             try:
@@ -498,15 +505,16 @@ class AccountBot:
             pos["margin"] = margined.get("margin") or pos.get("margin")
             pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
 
+            # ROBUST ENTRY PRICE SYNC WITH ACTIVE TRADE FALLBACK
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
-                if cur_entry is None and self.active_trade and self.active_trade.get("entry_price"):
+                if (cur_entry is None or cur_entry <= 0) and self.active_trade and self.active_trade.get("entry_price"):
                     cur_entry = float(self.active_trade["entry_price"])
 
                 if not self.active_trade:
                     self.active_trade = {
                         "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
-                        "entry_price": float(cur_entry) if cur_entry is not None else 0.0,
+                        "entry_price": float(cur_entry) if cur_entry is not None and cur_entry > 0 else (float(self.last_price) if self.last_price else 0.0),
                         "entry_time": now_ist().isoformat(),
                         "size": abs(int(pos.get("size", 0))),
                         "leverage": int(self.leverage),
@@ -516,9 +524,16 @@ class AccountBot:
                 else:
                     if cur_entry is not None and cur_entry > 0:
                         self.active_trade["entry_price"] = float(cur_entry)
+                    elif not self.active_trade.get("entry_price") and self.last_price:
+                        self.active_trade["entry_price"] = float(self.last_price)
+
                     if "sl" not in self.active_trade or not self.active_trade["sl"]:
                         self.active_trade["sl"] = float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high)
                     self.save()
+
+                # Ensure backend position dict also reflects authoritative active_trade entry if pos lacked it
+                if (pos.get("entry_price") is None or pos.get("entry_price") <= 0) and self.active_trade and self.active_trade.get("entry_price"):
+                    pos["entry_price"] = float(self.active_trade["entry_price"])
 
             self.cached_position = pos
             self.position_cache_time = current
@@ -728,8 +743,9 @@ class AccountBot:
                 if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
                     self.last_position = sz
                     actual_size = abs(sz)
-                    if p.get("entry_price") and float(p.get("entry_price")) > 0:
-                        actual_entry = float(p.get("entry_price"))
+                    fetched_ep = p.get("entry_price") or p.get("entry") or p.get("avg_price")
+                    if fetched_ep and float(fetched_ep) > 0:
+                        actual_entry = float(fetched_ep)
                     confirmed = True
                     break
             except Exception:
@@ -742,8 +758,9 @@ class AccountBot:
                 if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
                     self.last_position = sz
                     actual_size = abs(sz)
-                    if p_margined.get("entry_price") and float(p_margined.get("entry_price")) > 0:
-                        actual_entry = float(p_margined.get("entry_price"))
+                    fetched_ep = p_margined.get("entry_price") or p_margined.get("entry")
+                    if fetched_ep and float(fetched_ep) > 0:
+                        actual_entry = float(fetched_ep)
                     confirmed = True
             except Exception:
                 pass
@@ -1024,11 +1041,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
                     balance_val = 0
 
+                # AUTHORITATIVE BACKEND RESOLVED ENTRY PRICE
                 entry_price_val = None
                 if b.active_trade and b.active_trade.get("entry_price") and float(b.active_trade.get("entry_price")) > 0:
                     entry_price_val = float(b.active_trade.get("entry_price"))
                 elif pos.get("entry_price") is not None and float(pos.get("entry_price")) > 0:
                     entry_price_val = float(pos.get("entry_price"))
+                elif b.last_price and pos.get("size", 0) != 0:
+                    entry_price_val = float(b.last_price)
 
                 active_sl = None
                 if b.active_trade and b.active_trade.get("sl"):
@@ -1194,7 +1214,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Instant-Flip Bot (v58.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Robust Entry Bot (v59.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1260,6 +1280,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                              <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
 
+                        // FRONTEND ROBUST ENTRY RESOLUTION
                         let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : 'N/A';
 
                         let html = `
@@ -1499,7 +1520,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("INSTANT-FLIP BULLETPROOF BOT v58.0 STARTING...")
+    logging.warning("ROBUST ENTRY PRICE BOT v59.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
