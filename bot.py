@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v67.1)
+# DELTA PRO AUTOTRADER (v69.1 - PURE SLM + AUTO-CLEANUP ON SL HIT)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/67.1"
+            "User-Agent": "MultiBot/69.1"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/67.1"
+            "User-Agent": "MultiBot/69.1"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -300,16 +300,44 @@ class DeltaClient:
         except Exception:
             pass
 
-    def market_entry_no_tp(self, product_id, side, size, sl):
+    def market_entry_pure(self, product_id, side, size):
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
             "size": int(abs(size)),
             "side": side,
             "order_type": "market_order",
-            "bracket_stop_loss_price": str(sl),
-            "bracket_stop_trigger_method": "last_traded_price",
-            "client_order_id": (f"rev_{int(time.time() * 1000)}")[-32:]
+            "client_order_id": (f"entry_{int(time.time() * 1000)}")[-32:]
+        }
+        return self.api("POST", "/v2/orders", body=body, auth=True)
+
+    def place_slm_order(self, product_id, size, direction, stop_price):
+        side = "sell" if direction == "LONG" else "buy"
+        body = {
+            "product_id": int(product_id),
+            "product_symbol": self.symbol,
+            "size": int(abs(size)),
+            "side": side,
+            "order_type": "stop_market_order",
+            "stop_price": str(stop_price),
+            "stop_trigger_method": "last_traded_price",
+            "reduce_only": True,
+            "client_order_id": (f"slm_{int(time.time() * 1000)}")[-32:]
+        }
+        return self.api("POST", "/v2/orders", body=body, auth=True)
+
+    def reduce_position_market(self, product_id, size, direction):
+        if size <= 0:
+            return
+        side = "sell" if direction == "LONG" else "buy"
+        body = {
+            "product_id": int(product_id),
+            "product_symbol": self.symbol,
+            "size": int(size),
+            "side": side,
+            "order_type": "market_order",
+            "reduce_only": True,
+            "client_order_id": (f"partial_{int(time.time() * 1000)}")[-32:]
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
@@ -500,7 +528,8 @@ class AccountBot:
                         "entry_time": now_ist().isoformat(),
                         "size": abs(int(pos.get("size", 0))),
                         "leverage": int(self.leverage),
-                        "sl": float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high)
+                        "sl": float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high),
+                        "partial_booked": False
                     }
                     self.save()
                 else:
@@ -548,7 +577,8 @@ class AccountBot:
                         "entry_price": float(p_val), 
                         "entry_time": now_ist().isoformat(), 
                         "size": abs(size),
-                        "sl": float(self.day_low) if direction == "LONG" else float(self.day_high)
+                        "sl": float(self.day_low) if direction == "LONG" else float(self.day_high),
+                        "partial_booked": False
                     }
                 self.last_position = size
                 self.bot_enabled = True
@@ -591,6 +621,7 @@ class AccountBot:
         current_sess = get_current_session_start(now)
         if self.session_start != current_sess:
             if self.product_id:
+                self.client.cancel_all_orders(self.product_id)
                 pos = self.refresh_position(force=True)
                 size = int(pos.get("size", 0))
                 if size != 0:
@@ -701,16 +732,18 @@ class AccountBot:
             try:
                 self.client.set_leverage(self.product_id, lev_decimal)
                 size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
-                self.client.market_entry_no_tp(self.product_id, side, size, sl_level)
+                
+                # Pure Market Entry
+                self.client.market_entry_pure(self.product_id, side, size)
 
                 self.leverage = lev_decimal
                 estimated_liq = candidate_liq
                 order_done = True
-                logging.info(f"[{self.symbol}] 10-STEP FINE LEV ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
+                logging.info(f"[{self.symbol}] 10-STEP LEV ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
                 break
             except Exception as e:
                 last_error = e
-                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying next 10x step down.")
+                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying next step down.")
 
         if not order_done:
             logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
@@ -755,7 +788,7 @@ class AccountBot:
         actual_liq = margined_data.get("liquidation_price")
         
         if actual_liq is None or str(actual_liq).strip() in ("", "None", "null"):
-            logging.error(f"[{self.symbol}] POST-ENTRY LIQUIDATION PRICE IS NONE! Emergency closing position.")
+            logging.error(f"[{self.symbol}] POST-ENTRY LIQUIDATION IS NONE! Closing position.")
             self.client.close_position(self.product_id, self.last_position)
             self.wait_until_flat()
             return False
@@ -770,7 +803,7 @@ class AccountBot:
                 is_safe = False
 
             if not is_safe:
-                logging.error(f"[{self.symbol}] POST-ENTRY UNSAFE LIQUIDATION! Actual Liq: {actual_liq_dec} vs SL: {sl_dec}. Closing.")
+                logging.error(f"[{self.symbol}] UNSAFE LIQUIDATION! Closing.")
                 self.client.close_position(self.product_id, self.last_position)
                 self.wait_until_flat()
                 return False
@@ -780,6 +813,13 @@ class AccountBot:
             self.wait_until_flat()
             return False
 
+        # Place Independent SLM Order for Full Size
+        try:
+            self.client.place_slm_order(self.product_id, actual_size, direction, sl_level)
+            logging.info(f"[{self.symbol}] SLM Order placed successfully at {sl_level} for size {actual_size}")
+        except Exception as e:
+            logging.error(f"[{self.symbol}] Failed to place SLM order: {e}")
+
         self.active_trade = {
             "direction": direction, 
             "entry_price": float(actual_entry), 
@@ -788,7 +828,8 @@ class AccountBot:
             "sl": float(sl_level),
             "leverage": int(self.leverage),
             "estimated_liquidation": float(estimated_liq) if estimated_liq else None,
-            "actual_liquidation": float(actual_liq_dec) if 'actual_liq_dec' in locals() else None
+            "actual_liquidation": float(actual_liq_dec) if 'actual_liq_dec' in locals() else None,
+            "partial_booked": False
         }
         self.save()
         return True
@@ -858,6 +899,7 @@ class AccountBot:
             if is_weekend(now):
                 if self.product_id and size != 0:
                     try:
+                        self.client.cancel_all_orders(self.product_id)
                         self.client.close_position(self.product_id, size)
                         self.wait_until_flat()
                         self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
@@ -879,13 +921,54 @@ class AccountBot:
                 self.day_low = new_price
                 self.save()
 
+            # ==========================================
+            # 1:5 PARTIAL PROFIT BOOKING + SLM MODIFY
+            # ==========================================
+            if size != 0 and self.active_trade and not self.active_trade.get("partial_booked", False):
+                direction = self.active_trade.get("direction")
+                entry_p = Decimal(str(self.active_trade.get("entry_price", 0)))
+                sl_p = Decimal(str(self.active_trade.get("sl", 0)))
+                
+                if entry_p > 0 and sl_p > 0:
+                    risk = abs(entry_p - sl_p)
+                    target_1_5 = (entry_p + (risk * Decimal("5"))) if direction == "LONG" else (entry_p - (risk * Decimal("5")))
+                    
+                    hit_target = (new_price >= target_1_5) if direction == "LONG" else (new_price <= target_1_5)
+                    if hit_target:
+                        half_size = abs(size) // 2
+                        remaining_size = abs(size) - half_size
+                        if half_size > 0:
+                            try:
+                                logging.info(f"[{self.symbol}] 1:5 TARGET HIT! Booking half lot ({half_size}) at price {new_price}")
+                                # Cancel existing full-size SLM
+                                self.client.cancel_all_orders(self.product_id)
+                                # Execute partial market booking
+                                self.client.reduce_position_market(self.product_id, half_size, direction)
+                                # Place new SLM for remaining half lot
+                                if remaining_size > 0:
+                                    self.client.place_slm_order(self.product_id, remaining_size, direction, sl_p)
+                                    logging.info(f"[{self.symbol}] SLM order modified for remaining size {remaining_size} at {sl_p}")
+
+                                self.active_trade["partial_booked"] = True
+                                self.save()
+                            except Exception as e:
+                                logging.error(f"[{self.symbol}] Partial booking & SLM update error: {e}")
+
+            # ==========================================
+            # INSTANT FLIP & SLM HIT LOGIC (WITH CLEANUP)
+            # ==========================================
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
 
                 if stored_sl is not None:
                     trigger_exit_price = stored_sl
-                    self.finish_active_trade(trigger_exit_price, f"{old_dir}_EXCHANGE_SL_HIT_INSTANT_FLIP")
+                    
+                    # CRITICAL: Clean up all pending/leftover orders (like half-SLM or anything) on exchange
+                    if self.product_id:
+                        self.client.cancel_all_orders(self.product_id)
+
+                    self.finish_active_trade(trigger_exit_price, f"{old_dir}_SLM_HIT_INSTANT_FLIP")
                     self.last_position = 0
                     self.save()
 
@@ -1491,7 +1574,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v67.1 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v69.1 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
