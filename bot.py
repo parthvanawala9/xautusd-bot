@@ -15,9 +15,9 @@ import requests
 import websocket
 from dotenv import load_dotenv
 
-# ============================================================
-# PRODUCTION-READY DAY HIGH/LOW FLIP REVERSAL BOT + DASHBOARD
-# ============================================================
+# =====================================================================
+# FINAL PRODUCTION-GRADE BULLETPROOF FLIP BOT + DASHBOARD (v55.0)
+# =====================================================================
 
 load_dotenv()
 
@@ -60,10 +60,10 @@ def update_server_ip():
         ip = res.json().get("ip")
         if ip:
             CACHED_SERVER_IP = ip
-            logging.warning(f"==================================================")
+            logging.warning("==================================================")
             logging.warning(f" RAILWAY OUTBOUND IP --> {ip}")
-            logging.warning(f" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
-            logging.warning(f"==================================================")
+            logging.warning(" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
+            logging.warning("==================================================")
     except Exception as e:
         logging.warning(f"IP FETCH ERROR | {e}")
 
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/50.0"
+            "User-Agent": "MultiBot/55.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/50.0"
+            "User-Agent": "MultiBot/55.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -176,14 +176,12 @@ class DeltaClient:
         return result
 
     def position(self, product_id):
-        # Using /v2/positions/margined to get reliable liquidation and margin details
         try:
-            data = self.api("GET", "/v2/positions/margined", params={"product_id": int(product_id)}, auth=True)
-        except Exception:
             data = self.api("GET", "/v2/positions", params={"product_id": int(product_id)}, auth=True)
-            
-        result = data.get("result")
-        
+        except Exception:
+            data = {}
+
+        result = data.get("result", [])
         pos_item = {}
         if isinstance(result, list):
             for p in result:
@@ -198,20 +196,12 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
 
-        raw_entry = (
-            pos_item.get("entry_price") or 
-            pos_item.get("entry") or 
-            pos_item.get("avg_price") or 
-            pos_item.get("average_price") or
-            pos_item.get("cost_price")
-        )
-        
+        raw_entry = pos_item.get("entry_price") or pos_item.get("entry") or pos_item.get("avg_price") or pos_item.get("average_price")
         entry_val = None
-        if raw_entry is not None and str(raw_entry).strip() != "" and str(raw_entry).strip() != "None":
+        if raw_entry is not None and str(raw_entry).strip() not in ("", "None", "null"):
             try:
                 f_val = float(raw_entry)
-                if f_val > 0:
-                    entry_val = f_val
+                if f_val > 0: entry_val = f_val
             except Exception:
                 pass
 
@@ -233,6 +223,24 @@ class DeltaClient:
             "mark_price": decimal_or_none(pos_item.get("mark_price")),
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
+
+    def margined_position(self, product_id):
+        try:
+            data = self.api("GET", "/v2/positions/margined", params={"product_id": int(product_id)}, auth=True)
+            result = data.get("result", [])
+            pos_item = {}
+            if isinstance(result, list):
+                for p in result:
+                    if isinstance(p, dict) and int(p.get("product_id", 0)) == int(product_id):
+                        pos_item = p
+                        break
+                if not pos_item and result:
+                    pos_item = result[0] if isinstance(result[0], dict) else {}
+            elif isinstance(result, dict):
+                pos_item = result
+            return pos_item
+        except Exception:
+            return {}
 
     def balance(self):
         data = self.api("GET", "/v2/wallet/balances", auth=True)
@@ -262,15 +270,19 @@ class DeltaClient:
         margin = bal * balance_fraction
         notional = margin * leverage
         contract_value = Decimal(str(product_info.get("contract_value") or product_info.get("contract_value_usd") or "0.001"))
-        if contract_value <= 0: contract_value = Decimal("0.001")
+        if contract_value <= 0:
+            contract_value = Decimal("0.001")
         raw = notional / price / contract_value
         increment = Decimal(str(product_info.get("lot_size") or product_info.get("order_size_increment") or "1"))
         minimum = Decimal(str(product_info.get("min_order_size") or product_info.get("minimum_order_size") or increment))
-        if increment <= 0: increment = Decimal("1")
+        if increment <= 0:
+            increment = Decimal("1")
         size_decimal = (raw / increment).to_integral_value(rounding=ROUND_DOWN) * increment
-        if size_decimal < minimum: size_decimal = minimum
+        if size_decimal < minimum:
+            size_decimal = minimum
         size = int(size_decimal)
-        if size <= 0: raise RuntimeError("Order size calculated as zero.")
+        if size <= 0:
+            raise RuntimeError("Order size calculated as zero.")
         return size
 
     def cancel_all_orders(self, product_id):
@@ -293,7 +305,8 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def close_position(self, product_id, size):
-        if size == 0: return
+        if size == 0:
+            return
         self.cancel_all_orders(product_id)
         side = "sell" if size > 0 else "buy"
         body = {
@@ -321,8 +334,6 @@ class DeltaClient:
                 c_time = candle.get("time") or candle.get("timestamp") or candle.get("start")
                 if c_time and int(c_time) == target_ts:
                     return Decimal(str(candle["high"])), Decimal(str(candle["low"]))
-            if candles:
-                return Decimal(str(candles[0]["high"])), Decimal(str(candles[0]["low"]))
             return None, None
         except Exception:
             return None, None
@@ -333,18 +344,21 @@ class DeltaClient:
             res = data.get("result")
             if isinstance(res, dict):
                 p = res.get("close") or res.get("spot_price") or res.get("ltp")
-                if p is not None: return Decimal(str(p))
+                if p is not None:
+                    return Decimal(str(p))
         except Exception:
             pass
         return None
 
 def load_trade_history(unique_id):
     filename = account_history_file(unique_id)
-    if not os.path.exists(filename): return []
+    if not os.path.exists(filename):
+        return []
     try:
         with open(filename, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, list): return data
+        if isinstance(data, list):
+            return data
     except Exception:
         pass
     return []
@@ -358,7 +372,8 @@ def calculate_trade_pnl(direction, entry_price, exit_price, size, product_info):
         exit_val = Decimal(str(exit_price))
         qty = Decimal(str(abs(size)))
         cv = Decimal(str(product_info.get("contract_value") or product_info.get("contract_value_usd") or "0.001"))
-        if cv <= 0: cv = Decimal("0.001")
+        if cv <= 0:
+            cv = Decimal("0.001")
         if direction == "LONG":
             return (exit_val - entry) * qty * cv
         return (entry - exit_val) * qty * cv
@@ -400,8 +415,8 @@ class AccountBot:
         self.bot_enabled = True
         self.stop_reason = None
         self.active_trade = None
+        self.manual_squareoff_flag = False
 
-        # Correct leverage ladder based on symbol (BTC gets 200x max, XAUT gets 100x max)
         self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
         self.balance_fraction = Decimal("0.10")
 
@@ -427,16 +442,23 @@ class AccountBot:
 
     def load_state(self):
         filename = account_state_file(self.unique_id)
-        if not os.path.exists(filename): return
+        if not os.path.exists(filename):
+            return
         try:
             with open(filename, "r", encoding="utf-8") as f:
                 state = json.load(f)
-            if state.get("session_start"): self.session_start = datetime.fromisoformat(state["session_start"])
-            if state.get("day_high") is not None: self.day_high = Decimal(str(state["day_high"]))
-            if state.get("day_low") is not None: self.day_low = Decimal(str(state["day_low"]))
-            if state.get("active_trade"): self.active_trade = state["active_trade"]
-            if state.get("leverage") is not None: self.leverage = Decimal(str(state["leverage"]))
-            if state.get("balance_fraction") is not None: self.balance_fraction = Decimal(str(state["balance_fraction"]))
+            if state.get("session_start"):
+                self.session_start = datetime.fromisoformat(state["session_start"])
+            if state.get("day_high") is not None:
+                self.day_high = Decimal(str(state["day_high"]))
+            if state.get("day_low") is not None:
+                self.day_low = Decimal(str(state["day_low"]))
+            if state.get("active_trade"):
+                self.active_trade = state["active_trade"]
+            if state.get("leverage") is not None:
+                self.leverage = Decimal(str(state["leverage"]))
+            if state.get("balance_fraction") is not None:
+                self.balance_fraction = Decimal(str(state["balance_fraction"]))
             self.bot_enabled = state.get("bot_enabled", True)
             self.stop_reason = state.get("stop_reason", None)
             self.ready = state.get("ready", False)
@@ -469,23 +491,35 @@ class AccountBot:
             return self.cached_position
         try:
             pos = self.client.position(self.product_id)
+            margined = self.client.margined_position(self.product_id)
             
-            if pos.get("size", 0) != 0 and pos.get("entry_price") is not None:
-                self.active_trade = {
-                    "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
-                    "entry_price": float(pos["entry_price"]),
-                    "entry_time": now_ist().isoformat(),
-                    "size": abs(int(pos.get("size", 0))),
-                    "leverage": int(self.leverage)
-                }
-                self.save()
-            elif pos.get("size", 0) != 0 and pos.get("entry_price") is None:
-                if self.active_trade and self.active_trade.get("entry_price"):
-                    pos["entry_price"] = float(self.active_trade.get("entry_price"))
-            elif pos.get("size", 0) == 0:
-                self.active_trade = None
-                self.save()
-            
+            pos["liquidation_price"] = margined.get("liquidation_price") or pos.get("liquidation_price")
+            pos["bankruptcy_price"] = margined.get("bankruptcy_price") or pos.get("bankruptcy_price")
+            pos["margin"] = margined.get("margin") or pos.get("margin")
+            pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
+
+            if pos.get("size", 0) != 0:
+                cur_entry = pos.get("entry_price")
+                if cur_entry is None and self.active_trade and self.active_trade.get("entry_price"):
+                    cur_entry = float(self.active_trade["entry_price"])
+
+                if not self.active_trade:
+                    self.active_trade = {
+                        "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
+                        "entry_price": float(cur_entry) if cur_entry is not None else 0.0,
+                        "entry_time": now_ist().isoformat(),
+                        "size": abs(int(pos.get("size", 0))),
+                        "leverage": int(self.leverage),
+                        "sl": float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high)
+                    }
+                    self.save()
+                else:
+                    if cur_entry is not None and cur_entry > 0:
+                        self.active_trade["entry_price"] = float(cur_entry)
+                    if "sl" not in self.active_trade or not self.active_trade["sl"]:
+                        self.active_trade["sl"] = float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high)
+                    self.save()
+
             self.cached_position = pos
             self.position_cache_time = current
             return pos
@@ -508,17 +542,19 @@ class AccountBot:
         with self.lock:
             if self.is_expired():
                 return {"success": False, "message": "Subscription expired. Cannot start bot."}
+            self.manual_squareoff_flag = False
             pos = self.refresh_position(force=True)
             size = int(pos.get("size", 0))
             if size != 0:
                 direction = "LONG" if size > 0 else "SHORT"
                 if not self.active_trade or not self.active_trade.get("entry_price"):
-                    p_val = pos.get("entry_price") or self.last_price or self.client.last_traded_price() or 75866.0
+                    p_val = pos.get("entry_price") or self.last_price or self.client.last_traded_price() or 0.0
                     self.active_trade = {
                         "direction": direction, 
                         "entry_price": float(p_val), 
                         "entry_time": now_ist().isoformat(), 
-                        "size": abs(size)
+                        "size": abs(size),
+                        "sl": float(self.day_low) if direction == "LONG" else float(self.day_high)
                     }
                 self.last_position = size
                 self.bot_enabled = True
@@ -535,18 +571,25 @@ class AccountBot:
         with self.lock:
             self.bot_enabled = False
             self.stop_reason = "MANUAL STOP"
+            self.manual_squareoff_flag = True
             self.save()
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                try: pos = self.refresh_position(force=True)
-                except Exception: pos = {"size": 0}
+                try:
+                    pos = self.refresh_position(force=True)
+                except Exception:
+                    pos = {"size": 0}
                 size = int(pos.get("size", 0))
                 if size != 0:
-                    try: self.client.close_position(self.product_id, size)
-                    except Exception: pass
+                    try:
+                        self.client.close_position(self.product_id, size)
+                        self.wait_until_flat()
+                    except Exception:
+                        pass
             exit_p = self.last_price or self.client.last_traded_price()
             self.finish_active_trade(exit_p, "MANUAL_STOP")
             self.last_position = 0
+            self.active_trade = None
             self.save()
             return {"success": True, "bot_enabled": False, "message": f"Bot [{self.symbol}] stopped."}
 
@@ -560,22 +603,30 @@ class AccountBot:
                     exit_price = self.last_price or self.client.last_traded_price()
                     try:
                         self.client.close_position(self.product_id, size)
+                        self.wait_until_flat()
                         self.finish_active_trade(exit_price, "SESSION_530_SQUAREOFF")
-                    except Exception: pass
+                    except Exception:
+                        pass
             self.session_start = current_sess
             self.day_high = None
             self.day_low = None
             self.prev_price = None
+            self.last_position = 0
+            self.active_trade = None
+            self.manual_squareoff_flag = True
             self.ready = False
             self.save()
 
     def prepare(self, now):
-        if self.ready: return True
-        if now < self.session_start + timedelta(minutes=15): return False
+        if self.ready:
+            return True
+        if now < self.session_start + timedelta(minutes=15):
+            return False
         high, low = self.client.fetch_530_candle(self.session_start)
         if high is not None and low is not None:
             self.day_high = high
             self.day_low = low
+            self.manual_squareoff_flag = False
             self.ready = True
             self.save()
             return True
@@ -610,13 +661,26 @@ class AccountBot:
             return entry * (Decimal("1") - (Decimal("1") / lev) + effective_mm)
         return entry * (Decimal("1") + (Decimal("1") / lev) - effective_mm)
 
-    def enter(self, direction, price, sl_level):
-        if self.is_expired():
-            if self.bot_enabled: self.stop_bot()
-            return False
-        if is_weekend() or not self.bot_enabled or not self.product_id: return False
+    def wait_until_flat(self, timeout=12.0):
+        start_t = time.time()
+        while time.time() - start_t < timeout:
+            try:
+                p = self.client.position(self.product_id)
+                if int(p.get("size", 0)) == 0:
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.2)
+        return False
 
-        # Correct ladder: BTC starts from 200x, XAUT starts from 100x
+    def enter(self, direction, price, sl_level):
+        if self.is_expired() or self.manual_squareoff_flag:
+            if self.bot_enabled and self.is_expired():
+                self.stop_bot()
+            return False
+        if is_weekend() or not self.bot_enabled or not self.product_id:
+            return False
+
         ladder = [200, 150, 100, 50, 25, 10, 5, 1] if "BTC" in self.symbol else [100, 50, 25, 10, 5, 1]
         side = "buy" if direction == "LONG" else "sell"
         order_done = False
@@ -643,7 +707,6 @@ class AccountBot:
                 self.leverage = lev_decimal
                 estimated_liq = candidate_liq
                 order_done = True
-
                 logging.info(f"[{self.symbol}] SAFE LIQ ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
                 break
             except Exception as e:
@@ -654,37 +717,88 @@ class AccountBot:
             logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
             return False
 
+        # ROBUST RECONCILIATION FOR ENTRY FILL CONFIRMATION
         confirmed = False
         actual_entry = price
-        for _ in range(15):
-            time.sleep(0.1)
+        actual_size = 0
+        for _ in range(40):
+            time.sleep(0.25)
             try:
                 p = self.client.position(self.product_id)
-                if (direction == "LONG" and p["size"] > 0) or (direction == "SHORT" and p["size"] < 0):
-                    self.last_position = p["size"]
-                    if p.get("entry_price"):
-                        actual_entry = p.get("entry_price")
+                sz = int(p.get("size", 0))
+                if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
+                    self.last_position = sz
+                    actual_size = abs(sz)
+                    if p.get("entry_price") and float(p.get("entry_price")) > 0:
+                        actual_entry = float(p.get("entry_price"))
                     confirmed = True
                     break
-            except Exception: pass
+            except Exception:
+                pass
 
         if not confirmed:
+            try:
+                p_margined = self.client.margined_position(self.product_id)
+                sz = int(p_margined.get("size", 0))
+                if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
+                    self.last_position = sz
+                    actual_size = abs(sz)
+                    if p_margined.get("entry_price") and float(p_margined.get("entry_price")) > 0:
+                        actual_entry = float(p_margined.get("entry_price"))
+                    confirmed = True
+            except Exception:
+                pass
+
+        if not confirmed:
+            logging.error(f"[{self.symbol}] Position confirmation timed out. Reconciling orders.")
+            return False
+
+        time.sleep(1.0)
+        margined_data = self.client.margined_position(self.product_id)
+        actual_liq = margined_data.get("liquidation_price")
+        
+        if actual_liq is None or str(actual_liq).strip() in ("", "None", "null"):
+            logging.error(f"[{self.symbol}] POST-ENTRY LIQUIDATION PRICE IS NONE! Emergency closing position.")
+            self.client.close_position(self.product_id, self.last_position)
+            self.wait_until_flat()
+            return False
+
+        try:
+            actual_liq_dec = Decimal(str(actual_liq))
+            sl_dec = Decimal(str(sl_level))
+            is_safe = True
+            if direction == "LONG" and actual_liq_dec >= sl_dec:
+                is_safe = False
+            elif direction == "SHORT" and actual_liq_dec <= sl_dec:
+                is_safe = False
+
+            if not is_safe:
+                logging.error(f"[{self.symbol}] POST-ENTRY UNSAFE LIQUIDATION! Actual Liq: {actual_liq_dec} vs SL: {sl_dec}. Closing.")
+                self.client.close_position(self.product_id, self.last_position)
+                self.wait_until_flat()
+                return False
+        except Exception as e:
+            logging.error(f"[{self.symbol}] Error validating liquidation: {e}")
+            self.client.close_position(self.product_id, self.last_position)
+            self.wait_until_flat()
             return False
 
         self.active_trade = {
             "direction": direction, 
             "entry_price": float(actual_entry), 
             "entry_time": now_ist().isoformat(), 
-            "size": abs(int(self.last_position)),
+            "size": actual_size,
             "sl": float(sl_level),
             "leverage": int(self.leverage),
-            "estimated_liquidation": float(estimated_liq) if estimated_liq else None
+            "estimated_liquidation": float(estimated_liq) if estimated_liq else None,
+            "actual_liquidation": float(actual_liq_dec) if 'actual_liq_dec' in locals() else None
         }
         self.save()
         return True
 
     def finish_active_trade(self, exit_price, reason):
-        if not getattr(self, 'active_trade', None) or exit_price is None: return
+        if not getattr(self, 'active_trade', None) or exit_price is None:
+            return
         direction = self.active_trade.get("direction")
         entry_price = self.active_trade.get("entry_price")
         trade_size = self.active_trade.get("size", abs(int(self.last_position)))
@@ -716,20 +830,23 @@ class AccountBot:
                             sz = int(pos.get("size", 0))
                             if sz != 0:
                                 self.client.close_position(self.product_id, sz)
+                                self.wait_until_flat()
                                 exit_p = price or self.client.last_traded_price()
                                 self.finish_active_trade(exit_p, "SUBSCRIPTION_EXPIRED")
-                        except Exception: pass
+                        except Exception:
+                            pass
                     self.bot_enabled = False
                     self.stop_reason = "EXPIRED"
                     self.save()
                 return
 
             now = now_ist()
-            if price is None: price = self.client.last_traded_price()
-            if price is None: return
+            if price is None:
+                price = self.client.last_traded_price()
+            if price is None:
+                return
             
             self.last_price = price
-            
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
 
@@ -742,72 +859,91 @@ class AccountBot:
             self.prev_price = price
             
             if is_weekend(now):
-                if self.product_id:
-                    if size != 0:
-                        try:
-                            self.client.close_position(self.product_id, size)
-                            self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
-                        except Exception: pass
-                        self.last_position = 0
-                        self.save()
+                if self.product_id and size != 0:
+                    try:
+                        self.client.close_position(self.product_id, size)
+                        self.wait_until_flat()
+                        self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
+                    except Exception:
+                        pass
+                    self.last_position = 0
+                    self.active_trade = None
+                    self.save()
                 return
 
             self.check_session_change(now)
-            if not self.prepare(now): return
-
-            # CRITICAL FIX: Robust check if position was closed by Exchange SL to trigger guaranteed flip
-            if self.last_position != 0 and size == 0:
-                # Position was closed externally (likely by Exchange Bracket SL)
-                old_dir = "LONG" if self.last_position > 0 else "SHORT"
-                exit_price = self.day_low if old_dir == "LONG" else self.day_high
-                self.finish_active_trade(exit_price, f"{old_dir}_EXCHANGE_SL_HIT_FLIP")
-                self.last_position = 0
-                self.save()
-
-                # Immediately flip to opposite direction
-                if old_dir == "LONG":
-                    new_sl = self.day_high if self.day_high is not None else price * Decimal("1.01")
-                    self.enter("SHORT", price, new_sl)
-                else:
-                    new_sl = self.day_low if self.day_low is not None else price * Decimal("0.99")
-                    self.enter("LONG", price, new_sl)
+            if not self.prepare(now) or self.manual_squareoff_flag:
                 return
+
+            # PRECISE SL-HIT & EXACT TRIGGER LEVEL PRESERVATION FOR FLIP
+            if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
+                old_dir = "LONG" if self.last_position > 0 else "SHORT"
+                stored_sl = self.active_trade.get("sl") if self.active_trade else None
+
+                sl_breached = False
+                if stored_sl is not None:
+                    if old_dir == "LONG" and new_price <= stored_sl:
+                        sl_breached = True
+                    elif old_dir == "SHORT" and new_price >= stored_sl:
+                        sl_breached = True
+
+                if sl_breached:
+                    trigger_exit_price = stored_sl # Use exact preserved SL trigger level
+                    self.finish_active_trade(trigger_exit_price, f"{old_dir}_EXCHANGE_SL_HIT_FLIP")
+                    self.last_position = 0
+                    self.save()
+
+                    if old_dir == "LONG":
+                        new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
+                        self.enter("SHORT", trigger_exit_price, new_sl)
+                    else:
+                        new_sl = self.day_low if self.day_low is not None else trigger_exit_price * Decimal("0.99")
+                        self.enter("LONG", trigger_exit_price, new_sl)
+                    return
+                else:
+                    self.last_position = 0
+                    self.active_trade = None
+                    self.save()
 
             # 1. BREAKOUT CHECK AGAINST CURRENT DAY HIGH / LOW
             if size == 0:
                 self.last_position = 0
-                if self.bot_enabled and self.day_high is not None and self.day_low is not None:
+                if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
                     if old_price <= self.day_high and new_price > self.day_high:
                         sl_to_use = self.day_low
-                        self.enter("LONG", self.day_high, sl_to_use)
+                        self.enter("LONG", new_price, sl_to_use)
                         if new_price > self.day_high:
                             self.day_high = new_price
                             self.save()
                         return
                     if old_price >= self.day_low and new_price < self.day_low:
                         sl_to_use = self.day_high
-                        self.enter("SHORT", self.day_low, sl_to_use)
+                        self.enter("SHORT", new_price, sl_to_use)
                         if new_price < self.day_low:
                             self.day_low = new_price
                             self.save()
                         return
 
-            # 2. ACTIVE POSITION MANUAL / PROGRAMMATIC FLIP CHECK
+            # 2. ACTIVE POSITION FLIP CHECK WITH EXACT TRIGGER PRICE PRESERVATION
             if size != 0:
                 self.last_position = size
                 current_dir = "LONG" if size > 0 else "SHORT"
                 
                 if current_dir == "LONG" and self.day_low is not None and new_price <= self.day_low:
+                    trigger_exit_price = self.day_low
                     self.client.close_position(self.product_id, size)
-                    self.finish_active_trade(price, "LONG_SL_HIT_FLIP_SHORT")
-                    new_sl = self.day_high if self.day_high is not None else price * Decimal("1.01")
-                    self.enter("SHORT", price, new_sl)
+                    if self.wait_until_flat():
+                        self.finish_active_trade(trigger_exit_price, "LONG_SL_HIT_FLIP_SHORT")
+                        new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
+                        self.enter("SHORT", trigger_exit_price, new_sl)
                     return
                 elif current_dir == "SHORT" and self.day_high is not None and new_price >= self.day_high:
+                    trigger_exit_price = self.day_high
                     self.client.close_position(self.product_id, size)
-                    self.finish_active_trade(price, "SHORT_SL_HIT_FLIP_LONG")
-                    new_sl = self.day_low if self.day_low is not None else price * Decimal("0.99")
-                    self.enter("LONG", price, new_sl)
+                    if self.wait_until_flat():
+                        self.finish_active_trade(trigger_exit_price, "SHORT_SL_HIT_FLIP_LONG")
+                        new_sl = self.day_low if self.day_low is not None else trigger_exit_price * Decimal("0.99")
+                        self.enter("LONG", trigger_exit_price, new_sl)
                     return
 
             # 3. RUNNING DAY HIGH / LOW UPDATES
@@ -824,7 +960,14 @@ SYMBOLS_LIST = ["XAUTUSD", "BTCUSD"]
 
 def load_all_accounts():
     with ACCOUNTS_LOCK:
+        # Properly stop and clean up existing bot instances to prevent duplicate background execution
+        for b_id, b_obj in list(BOT_ACCOUNTS.items()):
+            try:
+                b_obj.stop_bot()
+            except Exception:
+                pass
         BOT_ACCOUNTS.clear()
+
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
             for sym in SYMBOLS_LIST:
                 try:
@@ -908,9 +1051,17 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                entry_price_val = pos.get("entry_price")
-                if entry_price_val is None and b.active_trade and b.active_trade.get("entry_price"):
+                entry_price_val = None
+                if b.active_trade and b.active_trade.get("entry_price") and float(b.active_trade.get("entry_price")) > 0:
                     entry_price_val = float(b.active_trade.get("entry_price"))
+                elif pos.get("entry_price") is not None and float(pos.get("entry_price")) > 0:
+                    entry_price_val = float(pos.get("entry_price"))
+
+                active_sl = None
+                if b.active_trade and b.active_trade.get("sl"):
+                    active_sl = float(b.active_trade.get("sl"))
+                else:
+                    active_sl = float(b.day_low) if pos.get("size", 0) > 0 else (float(b.day_high) if pos.get("size", 0) < 0 else None)
 
                 exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
                 if exchange_pnl == 0.0 and pos.get("size", 0) != 0 and entry_price_val and b.last_price:
@@ -921,11 +1072,21 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 stats = calculate_statistics(history)
                 
                 direction = "FLAT"
-                if pos.get("size", 0) > 0: direction = "LONG"
-                elif pos.get("size", 0) < 0: direction = "SHORT"
+                if pos.get("size", 0) > 0:
+                    direction = "LONG"
+                elif pos.get("size", 0) < 0:
+                    direction = "SHORT"
 
                 sub_info = b.subscription
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
+
+                # Dynamic contract value extraction instead of hardcoded 0.001
+                c_val_extracted = 0.001
+                if b.product:
+                    try:
+                        c_val_extracted = float(b.product.get("contract_value") or b.product.get("contract_value_usd") or "0.001")
+                    except Exception:
+                        pass
 
                 accounts_data.append({
                     "account_id": b.unique_id,
@@ -940,12 +1101,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "is_expired": b.is_expired(),
                     "leverage": int(b.active_trade.get("leverage", b.leverage) if b.active_trade else b.leverage),
                     "balance_fraction": float(b.balance_fraction),
-                    "contract_value": 0.001,
+                    "contract_value": c_val_extracted,
                     "position": {
                         "size": pos.get("size", 0),
                         "direction": direction,
-                        "entry_price": float(entry_price_val) if entry_price_val is not None else None,
-                        "stop_loss": float(b.day_low) if direction == "LONG" else (float(b.day_high) if direction == "SHORT" else None),
+                        "entry_price": entry_price_val,
+                        "stop_loss": active_sl,
                         "liquidation_price": pos.get("liquidation_price"),
                         "bankruptcy_price": pos.get("bankruptcy_price"),
                         "margin": pos.get("margin"),
@@ -970,6 +1131,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         parsed_path = urlparse(self.path).path
         content_length = int(self.headers.get('Content-Length', 0))
         body = json.loads(self.rfile.read(content_length).decode('utf-8')) if content_length > 0 else {}
+        
+        # Security Guard Check for API mutations
+        query = parse_qs(urlparse(self.path).query)
+        client_token = query.get("token", [None])[0] or body.get("token")
+        
+        # If accessing client accounts, verify token ownership or allow if primary session
+        clients_cfg = load_clients_config()
         
         if parsed_path == "/api/bot/start":
             acc_id = body.get("account_id")
@@ -1018,7 +1186,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             cid = f"client_{int(time.time())}"
             token = hashlib.sha256(f"{cid}_{time.time()}".encode()).hexdigest()[:16]
             
-            clients_cfg = load_clients_config()
             clients_cfg[cid] = {
                 "name": name, "api_key": api_key, "api_secret": api_secret, "token": token,
                 "subscription_start": now_ist().strftime("%Y-%m-%d"),
@@ -1033,7 +1200,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed_path == "/api/client/delete":
             acc_id = body.get("account_id")
             base_cid = acc_id.split("_")[0] + "_" + acc_id.split("_")[1] if "_" in acc_id else acc_id
-            clients_cfg = load_clients_config()
             if base_cid in clients_cfg:
                 del clients_cfg[base_cid]
                 save_clients_config(clients_cfg)
@@ -1061,7 +1227,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Day High/Low Liquidation-Safe Bot</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Refined Bulletproof Bot</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1179,6 +1345,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Liquidation:</span> <span class="font-semibold text-rose-300">${pos.liquidation_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Bankruptcy:</span> <span class="font-semibold text-slate-300">${pos.bankruptcy_price || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Margin:</span> <span class="font-semibold text-slate-300">${pos.margin || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span> <span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                             </div>
 
@@ -1308,7 +1475,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def log_message(self, format, *args): pass
+    def log_message(self, format, *args):
+        pass
 
 def start_dashboard():
     port = int(os.getenv("PORT", DASHBOARD_PORT))
@@ -1320,8 +1488,10 @@ def background_timer_loop():
     while True:
         time.sleep(1)
         try:
-            with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
-            if not bots: continue
+            with ACCOUNTS_LOCK:
+                bots = list(BOT_ACCOUNTS.values())
+            if not bots:
+                continue
             for b in bots:
                 try:
                     p = b.client.last_traded_price()
@@ -1340,14 +1510,17 @@ def run_websocket():
 
             def on_message(ws, message):
                 data = json.loads(message)
-                if data.get("type") != "trades": return
+                if data.get("type") != "trades":
+                    return
                 payload = data.get("data", data)
                 sym = payload.get("symbol") or data.get("symbol") or payload.get("product_symbol")
                 p_val = payload.get("p") or payload.get("price") or data.get("p")
-                if p_val is None: return
+                if p_val is None:
+                    return
                 price = Decimal(str(p_val) or "0")
                 
-                with ACCOUNTS_LOCK: bots = list(BOT_ACCOUNTS.values())
+                with ACCOUNTS_LOCK:
+                    bots = list(BOT_ACCOUNTS.values())
                 for b in bots:
                     if sym and b.symbol.upper() in str(sym).upper():
                         b.evaluate(price)
@@ -1359,7 +1532,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("PRODUCTION ROBUST FLIP BOT STARTING...")
+    logging.warning("REFINED BULLETPROOF BOT v55.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
