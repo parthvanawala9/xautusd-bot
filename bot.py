@@ -382,7 +382,7 @@ class AccountBot:
         self.stop_reason = None
         self.active_trade = None
 
-        self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
+        self.leverage = Decimal("100") if "BTC" in self.symbol else Decimal("100")
         self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
@@ -561,18 +561,10 @@ class AccountBot:
             return True
         return False
 
-    def calculate_approx_liquidation(self, entry_price, lev, direction):
-        l = float(lev)
-        if l <= 0: return entry_price
-        # Strict safety buffer factor (0.75 instead of 0.9) to prevent edge liquidation hits on high leverage
-        if direction == "LONG":
-            return entry_price * (1.0 - (0.75 / l))
-        else:
-            return entry_price * (1.0 + (0.75 / l))
-
     def get_safe_leverage(self, entry_price, sl_price, direction):
+        # BTC ke liye 200x bilkul block kar diya hai, max safety ke liye 100x rakha hai
         if "BTC" in self.symbol:
-            ladder = [200, 150, 100, 50, 25, 10, 5, 1]
+            ladder = [100, 50, 25, 10, 5, 1]
         else:
             ladder = [100, 50, 25, 10, 5, 1]
 
@@ -580,13 +572,13 @@ class AccountBot:
         sl = float(sl_price)
 
         for lev in ladder:
-            liq = self.calculate_approx_liquidation(entry, lev, direction)
+            l = float(lev)
             if direction == "LONG":
-                # For LONG, liquidation price must be strictly LESS than Stop Loss
+                liq = entry * (1.0 - (0.75 / l))
                 if liq < sl:
                     return Decimal(str(lev))
             else:
-                # For SHORT, liquidation price must be strictly GREATER than Stop Loss
+                liq = entry * (1.0 + (0.75 / l))
                 if liq > sl:
                     return Decimal(str(lev))
         
@@ -1028,9 +1020,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         
                         let isBtc = acc.symbol.includes('BTC');
                         let levOptions = isBtc ? 
-                            `<option value="200" ${acc.leverage==200?'selected':''}>200x</option>
-                             <option value="150" ${acc.leverage==150?'selected':''}>150x</option>
-                             <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                            `<option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                              <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                              <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
                              <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
