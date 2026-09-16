@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# FINAL FORCE-LOCKED ENTRY PRICE BOT + DASHBOARD
+# FINAL MULTI-KEY FALLBACK ENTRY PRICE BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/44.0"
+            "User-Agent": "MultiBot/45.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/44.0"
+            "User-Agent": "MultiBot/45.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -193,11 +193,21 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
-        raw_entry = pos_item.get("entry_price")
+        # सभी संभावित की-वर्ड्स की जाँच (Multi-key Fallback) ताकि कभी N/A न आए
+        raw_entry = (
+            pos_item.get("entry_price") or 
+            pos_item.get("entry") or 
+            pos_item.get("avg_price") or 
+            pos_item.get("average_price") or
+            pos_item.get("cost_price")
+        )
+        
         entry_val = None
         if raw_entry is not None and str(raw_entry).strip() != "" and str(raw_entry).strip() != "None":
             try:
-                entry_val = float(raw_entry)
+                f_val = float(raw_entry)
+                if f_val > 0:
+                    entry_val = f_val
             except Exception:
                 pass
 
@@ -441,7 +451,6 @@ class AccountBot:
         try:
             pos = self.client.position(self.product_id)
             
-            # यदि एक्सचेंज से सही एंट्री प्राइस मिल रहा है, तो उसे active_trade में पक्का सेव करें
             if pos.get("size", 0) != 0 and pos.get("entry") is not None:
                 self.active_trade = {
                     "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
@@ -452,7 +461,6 @@ class AccountBot:
                 }
                 self.save()
             elif pos.get("size", 0) != 0 and pos.get("entry") is None:
-                # अगर एक्सचेंज से एंट्री नहीं आई लेकिन पहले से active_trade में है, तो उसे यूज़ करें
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry"] = float(self.active_trade.get("entry_price"))
             elif pos.get("size", 0) == 0:
@@ -818,10 +826,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # ==========================================
-                # फोर्स-लॉक्ड एंट्री प्राइस: 
-                # पहले पोजीशन का entry, अगर न मिले तो active_trade का entry, वरना N/A
-                # ==========================================
                 entry_price_val = pos.get("entry")
                 if entry_price_val is None and b.active_trade and b.active_trade.get("entry_price"):
                     entry_price_val = float(b.active_trade.get("entry_price"))
@@ -1037,7 +1041,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                              <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
 
-                        // फ्रंटएंड पर सख्त नियम: कभी भी करंट प्राइस को एंट्री प्राइस नहीं बनने देगा
                         let finalEntry = (pos.entry !== null && pos.entry !== undefined && pos.entry > 0) ? pos.entry : 'N/A';
 
                         let html = `
@@ -1268,7 +1271,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("FINAL FORCE-LOCKED BOT STARTING...")
+    logging.warning("FINAL MULTI-KEY BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
