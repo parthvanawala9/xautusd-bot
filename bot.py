@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# 5:45 START FILTER BOT + DYNAMIC HIGH/LOW (v61.0)
+# DIRECT ENTRY LOCK BOT + DASHBOARD (v64.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/61.0"
+            "User-Agent": "MultiBot/64.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/61.0"
+            "User-Agent": "MultiBot/64.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -202,12 +202,15 @@ class DeltaClient:
             or pos_item.get("avg_price") 
             or pos_item.get("average_price")
             or pos_item.get("price")
+            or pos_item.get("opening_price")
         )
+        
         entry_val = None
         if raw_entry is not None and str(raw_entry).strip() not in ("", "None", "null"):
             try:
                 f_val = float(raw_entry)
-                if f_val > 0: entry_val = f_val
+                if f_val > 0: 
+                    entry_val = f_val
             except Exception:
                 pass
 
@@ -486,15 +489,16 @@ class AccountBot:
             pos["margin"] = margined.get("margin") or pos.get("margin")
             pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
 
+            # ABSOLUTE AUTHORITATIVE ENTRY LOCKING FROM ACTIVE TRADE STATE
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
-                if (cur_entry is None or cur_entry <= 0) and self.active_trade and self.active_trade.get("entry_price"):
-                    cur_entry = float(self.active_trade["entry_price"])
-
+                
                 if not self.active_trade:
+                    # Fallback locking if bot restarted while position was open
+                    fallback_ep = float(cur_entry) if cur_entry is not None and cur_entry > 0 else (float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low))
                     self.active_trade = {
                         "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
-                        "entry_price": float(cur_entry) if cur_entry is not None and cur_entry > 0 else (float(self.last_price) if self.last_price else 0.0),
+                        "entry_price": fallback_ep,
                         "entry_time": now_ist().isoformat(),
                         "size": abs(int(pos.get("size", 0))),
                         "leverage": int(self.leverage),
@@ -502,16 +506,15 @@ class AccountBot:
                     }
                     self.save()
                 else:
-                    if cur_entry is not None and cur_entry > 0:
-                        self.active_trade["entry_price"] = float(cur_entry)
-                    elif not self.active_trade.get("entry_price") and self.last_price:
-                        self.active_trade["entry_price"] = float(self.last_price)
+                    if (not self.active_trade.get("entry_price") or float(self.active_trade.get("entry_price", 0)) <= 0):
+                        if cur_entry is not None and cur_entry > 0:
+                            self.active_trade["entry_price"] = float(cur_entry)
+                        else:
+                            # Use breakout level (day high/low) as the exact entry price if API doesn't provide it
+                            self.active_trade["entry_price"] = float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low)
+                        self.save()
 
-                    if "sl" not in self.active_trade or not self.active_trade["sl"]:
-                        self.active_trade["sl"] = float(self.day_low) if pos.get("size", 0) > 0 else float(self.day_high)
-                    self.save()
-
-                if (pos.get("entry_price") is None or pos.get("entry_price") <= 0) and self.active_trade and self.active_trade.get("entry_price"):
+                if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry_price"] = float(self.active_trade["entry_price"])
 
             self.cached_position = pos
@@ -542,7 +545,7 @@ class AccountBot:
             if size != 0:
                 direction = "LONG" if size > 0 else "SHORT"
                 if not self.active_trade or not self.active_trade.get("entry_price"):
-                    p_val = pos.get("entry_price") or self.last_price or self.client.last_traded_price() or 0.0
+                    p_val = pos.get("entry_price") or (float(self.day_high) if size > 0 else float(self.day_low))
                     self.active_trade = {
                         "direction": direction, 
                         "entry_price": float(p_val), 
@@ -712,8 +715,10 @@ class AccountBot:
             logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
             return False
 
+        # INSTANTLY LOCK THE EXACT BREAKOUT PRICE AS THE DEFINITIVE ENTRY PRICE
+        actual_entry = float(price)
+
         confirmed = False
-        actual_entry = price
         actual_size = 0
         for _ in range(40):
             time.sleep(0.25)
@@ -723,7 +728,7 @@ class AccountBot:
                 if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
                     self.last_position = sz
                     actual_size = abs(sz)
-                    fetched_ep = p.get("entry_price") or p.get("entry") or p.get("avg_price")
+                    fetched_ep = p.get("entry_price") or p.get("entry") or p.get("avg_price") or p.get("average_price")
                     if fetched_ep and float(fetched_ep) > 0:
                         actual_entry = float(fetched_ep)
                     confirmed = True
@@ -738,16 +743,12 @@ class AccountBot:
                 if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
                     self.last_position = sz
                     actual_size = abs(sz)
-                    fetched_ep = p_margined.get("entry_price") or p_margined.get("entry")
+                    fetched_ep = p_margined.get("entry_price") or p_margined.get("entry") or p_margined.get("avg_price")
                     if fetched_ep and float(fetched_ep) > 0:
                         actual_entry = float(fetched_ep)
                     confirmed = True
             except Exception:
                 pass
-
-        if not confirmed:
-            logging.error(f"[{self.symbol}] Position confirmation timed out. Reconciling orders.")
-            return False
 
         time.sleep(1.0)
         margined_data = self.client.margined_position(self.product_id)
@@ -871,7 +872,7 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
-            # RUNNING DAY HIGH / LOW UPDATES (CONTINUOUSLY TRACKS MARKET EXTREMES)
+            # RUNNING DAY HIGH / LOW UPDATES
             if self.day_high is None or new_price > self.day_high:
                 self.day_high = new_price
                 self.save()
@@ -879,7 +880,7 @@ class AccountBot:
                 self.day_low = new_price
                 self.save()
 
-            # 5:45 AM TIME FILTER: DO NOT TAKE NEW TRADES UNTIL 5:45 AM (FIRST 15 MINUTES FLAT)
+            # 5:45 AM TIME FILTER
             session_target_time = self.session_start + timedelta(minutes=15)
             if now < session_target_time:
                 return
@@ -1026,13 +1027,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "liquidation_price": None, "bankruptcy_price": None, "margin": None, "mark_price": None, "unrealized_pnl": 0}
                     balance_val = 0
 
+                # ABSOLUTE ENTRY PRICE GUARANTEE FROM ACTIVE TRADE STATE
                 entry_price_val = None
                 if b.active_trade and b.active_trade.get("entry_price") and float(b.active_trade.get("entry_price")) > 0:
                     entry_price_val = float(b.active_trade.get("entry_price"))
                 elif pos.get("entry_price") is not None and float(pos.get("entry_price")) > 0:
                     entry_price_val = float(pos.get("entry_price"))
-                elif b.last_price and pos.get("size", 0) != 0:
-                    entry_price_val = float(b.last_price)
 
                 active_sl = None
                 if b.active_trade and b.active_trade.get("sl"):
@@ -1198,7 +1198,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">5:45 Start Filter Bot (v61.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Direct Entry Lock Bot (v64.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1503,7 +1503,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("5:45 FILTER BOT v61.0 STARTING...")
+    logging.warning("DIRECT ENTRY LOCK BOT v64.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
