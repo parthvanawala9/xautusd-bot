@@ -193,7 +193,6 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
-        # सभी संभावित की-वर्ड्स की जाँच (Multi-key Fallback) ताकि कभी N/A न आए
         raw_entry = (
             pos_item.get("entry_price") or 
             pos_item.get("entry") or 
@@ -565,10 +564,11 @@ class AccountBot:
     def calculate_approx_liquidation(self, entry_price, lev, direction):
         l = float(lev)
         if l <= 0: return entry_price
+        # Strict safety buffer factor (0.75 instead of 0.9) to prevent edge liquidation hits on high leverage
         if direction == "LONG":
-            return entry_price * (1.0 - (0.9 / l))
+            return entry_price * (1.0 - (0.75 / l))
         else:
-            return entry_price * (1.0 + (0.9 / l))
+            return entry_price * (1.0 + (0.75 / l))
 
     def get_safe_leverage(self, entry_price, sl_price, direction):
         if "BTC" in self.symbol:
@@ -582,9 +582,11 @@ class AccountBot:
         for lev in ladder:
             liq = self.calculate_approx_liquidation(entry, lev, direction)
             if direction == "LONG":
+                # For LONG, liquidation price must be strictly LESS than Stop Loss
                 if liq < sl:
                     return Decimal(str(lev))
             else:
+                # For SHORT, liquidation price must be strictly GREATER than Stop Loss
                 if liq > sl:
                     return Decimal(str(lev))
         
