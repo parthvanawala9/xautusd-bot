@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# FINAL INSTANT-FLIP BULLETPROOF BOT + DASHBOARD (v57.0)
+# FINAL INSTANT-FLIP BULLETPROOF BOT + DASHBOARD (v58.0)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/57.0"
+            "User-Agent": "MultiBot/58.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/57.0"
+            "User-Agent": "MultiBot/58.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -885,7 +885,6 @@ class AccountBot:
                     self.last_position = 0
                     self.save()
 
-                    # INSTANTLY OPEN OPPOSITE POSITION
                     if old_dir == "LONG":
                         new_sl = self.day_high if self.day_high is not None else trigger_exit_price * Decimal("1.01")
                         self.enter("SHORT", trigger_exit_price, new_sl)
@@ -1195,7 +1194,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Instant-Flip Bot (v57.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Instant-Flip Bot (v58.0)</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1500,7 +1499,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("INSTANT-FLIP BULLETPROOF BOT v57.0 STARTING...")
+    logging.warning("INSTANT-FLIP BULLETPROOF BOT v58.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
