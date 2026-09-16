@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# ULTIMATE BULLETPROOF FIX FOR ENTRY PRICE & DASHBOARD
+# LOGGING DEBUGGER BOT FOR DELTA POSITION API
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/40.0"
+            "User-Agent": "MultiBot/42.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/40.0"
+            "User-Agent": "MultiBot/42.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -193,19 +193,26 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
-        entry_val = (
-            pos_item.get("entry_price") or 
-            pos_item.get("average_price") or 
-            pos_item.get("entryPrice") or 
-            pos_item.get("avg_entry_price") or
-            pos_item.get("price") or
-            pos_item.get("cost_price") or
-            pos_item.get("liquidation_price")
-        )
+        # यहाँ रेलवे के लॉग्स में डेल्टा का पूरा पोजीशन ऑब्जेक्ट प्रिंट हो जाएगा
+        logging.warning(f"=== RAW DELTA POSITION OBJECT FOR {self.symbol} ===")
+        logging.warning(json.dumps(pos_item, indent=2))
+        logging.warning("==================================================")
+
+        entry_val = None
+        for key, val in pos_item.items():
+            if any(k in key.lower() for k in ["entry", "price", "avg", "cost"]) and val is not None and str(val).strip() != "" and str(val).strip() != "0":
+                try:
+                    # यदि यह कोई कीमत है (यानी संख्या है जो 1 से बड़ी है)
+                    f_val = float(val)
+                    if f_val > 1.0: 
+                        entry_val = f_val
+                        break
+                except Exception:
+                    pass
 
         return {
             "size": int(pos_item.get("size", 0) or 0),
-            "entry": float(entry_val) if entry_val is not None else None,
+            "entry": entry_val,
             "stop_loss": pos_item.get("stop_loss"),
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
@@ -443,15 +450,20 @@ class AccountBot:
         try:
             pos = self.client.position(self.product_id)
             
-            # अल्टीमेट फॉールबैक: अगर एंट्री नहीं मिली तो active_trade या last_price से तुरंत भरें
+            if pos.get("size", 0) != 0 and pos.get("entry") is not None:
+                if not self.active_trade or not self.active_trade.get("entry_price"):
+                    self.active_trade = {
+                        "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
+                        "entry_price": float(pos["entry"]),
+                        "entry_time": now_ist().isoformat(),
+                        "size": abs(int(pos.get("size", 0))),
+                        "leverage": int(self.leverage)
+                    }
+                    self.save()
+            
             if pos.get("size", 0) != 0 and pos.get("entry") is None:
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry"] = float(self.active_trade.get("entry_price"))
-                elif self.last_price:
-                    pos["entry"] = float(self.last_price)
-                else:
-                    lp = self.client.last_traded_price()
-                    pos["entry"] = float(lp) if lp else 75866.0
             
             self.cached_position = pos
             self.position_cache_time = current
@@ -671,16 +683,6 @@ class AccountBot:
             
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
-            if size != 0 and (not self.active_trade or not self.active_trade.get("entry_price")):
-                direction = "LONG" if size > 0 else "SHORT"
-                self.active_trade = {
-                    "direction": direction,
-                    "entry_price": float(pos.get("entry") or price),
-                    "entry_time": now_ist().isoformat(),
-                    "size": abs(size),
-                    "leverage": int(self.leverage)
-                }
-                self.save()
 
             if self.prev_price is None:
                 self.prev_price = price
@@ -822,34 +824,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     pos = {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance_val = 0
 
-                # ==========================================
-                # अचूक एंट्री प्राइस फोर्सर (कभी undefined नहीं होगा)
-                # ==========================================
                 entry_price_val = pos.get("entry")
                 if entry_price_val is None and b.active_trade and b.active_trade.get("entry_price"):
                     entry_price_val = float(b.active_trade.get("entry_price"))
-                if entry_price_val is None and pos.get("size", 0) != 0:
-                    if b.last_price: 
-                        entry_price_val = float(b.last_price)
-                    else:
-                        try:
-                            lp = b.client.last_traded_price()
-                            if lp: entry_price_val = float(lp)
-                        except Exception:
-                            pass
-                if entry_price_val is None and pos.get("size", 0) != 0:
-                    entry_price_val = 75866.0 # स्क्रीनशॉट के हिसाब से लाइव फॉर्स्ड वैल्यू
-
-                # यदि पोजीशन है लेकिन active_trade सेव नहीं था, तो उसे तुरंत सेव करें
-                if pos.get("size", 0) != 0 and (not b.active_trade or not b.active_trade.get("entry_price")):
-                    b.active_trade = {
-                        "direction": "LONG" if pos.get("size", 0) > 0 else "SHORT",
-                        "entry_price": float(entry_price_val),
-                        "entry_time": now_ist().isoformat(),
-                        "size": abs(int(pos.get("size", 0))),
-                        "leverage": int(b.leverage)
-                    }
-                    b.save()
 
                 exchange_pnl = float(pos.get("unrealized_pnl", 0) or 0)
                 if exchange_pnl == 0.0 and pos.get("size", 0) != 0 and entry_price_val and b.last_price:
@@ -1062,8 +1039,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                              <option value="5" ${acc.leverage==5?'selected':''}>5x</option>
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
 
-                        // फ्रंटएंड पर कभी undefined न आए, इसके लिए डायरेक्ट फॉर्स्ड वैल्यू
-                        let finalEntry = (pos.entry !== null && pos.entry !== undefined) ? pos.entry : (acc.current_price || 'N/A');
+                        let finalEntry = (pos.entry !== null && pos.entry !== undefined) ? pos.entry : 'N/A';
 
                         let html = `
                         <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
@@ -1293,7 +1269,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("ULTIMATE BULLETPROOF BOT STARTING...")
+    logging.warning("LOGGING DEBUGGER BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
