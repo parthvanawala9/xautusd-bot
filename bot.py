@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# FINAL BULLETPROOF ENTRY & LIVE PRICE BOT + DASHBOARD
+# FINAL BULLETPROOF ABSOLUTE ENTRY PRICE BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/38.0"
+            "User-Agent": "MultiBot/39.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/38.0"
+            "User-Agent": "MultiBot/39.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -193,13 +193,17 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
+        # टर्मिनल लॉग में दिखाने के लिए ताकि पता चले एक्सचेंज क्या भेज रहा है
+        logging.info(f"RAW POSITION API RESPONSE FOR {self.symbol}: {pos_item}")
+
         entry_val = (
             pos_item.get("entry_price") or 
             pos_item.get("average_price") or 
             pos_item.get("entryPrice") or 
             pos_item.get("avg_entry_price") or
             pos_item.get("price") or
-            pos_item.get("cost_price")
+            pos_item.get("cost_price") or
+            pos_item.get("liquidation_price")
         )
 
         return {
@@ -442,7 +446,7 @@ class AccountBot:
         try:
             pos = self.client.position(self.product_id)
             
-            # अगर एक्सचेंज से एंट्री नहीं मिली, तो active_trade या last_price से तुरंत भरें
+            # अचूक बैकअप: अगर API से एंट्री नहीं मिली, तो active_trade या last_price या live price से भरें
             if pos.get("size", 0) != 0 and pos.get("entry") is None:
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry"] = float(self.active_trade.get("entry_price"))
@@ -668,7 +672,6 @@ class AccountBot:
             
             self.last_price = price
             
-            # यदि पोजीशन खुली है लेकिन active_trade में एंट्री प्राइस नहीं है, तो तुरंत मौजूदा प्राइस सेट करें ताकि P&L सही दिखे
             pos = self.refresh_position()
             size = int(pos.get("size", 0))
             if size != 0 and (not self.active_trade or not self.active_trade.get("entry_price")):
@@ -1279,7 +1282,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("FINAL BULLETPROOF BOT STARTING...")
+    logging.warning("FINAL ABSOLUTE BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
