@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# INSTANT FLIP FORCED CHECK BOT + DASHBOARD (v67.0)
+# DELTA PRO AUTOTRADER (v67.1)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/67.0"
+            "User-Agent": "MultiBot/67.1"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/67.0"
+            "User-Agent": "MultiBot/67.1"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -823,7 +823,6 @@ class AccountBot:
                     if self.product_id:
                         self.client.cancel_all_orders(self.product_id)
                         try:
-                            # FORCED REFRESH TO CATCH EXIT
                             pos = self.refresh_position(force=True)
                             sz = int(pos.get("size", 0))
                             if sz != 0:
@@ -845,7 +844,6 @@ class AccountBot:
                 return
             
             self.last_price = price
-            # FORCE POSITION REFRESH EVERY SECOND TO NEVER MISS AN SL HIT OR FLIP
             pos = self.refresh_position(force=True)
             size = int(pos.get("size", 0))
 
@@ -881,7 +879,6 @@ class AccountBot:
                 self.day_low = new_price
                 self.save()
 
-            # INSTANT FLIP: FORCE CHECKED EVERY SECOND VIA REFRESH POSITION
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
@@ -1185,13 +1182,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-Bot Dashboard</title>
+    <title>Delta Pro AutoTrader</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Instant Flip Forced Bot (v67.0)</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Delta Pro AutoTrader</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1494,7 +1491,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("INSTANT FLIP FORCED BOT v67.0 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v67.1 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
