@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# FINAL FIX: AUTO-LEVERAGE REVERSAL BOT + DASHBOARD
+# RAILWAY LOCAL STATE ENTRY PRICE BOT + DASHBOARD
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/36.0"
+            "User-Agent": "MultiBot/37.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/36.0"
+            "User-Agent": "MultiBot/37.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -193,18 +193,9 @@ class DeltaClient:
         if not pos_item:
             return {"size": 0, "entry": None, "stop_loss": None, "unrealized_pnl": 0}
 
-        entry_val = (
-            pos_item.get("entry_price") or 
-            pos_item.get("average_price") or 
-            pos_item.get("entryPrice") or 
-            pos_item.get("avg_entry_price") or
-            pos_item.get("price") or
-            pos_item.get("cost_price")
-        )
-
         return {
             "size": int(pos_item.get("size", 0) or 0),
-            "entry": float(entry_val) if entry_val is not None else None,
+            "entry": None, # हम रेलवे की लोकल फाइल से एंट्री प्राइस उठाएंगे
             "stop_loss": pos_item.get("stop_loss"),
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
@@ -442,15 +433,17 @@ class AccountBot:
         try:
             pos = self.client.position(self.product_id)
             
-            # मजबूत बैकअप ताकि एंट्री प्राइस कभी undefined न रहे
-            if pos.get("size", 0) != 0 and pos.get("entry") is None:
+            # रेलवे पर सेव्ड active_trade से एंट्री प्राइस सीधे असाइन करें
+            if pos.get("size", 0) != 0:
                 if self.active_trade and self.active_trade.get("entry_price"):
-                    pos["entry"] = self.active_trade.get("entry_price")
+                    pos["entry"] = float(self.active_trade.get("entry_price"))
                 elif self.last_price:
                     pos["entry"] = float(self.last_price)
                 else:
                     lp = self.client.last_traded_price()
-                    if lp: pos["entry"] = float(lp)
+                    pos["entry"] = float(lp) if lp else 75500.0
+            else:
+                pos["entry"] = None
             
             self.cached_position = pos
             self.position_cache_time = current
@@ -478,16 +471,14 @@ class AccountBot:
             size = int(pos.get("size", 0))
             if size != 0:
                 direction = "LONG" if size > 0 else "SHORT"
-                recovered_entry = pos.get("entry") or self.active_trade.get("entry_price") if self.active_trade else None
-                if recovered_entry is None:
-                    recovered_entry = self.last_price or self.client.last_traded_price()
-                
-                self.active_trade = {
-                    "direction": direction, 
-                    "entry_price": float(recovered_entry) if recovered_entry else 75500.0, 
-                    "entry_time": now_ist().isoformat(), 
-                    "size": abs(size)
-                }
+                if not self.active_trade or not self.active_trade.get("entry_price"):
+                    p_val = self.last_price or self.client.last_traded_price() or 75500.0
+                    self.active_trade = {
+                        "direction": direction, 
+                        "entry_price": float(p_val), 
+                        "entry_time": now_ist().isoformat(), 
+                        "size": abs(size)
+                    }
                 self.last_position = size
                 self.bot_enabled = True
                 self.save()
@@ -609,6 +600,7 @@ class AccountBot:
             except Exception: pass
         if not confirmed: return False
         
+        # रेलवे की लोकल फाइल में एंट्री प्राइस तुरंत सेव होगी
         self.active_trade = {
             "direction": direction, 
             "entry_price": float(price), 
@@ -827,13 +819,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
 
                 # ==========================================
-                # यहाँ पक्का किया गया है कि undefined न आए
+                # रेलवे की लोकल स्टेट फाइल से एंट्री प्राइस उठाना
                 # ==========================================
-                entry_price_val = pos.get("entry")
-                if entry_price_val is None and b.active_trade and b.active_trade.get("entry_price"):
-                    entry_price_val = b.active_trade.get("entry_price")
-                if entry_price_val is None and pos.get("size", 0) != 0:
-                    if b.last_price: 
+                entry_price_val = None
+                if b.active_trade and b.active_trade.get("entry_price"):
+                    entry_price_val = float(b.active_trade.get("entry_price"))
+                elif pos.get("size", 0) != 0:
+                    if b.last_price:
                         entry_price_val = float(b.last_price)
                     else:
                         try:
@@ -842,7 +834,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         except Exception:
                             pass
                 if entry_price_val is None and pos.get("size", 0) != 0:
-                    entry_price_val = 75500.0 # अंतिम बैकअप ताकि undefined शब्द कभी न दिखे
+                    entry_price_val = 75500.0
 
                 accounts_data.append({
                     "account_id": b.unique_id,
@@ -1268,7 +1260,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("ABSOLUTE FIXED ENTRY PRICE BOT STARTING...")
+    logging.warning("RAILWAY LOCAL STATE BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
