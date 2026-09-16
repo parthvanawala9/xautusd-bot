@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # ============================================================
-# FINAL LIQUIDATION-SAFE MULTI-KEY BOT + DASHBOARD
+# FINAL DYNAMIC DAY HIGH/LOW LIQUIDATION-SAFE FLIP BOT
 # ============================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/46.0"
+            "User-Agent": "MultiBot/48.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/46.0"
+            "User-Agent": "MultiBot/48.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -384,8 +384,8 @@ class AccountBot:
         self.product = None
         self.product_id = 0
         self.session_start = None
-        self.base_high = None
-        self.base_low = None
+        self.day_high = None
+        self.day_low = None
         self.last_position = 0
         self.last_price = None
         self.prev_price = None
@@ -424,8 +424,8 @@ class AccountBot:
             with open(filename, "r", encoding="utf-8") as f:
                 state = json.load(f)
             if state.get("session_start"): self.session_start = datetime.fromisoformat(state["session_start"])
-            if state.get("base_high") is not None: self.base_high = Decimal(str(state["base_high"]))
-            if state.get("base_low") is not None: self.base_low = Decimal(str(state["base_low"]))
+            if state.get("day_high") is not None: self.day_high = Decimal(str(state["day_high"]))
+            if state.get("day_low") is not None: self.day_low = Decimal(str(state["day_low"]))
             if state.get("active_trade"): self.active_trade = state["active_trade"]
             if state.get("leverage") is not None: self.leverage = Decimal(str(state["leverage"]))
             if state.get("balance_fraction") is not None: self.balance_fraction = Decimal(str(state["balance_fraction"]))
@@ -439,8 +439,8 @@ class AccountBot:
         data = {
             "account_id": self.unique_id, "account_name": self.account_name, "symbol": self.symbol,
             "session_start": self.session_start.isoformat() if self.session_start else None,
-            "base_high": str(self.base_high) if self.base_high is not None else None,
-            "base_low": str(self.base_low) if self.base_low is not None else None,
+            "day_high": str(self.day_high) if self.day_high is not None else None,
+            "day_low": str(self.day_low) if self.day_low is not None else None,
             "active_trade": getattr(self, 'active_trade', None),
             "leverage": int(self.leverage),
             "balance_fraction": float(self.balance_fraction),
@@ -555,8 +555,8 @@ class AccountBot:
                         self.finish_active_trade(exit_price, "SESSION_530_SQUAREOFF")
                     except Exception: pass
             self.session_start = current_sess
-            self.base_high = None
-            self.base_low = None
+            self.day_high = None
+            self.day_low = None
             self.prev_price = None
             self.ready = False
             self.save()
@@ -566,8 +566,8 @@ class AccountBot:
         if now < self.session_start + timedelta(minutes=15): return False
         high, low = self.client.fetch_530_candle(self.session_start)
         if high is not None and low is not None:
-            self.base_high = high
-            self.base_low = low
+            self.day_high = high
+            self.day_low = low
             self.ready = True
             self.save()
             return True
@@ -579,7 +579,6 @@ class AccountBot:
         if entry <= 0 or lev <= 0:
             return None
 
-        # Agar self.product load nahi hua toh fallback safety margins use karo
         m_raw = 0
         t_raw = 0
         if self.product:
@@ -596,7 +595,7 @@ class AccountBot:
         except Exception:
             taker_fee = Decimal("0")
 
-        safety = Decimal("0.0010") # 10 BPS safety buffer
+        safety = Decimal("0.0010")
         effective_mm = maintenance + taker_fee + safety
 
         if direction == "LONG":
@@ -609,16 +608,14 @@ class AccountBot:
             return False
         if is_weekend() or not self.bot_enabled or not self.product_id: return False
 
-        # Properly sorted ladder from HIGHEST to LOWEST leverage
         ladder = [200, 150, 100, 50, 25, 10, 5, 1] if "BTC" in self.symbol else [100, 50, 25, 10, 5, 1]
-        
         side = "buy" if direction == "LONG" else "sell"
         order_done = False
         selected_lev = Decimal("1")
         estimated_liq = None
         last_error = None
 
-        # Sabse pehle highest leverage (jaise 200x ya 100x) se check karega
+        # Liquidation Safety Check: Liquidation must always be on the safe side of SL
         for lev in ladder:
             lev_decimal = Decimal(str(lev))
             candidate_liq = self.estimate_liquidation_price(price, lev_decimal, direction)
@@ -626,13 +623,11 @@ class AccountBot:
             if candidate_liq is None:
                 continue
 
-            # Check karo ki liquidation SL ke safe side par hai ya nahi
             if direction == "LONG" and candidate_liq >= Decimal(str(sl_level)):
-                continue # Unsafe hai, toh agli lower leverage try karo
+                continue  # Unsafe (Liq is above or at SL), try lower leverage
             if direction == "SHORT" and candidate_liq <= Decimal(str(sl_level)):
-                continue # Unsafe hai, toh agli lower leverage try karo
+                continue  # Unsafe (Liq is below or at SL), try lower leverage
 
-            # Agar yahan tak pahuncha matlab yeh leverage SAFE hai!
             try:
                 self.client.set_leverage(self.product_id, lev_decimal)
                 size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
@@ -643,17 +638,16 @@ class AccountBot:
                 estimated_liq = candidate_liq
                 order_done = True
 
-                logging.info(f"[{self.symbol}] SAFE HIGH LEVERAGE SELECTED -> {int(self.leverage)}x | Entry={price} | Liq={candidate_liq} | SL={sl_level}")
+                logging.info(f"[{self.symbol}] SAFE LIQ ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
                 break
             except Exception as e:
                 last_error = e
-                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected by exchange: {e}. Trying next lower leverage.")
+                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying lower.")
 
         if not order_done:
-            logging.error(f"[{self.symbol}] All leverage entries failed. Last error: {last_error}")
+            logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
             return False
 
-        # Position confirmation check
         confirmed = False
         actual_entry = price
         for _ in range(15):
@@ -754,6 +748,14 @@ class AccountBot:
 
             self.check_session_change(now)
             if not self.prepare(now): return
+
+            # Pure Day High / Day Low dynamic update
+            if self.day_high is None or new_price > self.day_high:
+                self.day_high = new_price
+                self.save()
+            if self.day_low is None or new_price < self.day_low:
+                self.day_low = new_price
+                self.save()
             
             if self.last_position != 0 and (size == 0 or (size > 0 and self.last_position < 0) or (size < 0 and self.last_position > 0)):
                 self.finish_active_trade(price, "REVERSED_OR_SL_HIT")
@@ -764,24 +766,30 @@ class AccountBot:
                 self.last_position = 0
                 if not self.bot_enabled: return
                 
-                if self.base_high is not None and old_price <= self.base_high and new_price > self.base_high:
-                    self.enter("LONG", self.base_high, self.base_low)
+                # Breakout on updated Day High / Day Low
+                if self.day_high is not None and old_price <= self.day_high and new_price > self.day_high:
+                    sl_to_use = self.day_low if self.day_low is not None else price * Decimal("0.99")
+                    self.enter("LONG", self.day_high, sl_to_use)
                     return
-                if self.base_low is not None and old_price >= self.base_low and new_price < self.base_low:
-                    self.enter("SHORT", self.base_low, self.base_high)
+                if self.day_low is not None and old_price >= self.day_low and new_price < self.day_low:
+                    sl_to_use = self.day_high if self.day_high is not None else price * Decimal("1.01")
+                    self.enter("SHORT", self.day_low, sl_to_use)
                     return
             else:
                 self.last_position = size
                 current_dir = "LONG" if size > 0 else "SHORT"
                 
-                if current_dir == "LONG" and self.base_high is not None and new_price <= self.base_low:
+                # Flip on Day Low (for Long) or Day High (for Short)
+                if current_dir == "LONG" and self.day_low is not None and new_price <= self.day_low:
                     self.client.close_position(self.product_id, size)
-                    self.finish_active_trade(price, "LONG_SL_HIT_REVERSE_SHORT")
-                    self.enter("SHORT", price, self.base_high)
-                elif current_dir == "SHORT" and self.base_low is not None and new_price >= self.base_high:
+                    self.finish_active_trade(price, "LONG_SL_HIT_FLIP_SHORT")
+                    new_sl = self.day_high if self.day_high is not None else price * Decimal("1.01")
+                    self.enter("SHORT", price, new_sl)
+                elif current_dir == "SHORT" and self.day_high is not None and new_price >= self.day_high:
                     self.client.close_position(self.product_id, size)
-                    self.finish_active_trade(price, "SHORT_SL_HIT_REVERSE_LONG")
-                    self.enter("LONG", price, self.base_low)
+                    self.finish_active_trade(price, "SHORT_SL_HIT_FLIP_LONG")
+                    new_sl = self.day_low if self.day_low is not None else price * Decimal("0.99")
+                    self.enter("LONG", price, new_sl)
 
 BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
@@ -910,7 +918,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "size": pos.get("size", 0),
                         "direction": direction,
                         "entry_price": float(entry_price_val) if entry_price_val is not None else None,
-                        "stop_loss": float(b.base_high) if direction == "SHORT" else (float(b.base_low) if direction == "LONG" else None),
+                        "stop_loss": float(b.day_low) if direction == "LONG" else (float(b.day_high) if direction == "SHORT" else None),
                         "liquidation_price": pos.get("liquidation_price"),
                         "bankruptcy_price": pos.get("bankruptcy_price"),
                         "margin": pos.get("margin"),
@@ -1026,7 +1034,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Liquidation-Safe Reversal Bot</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Day High/Low Liquidation-Safe Bot</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
@@ -1304,7 +1312,6 @@ def run_websocket():
                 ws.send(json.dumps({"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": SYMBOLS_LIST}]}}))
 
             def on_message(ws, message):
-                data = json.dumps(message) # safely handled
                 data = json.loads(message)
                 if data.get("type") != "trades": return
                 payload = data.get("data", data)
@@ -1325,7 +1332,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("FINAL LIQUIDATION-SAFE BOT STARTING...")
+    logging.warning("DAY HIGH/LOW LIQUIDATION-SAFE BOT STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
