@@ -1035,10 +1035,12 @@ class AccountBot:
             self.save()
             return
         pnl = calculate_trade_pnl(direction, entry_price, exit_price, trade_size, self.product or {"contract_value": "0.001"})
+        trade_leverage = self.active_trade.get("leverage", self.leverage) if self.active_trade else self.leverage
         trade = {
             "id": f"trade_{int(time.time() * 1000)}", "account_id": self.unique_id, "account": self.account_name,
             "symbol": self.symbol, "date": now_ist().strftime("%Y-%m-%d %H:%M"), "direction": direction,
             "entry_price": float(entry_price), "exit_price": float(exit_price), "size": abs(int(trade_size)),
+            "leverage": int(trade_leverage),
             "pnl": float(pnl), "reason": reason
         }
         history = load_trade_history(self.unique_id)
@@ -1330,6 +1332,24 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "direction": direction,
                         "entry_price": entry_price_val,
                         "stop_loss": active_sl,
+                        "target_5r": (
+                            float(b.active_trade.get("target_5r"))
+                            if b.active_trade and b.active_trade.get("target_5r") is not None
+                            else None
+                        ),
+                        "target_size": (
+                            int(b.active_trade.get("target_size", 0))
+                            if b.active_trade else 0
+                        ),
+                        "partial_booked": (
+                            bool(b.active_trade.get("partial_booked", False))
+                            if b.active_trade else False
+                        ),
+                        "trade_leverage": (
+                            int(b.active_trade.get("leverage"))
+                            if b.active_trade and b.active_trade.get("leverage") is not None
+                            else (int(b.leverage) if direction != "FLAT" else None)
+                        ),
                         "liquidation_price": pos.get("liquidation_price"),
                         "bankruptcy_price": pos.get("bankruptcy_price"),
                         "margin": pos.get("margin"),
@@ -1570,7 +1590,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold text-amber-300">${finalEntry}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Trade Leverage:</span> <span class="font-bold text-cyan-300">${pos.trade_leverage ? pos.trade_leverage + 'x' : 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">1:5 Target:</span> <span class="font-semibold text-emerald-300">${pos.target_5r || 'N/A'} ${pos.target_size ? '(Half: ' + pos.target_size + ')' : ''}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Target Status:</span> <span class="font-semibold ${pos.partial_booked?'text-emerald-400':'text-slate-400'}">${pos.direction=='FLAT' ? 'N/A' : (pos.partial_booked ? 'HIT — SL moved to Entry' : 'PENDING')}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Liquidation:</span> <span class="font-semibold text-rose-300">${pos.liquidation_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Bankruptcy:</span> <span class="font-semibold text-slate-300">${pos.bankruptcy_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Margin:</span> <span class="font-semibold text-slate-300">${pos.margin || 'N/A'}</span></div>
@@ -1610,6 +1633,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                         <div class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between items-center">
                                             <div>
                                                 <span class="font-bold ${t.direction=='LONG'?'text-emerald-400':'text-rose-400'}">${t.direction}</span>
+                                                <span class="font-bold text-cyan-300 ml-1">${t.leverage ? t.leverage + 'x' : 'N/A'}</span>
                                                 <span class="text-slate-400 ml-1">(${t.date})</span>
                                                 <div class="text-[10px] text-slate-500">Entry: ${t.entry_price} → Exit: ${t.exit_price}</div>
                                             </div>
