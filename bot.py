@@ -710,12 +710,9 @@ class AccountBot:
                 self.ready = True
                 self.save()
             else:
-                current_price = self.last_price or self.client.last_traded_price()
-                if current_price is not None:
-                    self.day_high = current_price
-                    self.day_low = current_price
-                    self.ready = True
-                    self.save()
+                # Never manufacture a session range from the current price.
+                # Wait until Delta returns the real 05:30-to-now candle range.
+                self.ready = False
 
         return True
 
@@ -970,7 +967,15 @@ class AccountBot:
                 return
 
             self.check_session_change(now)
-            if not self.prepare(now) or self.manual_squareoff_flag:
+            if self.manual_squareoff_flag:
+                return
+
+            if not self.prepare(now):
+                return
+
+            # Never trade if the true 05:30-to-now range has not been loaded.
+            # This prevents a fake breakout caused by an uninitialized range.
+            if self.day_high is None or self.day_low is None or not self.ready:
                 return
 
             # IMPORTANT:
@@ -1056,8 +1061,8 @@ class AccountBot:
                             return
 
             # Update the running 05:30-to-now session range AFTER breakout detection.
-            # This means a newly made high/low becomes part of the displayed range,
-            # while the breakout itself is still detected against the prior level.
+            # A newly created extreme cannot itself trigger a trade; it becomes
+            # the reference level for the NEXT breakout.
             range_changed = False
             if self.day_high is None or new_price > self.day_high:
                 self.day_high = new_price
