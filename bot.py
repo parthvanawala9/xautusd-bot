@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v72.0 - HISTORICAL API HIGH/LOW SCAN & SYNC)
+# DELTA PRO AUTOTRADER (v73.0 - 24H EXCHANGE HIGH/LOW DIRECT SYNC)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/72.0"
+            "User-Agent": "MultiBot/73.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/72.0"
+            "User-Agent": "MultiBot/73.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -175,45 +175,18 @@ class DeltaClient:
             raise RuntimeError(f"Invalid product response: {data}")
         return result
 
-    def get_historical_high_low(self, product_id, session_start_dt):
+    def get_ticker_high_low(self):
         try:
-            start_ts = int(session_start_dt.timestamp())
-            end_ts = int(time.time())
-            params = {
-                "product_id": int(product_id),
-                "resolution": "1m",
-                "start": start_ts,
-                "end": end_ts
-            }
-            data = self.api("GET", "/v2/history/candles", params=params)
-            candles = data.get("result", [])
-            if not isinstance(candles, list) or not candles:
-                return None, None
-
-            highest = None
-            lowest = None
-            for c in candles:
-                # Delta candle format can be dict or list
-                if isinstance(c, dict):
-                    h = float(c.get("high", 0) or 0)
-                    l = float(c.get("low", 0) or 0)
-                elif isinstance(c, list) and len(c) >= 4:
-                    h = float(c[2] or 0)
-                    l = float(c[3] or 0)
-                else:
-                    continue
-
-                if h > 0:
-                    if highest is None or h > highest:
-                        highest = h
-                if l > 0:
-                    if lowest is None or l < lowest:
-                        lowest = l
-
-            if highest is not None and lowest is not None:
-                return Decimal(str(highest)), Decimal(str(lowest))
+            data = self.api("GET", f"/v2/tickers/{self.symbol}")
+            res = data.get("result")
+            if isinstance(res, dict):
+                # Delta ticker gives high and low of the 24h rolling window or daily stats
+                h = res.get("high") or res.get("high_24h")
+                l = res.get("low") or res.get("low_24h")
+                if h is not None and l is not None:
+                    return Decimal(str(h)), Decimal(str(l))
         except Exception as e:
-            logging.warning(f"[{self.symbol}] Historical high/low fetch error: {e}")
+            logging.warning(f"[{self.symbol}] Ticker high/low fetch error: {e}")
         return None, None
 
     def position(self, product_id):
@@ -682,13 +655,12 @@ class AccountBot:
             self.manual_squareoff_flag = False
             self.ready = False
             
-            # Fetch historical high/low immediately upon new session
-            if self.product_id:
-                h, l = self.client.get_historical_high_low(self.product_id, self.session_start)
-                if h is not None and l is not None:
-                    self.day_high = h
-                    self.day_low = l
-                    self.ready = True
+            # Fetch direct exchange 24h ticker high/low on session change
+            h, l = self.client.get_ticker_high_low()
+            if h is not None and l is not None:
+                self.day_high = h
+                self.day_low = l
+                self.ready = True
             self.save()
 
     def prepare(self, now):
@@ -702,9 +674,9 @@ class AccountBot:
         if self.session_start is None:
             self.session_start = get_current_session_start(now)
 
-        # Always fetch historical high/low if not set or if we just started mid-day
+        # Force sync with Exchange Ticker High/Low if missing or outdated
         if self.day_high is None or self.day_low is None:
-            h, l = self.client.get_historical_high_low(self.product_id, self.session_start)
+            h, l = self.client.get_ticker_high_low()
             if h is not None and l is not None:
                 self.day_high = h
                 self.day_low = l
@@ -717,18 +689,6 @@ class AccountBot:
                     self.day_low = current_price
                     self.ready = True
                     self.save()
-
-        t = now.time()
-        # 5:30 to 5:45 AM flat window check
-        if t >= dtime(5, 30) and t < dtime(5, 45):
-            current_price = self.last_price or self.client.last_traded_price()
-            if current_price is not None:
-                if self.day_high is None or current_price > self.day_high:
-                    self.day_high = current_price
-                if self.day_low is None or current_price < self.day_low:
-                    self.day_low = current_price
-                self.save()
-            return False
 
         return True
 
@@ -1648,7 +1608,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v72.0 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v73.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
