@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v76.0 - INSTANT BREAKOUT & TRUE 5:30 SESSION)
+# DELTA PRO AUTOTRADER (v79.0 - INSTANT MARKET BREAKOUT + 1:5 HALF + BREAKEVEN FLIP)
 # =====================================================================
 
 load_dotenv()
@@ -30,10 +30,10 @@ BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstri
 WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.exchange")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
 
-RECONNECT_SECONDS = 3
+# Trading is enabled only after the 05:30 session range has had 15 minutes to form.
+TRADING_START_TIME = dtime(5, 45)
 
-# Session range starts at 05:30 IST; new breakout trading is allowed from 05:45 IST.
-BOT_TRADING_START = dtime(5, 45)
+RECONNECT_SECONDS = 3
 POSITION_CACHE_SECONDS = float(os.getenv("POSITION_CACHE_SECONDS", "0.5"))
 
 STATE_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_states")
@@ -179,16 +179,16 @@ class DeltaClient:
         return result
 
     def get_session_high_low(self, product_id, session_start_dt):
-        """Fetch the real 05:30 IST -> now session High/Low from 1-minute candles."""
         try:
             start_ts = int(session_start_dt.timestamp())
             end_ts = int(now_ist().timestamp())
             if end_ts <= start_ts:
                 return None, None
 
+            # Delta historical candles require SYMBOL (not product_id).
             params = {
-                "symbol": self.symbol,
                 "resolution": "1m",
+                "symbol": self.symbol,
                 "start": start_ts,
                 "end": end_ts
             }
@@ -196,7 +196,10 @@ class DeltaClient:
             candles = data.get("result", [])
 
             if not isinstance(candles, list) or not candles:
-                logging.warning(f"[{self.symbol}] No 05:30-to-now candles returned.")
+                logging.warning(
+                    f"[{self.symbol}] No candles for 05:30 session range "
+                    f"{session_start_dt.isoformat()} -> {now_ist().isoformat()}"
+                )
                 return None, None
 
             highest = None
@@ -215,9 +218,6 @@ class DeltaClient:
                     else:
                         continue
 
-                    if h_raw is None or l_raw is None:
-                        continue
-
                     if ts_raw is not None:
                         ts = float(ts_raw)
                         if ts > 100000000000:
@@ -227,6 +227,7 @@ class DeltaClient:
 
                     h = Decimal(str(h_raw))
                     l = Decimal(str(l_raw))
+
                     if h > 0 and (highest is None or h > highest):
                         highest = h
                     if l > 0 and (lowest is None or l < lowest):
@@ -236,12 +237,13 @@ class DeltaClient:
 
             if highest is not None and lowest is not None:
                 logging.info(
-                    f"[{self.symbol}] SESSION 05:30->NOW | High={highest} | Low={lowest}"
+                    f"[{self.symbol}] SESSION RANGE 05:30->NOW | "
+                    f"High={highest} | Low={lowest}"
                 )
                 return highest, lowest
 
         except Exception as e:
-            logging.warning(f"[{self.symbol}] Session high/low candle fetch error: {e}")
+            logging.warning(f"[{self.symbol}] Session high/low fetch error: {e}")
 
         return None, None
 
@@ -382,17 +384,41 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def place_slm_order(self, product_id, size, direction, stop_price):
+        """
+        Delta v2 stop-loss market order.
+        IMPORTANT: Delta uses order_type=market_order plus
+        stop_order_type=stop_loss_order. The old code used
+        order_type=stop_market_order, which is not the create-order schema.
+        """
         side = "sell" if direction == "LONG" else "buy"
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
             "size": int(abs(size)),
             "side": side,
-            "order_type": "stop_market_order",
+            "order_type": "market_order",
+            "stop_order_type": "stop_loss_order",
             "stop_price": str(stop_price),
             "stop_trigger_method": "last_traded_price",
             "reduce_only": True,
             "client_order_id": (f"slm_{int(time.time() * 1000)}")[-32:]
+        }
+        return self.api("POST", "/v2/orders", body=body, auth=True)
+
+    def place_tpm_order(self, product_id, size, direction, target_price):
+        """Delta v2 reduce-only take-profit market trigger for half the position."""
+        side = "sell" if direction == "LONG" else "buy"
+        body = {
+            "product_id": int(product_id),
+            "product_symbol": self.symbol,
+            "size": int(abs(size)),
+            "side": side,
+            "order_type": "market_order",
+            "stop_order_type": "take_profit_order",
+            "stop_price": str(target_price),
+            "stop_trigger_method": "last_traded_price",
+            "reduce_only": True,
+            "client_order_id": (f"tpm_{int(time.time() * 1000)}")[-32:]
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
@@ -501,6 +527,7 @@ class AccountBot:
         self.last_price = None
         self.prev_price = None
         self.ready = False
+        self.trading_armed = False
         self.bot_enabled = True
         self.stop_reason = None
         self.active_trade = None
@@ -551,6 +578,7 @@ class AccountBot:
             self.bot_enabled = state.get("bot_enabled", True)
             self.stop_reason = state.get("stop_reason", None)
             self.ready = state.get("ready", False)
+            self.trading_armed = state.get("trading_armed", False)
         except Exception:
             pass
 
@@ -563,7 +591,8 @@ class AccountBot:
             "active_trade": getattr(self, 'active_trade', None),
             "leverage": int(self.leverage),
             "balance_fraction": float(self.balance_fraction),
-            "bot_enabled": self.bot_enabled, "stop_reason": self.stop_reason, "ready": self.ready
+            "bot_enabled": self.bot_enabled, "stop_reason": self.stop_reason, "ready": self.ready,
+            "trading_armed": self.trading_armed
         }
         atomic_write_json(account_state_file(self.unique_id), data)
 
@@ -608,7 +637,20 @@ class AccountBot:
                             self.active_trade["entry_price"] = float(cur_entry)
                         else:
                             self.active_trade["entry_price"] = float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low)
-                        self.save()
+
+                    # Backfill 1:5 target for an already-open trade created by an
+                    # earlier bot version.
+                    if self.active_trade.get("target_5r") is None and self.active_trade.get("entry_price"):
+                        ep = Decimal(str(self.active_trade["entry_price"]))
+                        slv = Decimal(str(self.active_trade.get("sl", 0)))
+                        if slv > 0:
+                            risk = abs(ep - slv)
+                            self.active_trade["target_5r"] = float(
+                                ep + risk * Decimal("5")
+                                if self.active_trade.get("direction") == "LONG"
+                                else ep - risk * Decimal("5")
+                            )
+                    self.save()
 
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry_price"] = float(self.active_trade["entry_price"])
@@ -648,7 +690,9 @@ class AccountBot:
                         "entry_time": now_ist().isoformat(), 
                         "size": abs(size),
                         "sl": float(self.day_low) if direction == "LONG" else float(self.day_high),
-                        "partial_booked": False
+                        "partial_booked": False,
+                        "realized_partial_pnl": 0.0,
+                        "original_size": abs(size)
                     }
                 self.last_position = size
                 self.bot_enabled = True
@@ -710,6 +754,7 @@ class AccountBot:
             self.active_trade = None
             self.manual_squareoff_flag = False
             self.ready = False
+            self.trading_armed = False
             
             # Fetch true 5:30 session high/low
             if self.product_id:
@@ -740,7 +785,8 @@ class AccountBot:
                 self.ready = True
                 self.save()
             else:
-                # Never use the current price as a fake session High/Low.
+                # Never manufacture a session range from the current price.
+                # Wait until Delta returns the real 05:30-to-now candle range.
                 self.ready = False
 
         return True
@@ -788,15 +834,10 @@ class AccountBot:
 
     def enter(self, direction, price, sl_level):
         if self.is_expired() or self.manual_squareoff_flag:
+            if self.bot_enabled and self.is_expired():
+                self.stop_bot()
             return False
-
-        now = now_ist()
-        if (
-            is_weekend(now)
-            or not self.bot_enabled
-            or not self.product_id
-            or now.time() < BOT_TRADING_START
-        ):
+        if is_weekend() or not self.bot_enabled or not self.product_id:
             return False
 
         if "BTC" in self.symbol:
@@ -812,6 +853,7 @@ class AccountBot:
         for lev in ladder:
             lev_decimal = Decimal(str(lev))
             candidate_liq = self.estimate_liquidation_price(price, lev_decimal, direction)
+
             if candidate_liq is None:
                 continue
 
@@ -822,207 +864,153 @@ class AccountBot:
 
             try:
                 self.client.set_leverage(self.product_id, lev_decimal)
-                size = self.client.order_size(
-                    self.product, price, lev_decimal, self.balance_fraction
-                )
+                size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
+                
                 self.client.market_entry_pure(self.product_id, side, size)
+
                 self.leverage = lev_decimal
                 estimated_liq = candidate_liq
                 order_done = True
+                logging.info(f"[{self.symbol}] 10-STEP LEV ENTRY {direction} -> Lev: {int(self.leverage)}x | Entry={price} | SL={sl_level} | Liq={candidate_liq}")
                 break
             except Exception as e:
                 last_error = e
-                logging.warning(
-                    f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying next."
-                )
+                logging.warning(f"[{self.symbol}] Leverage {lev}x rejected: {e}. Trying next step down.")
 
         if not order_done:
-            logging.error(f"[{self.symbol}] Entry failed: {last_error}")
+            logging.error(f"[{self.symbol}] Liquidation-safe order entry failed: {last_error}")
             return False
 
         actual_entry = float(price)
-        actual_size = 0
-        confirmed = False
 
+        confirmed = False
+        actual_size = 0
         for _ in range(40):
             time.sleep(0.25)
             try:
                 p = self.client.position(self.product_id)
                 sz = int(p.get("size", 0))
                 if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
-                    actual_size = abs(sz)
                     self.last_position = sz
-                    ep = (
-                        p.get("entry_price")
-                        or p.get("entry")
-                        or p.get("avg_price")
-                        or p.get("average_price")
-                    )
-                    if ep and float(ep) > 0:
-                        actual_entry = float(ep)
+                    actual_size = abs(sz)
+                    fetched_ep = p.get("entry_price") or p.get("entry") or p.get("avg_price") or p.get("average_price")
+                    if fetched_ep and float(fetched_ep) > 0:
+                        actual_entry = float(fetched_ep)
                     confirmed = True
                     break
             except Exception:
                 pass
 
-        if not confirmed or actual_size <= 0:
-            logging.error(f"[{self.symbol}] Entry not confirmed; closing.")
+        if not confirmed:
             try:
-                p = self.client.position(self.product_id)
-                sz = int(p.get("size", 0))
-                if sz:
-                    self.client.close_position(self.product_id, sz)
-                    self.wait_until_flat()
+                p_margined = self.client.margined_position(self.product_id)
+                sz = int(p_margined.get("size", 0))
+                if (direction == "LONG" and sz > 0) or (direction == "SHORT" and sz < 0):
+                    self.last_position = sz
+                    actual_size = abs(sz)
+                    fetched_ep = p_margined.get("entry_price") or p_margined.get("entry") or p_margined.get("avg_price")
+                    if fetched_ep and float(fetched_ep) > 0:
+                        actual_entry = float(fetched_ep)
+                    confirmed = True
+            except Exception:
+                pass
+
+        time.sleep(1.0)
+        margined_data = self.client.margined_position(self.product_id)
+        actual_liq = margined_data.get("liquidation_price")
+        
+        if actual_liq is None or str(actual_liq).strip() in ("", "None", "null"):
+            logging.error(f"[{self.symbol}] POST-ENTRY LIQUIDATION IS NONE! Closing position.")
+            self.client.close_position(self.product_id, self.last_position)
+            self.wait_until_flat()
+            return False
+
+        try:
+            actual_liq_dec = Decimal(str(actual_liq))
+            sl_dec = Decimal(str(sl_level))
+            is_safe = True
+            if direction == "LONG" and actual_liq_dec >= sl_dec:
+                is_safe = False
+            elif direction == "SHORT" and actual_liq_dec <= sl_dec:
+                is_safe = False
+
+            if not is_safe:
+                logging.error(f"[{self.symbol}] UNSAFE LIQUIDATION! Closing.")
+                self.client.close_position(self.product_id, self.last_position)
+                self.wait_until_flat()
+                return False
+        except Exception as e:
+            logging.error(f"[{self.symbol}] Error validating liquidation: {e}")
+            self.client.close_position(self.product_id, self.last_position)
+            self.wait_until_flat()
+            return False
+
+        # Calculate the fixed 1:5 target from the ACTUAL exchange entry.
+        entry_dec = Decimal(str(actual_entry))
+        sl_dec = Decimal(str(sl_level))
+        risk_dec = abs(entry_dec - sl_dec)
+        target_5r_dec = (
+            entry_dec + (risk_dec * Decimal("5"))
+            if direction == "LONG"
+            else entry_dec - (risk_dec * Decimal("5"))
+        )
+
+        # The protection orders are exchange-side reduce-only orders.
+        # SL protects the full position. TP protects half the position.
+        half_size = actual_size // 2
+        sl_ok = False
+        tp_ok = False
+
+        try:
+            self.client.place_slm_order(self.product_id, actual_size, direction, sl_dec)
+            sl_ok = True
+            logging.info(
+                f"[{self.symbol}] SL placed: {sl_dec} | size={actual_size} | direction={direction}"
+            )
+        except Exception as e:
+            logging.error(f"[{self.symbol}] FAILED TO PLACE SL: {e}")
+
+        if half_size > 0:
+            try:
+                self.client.place_tpm_order(
+                    self.product_id, half_size, direction, target_5r_dec
+                )
+                tp_ok = True
+                logging.info(
+                    f"[{self.symbol}] 1:5 TP placed: {target_5r_dec} | half_size={half_size}"
+                )
+            except Exception as e:
+                logging.error(f"[{self.symbol}] FAILED TO PLACE 1:5 TP: {e}")
+
+        # Safety: if the exchange-side SL could not be created, do not leave
+        # a naked position running.
+        if not sl_ok:
+            logging.error(f"[{self.symbol}] NO EXCHANGE SL AFTER ENTRY. Closing position for safety.")
+            try:
+                self.client.close_position(self.product_id, actual_size)
+                self.wait_until_flat()
             except Exception:
                 pass
             return False
 
-        # Confirm actual liquidation safety.
-        time.sleep(0.5)
-        margined = self.client.margined_position(self.product_id)
-        actual_liq = margined.get("liquidation_price")
-        if actual_liq is None:
-            logging.error(f"[{self.symbol}] Liquidation price unavailable; closing.")
-            self.client.close_position(self.product_id, self.last_position)
-            self.wait_until_flat()
-            return False
-
-        actual_liq_dec = Decimal(str(actual_liq))
-        sl_dec = Decimal(str(sl_level))
-        if (
-            (direction == "LONG" and actual_liq_dec >= sl_dec)
-            or (direction == "SHORT" and actual_liq_dec <= sl_dec)
-        ):
-            logging.error(f"[{self.symbol}] Unsafe liquidation; closing.")
-            self.client.close_position(self.product_id, self.last_position)
-            self.wait_until_flat()
-            return False
-
-        risk = abs(Decimal(str(actual_entry)) - sl_dec)
-        if risk <= 0:
-            logging.error(f"[{self.symbol}] Zero risk; closing.")
-            self.client.close_position(self.product_id, self.last_position)
-            self.wait_until_flat()
-            return False
-
-        target_5r = (
-            Decimal(str(actual_entry)) + risk * Decimal("5")
-            if direction == "LONG"
-            else Decimal(str(actual_entry)) - risk * Decimal("5")
-        )
-        half_size = actual_size // 2
-
-        # Full-position exchange-side SLM Stop Loss.
-        try:
-            self.client.place_slm_order(
-                self.product_id, actual_size, direction, sl_level
-            )
-            logging.info(
-                f"[{self.symbol}] FULL SLM SL placed | {direction} | "
-                f"Size={actual_size} | SL={sl_level}"
-            )
-        except Exception as e:
-            logging.error(f"[{self.symbol}] SLM SL failed: {e}; closing.")
-            self.client.close_position(self.product_id, self.last_position)
-            self.wait_until_flat()
-            return False
-
         self.active_trade = {
-            "direction": direction,
-            "entry_price": float(actual_entry),
-            "entry_time": now_ist().isoformat(),
+            "direction": direction, 
+            "entry_price": float(actual_entry), 
+            "entry_time": now_ist().isoformat(), 
             "size": actual_size,
             "sl": float(sl_level),
-            "original_sl": float(sl_level),
-            "target_5r": float(target_5r),
-            "target_size": int(half_size),
-            "target_order_placed": False,
-            "target_order_id": None,
-            "partial_booked": False,
-            "sl_moved_to_entry": False,
+            "target_5r": float(target_5r_dec),
+            "sl_after_5r": float(sl_level),
+            "tp_exchange_order": bool(tp_ok),
             "leverage": int(self.leverage),
             "estimated_liquidation": float(estimated_liq) if estimated_liq else None,
-            "actual_liquidation": float(actual_liq_dec)
+            "actual_liquidation": float(actual_liq_dec) if 'actual_liq_dec' in locals() else None,
+            "partial_booked": False,
+            "realized_partial_pnl": 0.0,
+            "original_size": actual_size
         }
         self.save()
-
-        # Half-position exchange-side SLM 1:5 profit order.
-        if half_size > 0:
-            try:
-                result = self.client.place_slm_order(
-                    self.product_id, half_size, direction, target_5r
-                )
-                r = result.get("result", {}) if isinstance(result, dict) else {}
-                order_id = r.get("id") or r.get("order_id") if isinstance(r, dict) else None
-                self.active_trade["target_order_placed"] = True
-                self.active_trade["target_order_id"] = order_id
-                self.save()
-                logging.info(
-                    f"[{self.symbol}] 1:5 PROFIT SLM placed | "
-                    f"Size={half_size} | Target={target_5r} | ID={order_id}"
-                )
-            except Exception as e:
-                logging.error(f"[{self.symbol}] 1:5 SLM failed: {e}")
-        else:
-            logging.warning(f"[{self.symbol}] Half target not possible for size={actual_size}.")
-
         return True
-
-    def manage_active_trade_orders(self, size):
-        """Detect a filled half target and move remaining SL to entry."""
-        if not self.active_trade or size == 0 or not self.product_id:
-            return
-
-        trade = self.active_trade
-        if trade.get("partial_booked"):
-            return
-
-        original_size = int(trade.get("size", 0))
-        target_size = int(trade.get("target_size", 0))
-        if target_size <= 0 or original_size <= 0:
-            return
-
-        remaining = abs(int(size))
-        expected_remaining = original_size - target_size
-
-        # A half target is considered filled only after the exchange position
-        # actually reduces to the expected remaining quantity (or less).
-        if remaining <= expected_remaining:
-            try:
-                self.client.cancel_all_orders(self.product_id)
-                time.sleep(0.3)
-
-                current = self.client.position(self.product_id)
-                remaining = abs(int(current.get("size", 0)))
-
-                if remaining > 0:
-                    entry = Decimal(str(trade.get("entry_price")))
-                    self.client.place_slm_order(
-                        self.product_id, remaining, trade["direction"], entry
-                    )
-
-                trade["partial_booked"] = True
-                trade["sl"] = float(trade.get("entry_price"))
-                trade["sl_moved_to_entry"] = remaining > 0
-                trade["target_order_placed"] = False
-                trade["target_order_id"] = None
-                self.save()
-
-                logging.info(
-                    f"[{self.symbol}] 1:5 TARGET FILLED | Remaining={remaining} | "
-                    f"SL moved to ENTRY={trade.get('entry_price')}"
-                )
-            except Exception as e:
-                logging.error(f"[{self.symbol}] Post-target SL modify failed: {e}")
-
-    def cancel_pending_orders(self):
-        if not self.product_id:
-            return
-        try:
-            self.client.cancel_all_orders(self.product_id)
-        except Exception as e:
-            logging.warning(f"[{self.symbol}] Pending-order cancellation failed: {e}")
-
 
     def finish_active_trade(self, exit_price, reason):
         if not getattr(self, 'active_trade', None) or exit_price is None:
@@ -1034,13 +1022,19 @@ class AccountBot:
             self.active_trade = None
             self.save()
             return
-        pnl = calculate_trade_pnl(direction, entry_price, exit_price, trade_size, self.product or {"contract_value": "0.001"})
-        trade_leverage = self.active_trade.get("leverage", self.leverage) if self.active_trade else self.leverage
+        pnl = calculate_trade_pnl(
+            direction,
+            entry_price,
+            exit_price,
+            trade_size,
+            self.product or {"contract_value": "0.001"}
+        )
+        partial_pnl = Decimal(str(self.active_trade.get("realized_partial_pnl", 0) or 0))
+        pnl += partial_pnl
         trade = {
             "id": f"trade_{int(time.time() * 1000)}", "account_id": self.unique_id, "account": self.account_name,
             "symbol": self.symbol, "date": now_ist().strftime("%Y-%m-%d %H:%M"), "direction": direction,
             "entry_price": float(entry_price), "exit_price": float(exit_price), "size": abs(int(trade_size)),
-            "leverage": int(trade_leverage),
             "pnl": float(pnl), "reason": reason
         }
         history = load_trade_history(self.unique_id)
@@ -1052,6 +1046,22 @@ class AccountBot:
     def evaluate(self, price=None):
         with self.lock:
             if self.is_expired():
+                if self.bot_enabled:
+                    if self.product_id:
+                        self.client.cancel_all_orders(self.product_id)
+                        try:
+                            pos = self.refresh_position(force=True)
+                            sz = int(pos.get("size", 0))
+                            if sz != 0:
+                                self.client.close_position(self.product_id, sz)
+                                self.wait_until_flat()
+                                exit_p = price or self.client.last_traded_price()
+                                self.finish_active_trade(exit_p, "SUBSCRIPTION_EXPIRED")
+                        except Exception:
+                            pass
+                    self.bot_enabled = False
+                    self.stop_reason = "EXPIRED"
+                    self.save()
                 return
 
             now = now_ist()
@@ -1059,125 +1069,253 @@ class AccountBot:
                 price = self.client.last_traded_price()
             if price is None:
                 return
-
+            
             self.last_price = price
 
-            pos = self.refresh_position(force=True)
-            size = int(pos.get("size", 0))
+            # SPEED CRITICAL: when the bot is locally flat, do NOT make a REST
+            # position/margined-position request before checking the breakout.
+            # The WebSocket tick must go straight to the breakout decision so the
+            # market entry is submitted immediately on the crossing tick.
+            if self.last_position != 0 or self.active_trade:
+                pos = self.refresh_position(force=True)
+                size = int(pos.get("size", 0))
+            else:
+                pos = self.cached_position
+                size = 0
 
             if self.prev_price is None:
                 self.prev_price = price
-                # Still prepare the 05:30 range before trading.
-                self.check_session_change(now)
-                self.prepare(now)
                 return
-
+                
             old_price = self.prev_price
             new_price = price
             self.prev_price = price
-
+            
             if is_weekend(now):
-                if size != 0:
+                if self.product_id and size != 0:
                     try:
-                        self.cancel_pending_orders()
+                        self.client.cancel_all_orders(self.product_id)
                         self.client.close_position(self.product_id, size)
                         self.wait_until_flat()
+                        self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
                     except Exception:
                         pass
-                    self.finish_active_trade(price, "WEEKEND_SQUAREOFF")
                     self.last_position = 0
                     self.active_trade = None
                     self.save()
                 return
 
             self.check_session_change(now)
-
             if self.manual_squareoff_flag:
                 return
 
             if not self.prepare(now):
                 return
 
-            # No trading without the real 05:30-to-now range.
+            # Never trade if the true 05:30-to-now range has not been loaded.
+            # This prevents a fake breakout caused by an uninitialized range.
             if self.day_high is None or self.day_low is None or not self.ready:
                 return
 
-            # Manage an existing position first.
-            if size != 0 and self.active_trade:
-                self.manage_active_trade_orders(size)
+            # Arm trading exactly from the first live tick at/after 05:45.
+            # This prevents any pre-05:45 move from being treated as a new breakout.
+            if now.time() < TRADING_START_TIME:
+                self.trading_armed = False
+            elif not self.trading_armed:
+                self.trading_armed = True
+                self.prev_price = new_price
+                self.save()
+                return
 
-            # If exchange reports FLAT after an SL, cancel all remaining orders,
-            # record the SL, keep session High/Low unchanged, and flip ONLY if
-            # the opposite session boundary is actually crossed on this tick.
+            # IMPORTANT:
+            # Keep the current session High/Low locked while checking for a breakout.
+            # We must detect the breakout against the PREVIOUS session levels first.
+            # Updating day_high/day_low before this check would make:
+            #     new_price > day_high
+            # and:
+            #     new_price < day_low
+            # impossible on the same tick.
+            #
+            # After breakout/position handling below, the session range is updated
+            # from the live price so it remains the true 05:30-to-now range.
+
+            if size != 0 and self.active_trade and not self.active_trade.get("partial_booked", False):
+                direction = self.active_trade.get("direction")
+                entry_p = Decimal(str(self.active_trade.get("entry_price", 0)))
+                sl_p = Decimal(str(self.active_trade.get("sl", 0)))
+                target_p = Decimal(str(self.active_trade.get("target_5r", 0)))
+
+                if entry_p > 0 and sl_p > 0 and target_p > 0:
+                    hit_target = (
+                        new_price >= target_p
+                        if direction == "LONG"
+                        else new_price <= target_p
+                    )
+
+                    # If exchange TP already reduced the position, size will be
+                    # smaller than the originally stored size. Detect that too.
+                    original_size = int(self.active_trade.get("size", abs(size)))
+                    half_size = original_size // 2
+                    exchange_half_done = (
+                        half_size > 0 and abs(size) <= max(1, original_size - half_size)
+                        and abs(size) < original_size
+                    )
+
+                    if hit_target or exchange_half_done:
+                        try:
+                            # Remove the old full-size SL / TP orders first.
+                            self.client.cancel_all_orders(self.product_id)
+
+                            current_pos_data = self.client.position(self.product_id)
+                            current_size = abs(int(current_pos_data.get("size", 0)))
+
+                            # If the exchange TP has NOT already reduced the position,
+                            # book half now with a market reduce-only order.
+                            if hit_target and current_size >= original_size and half_size > 0:
+                                logging.info(
+                                    f"[{self.symbol}] 1:5 TARGET HIT at {new_price}. "
+                                    f"Booking half lot {half_size}."
+                                )
+                                self.client.reduce_position_market(
+                                    self.product_id, half_size, direction
+                                )
+                                partial_pnl = calculate_trade_pnl(
+                                    direction,
+                                    entry_p,
+                                    new_price,
+                                    half_size,
+                                    self.product or {"contract_value": "0.001"}
+                                )
+                                self.active_trade["realized_partial_pnl"] = float(partial_pnl)
+                                time.sleep(0.7)
+                                current_pos_data = self.client.position(self.product_id)
+                                current_size = abs(int(current_pos_data.get("size", 0)))
+
+                            if current_size > 0:
+                                if not self.active_trade.get("realized_partial_pnl"):
+                                    target_exit = target_p
+                                    partial_pnl = calculate_trade_pnl(
+                                        direction,
+                                        entry_p,
+                                        target_exit,
+                                        half_size,
+                                        self.product or {"contract_value": "0.001"}
+                                    )
+                                    self.active_trade["realized_partial_pnl"] = float(partial_pnl)
+
+                                # After 1:5 half booking, the remaining half keeps
+                                # the SAME DAY/SESSION SL. Never move SL to entry.
+                                day_sl = (
+                                    float(self.day_low)
+                                    if direction == "LONG"
+                                    else float(self.day_high)
+                                )
+                                self.client.place_slm_order(
+                                    self.product_id,
+                                    current_size,
+                                    direction,
+                                    day_sl
+                                )
+                                self.active_trade["sl"] = float(day_sl)
+                                self.active_trade["size"] = current_size
+                                self.active_trade["partial_booked"] = True
+                                size = current_size
+                                self.active_trade["tp_exchange_order"] = False
+
+                                logging.info(
+                                    f"[{self.symbol}] 1:5 HALF BOOKED. "
+                                    f"Remaining={current_size} | SL REMAINS AT DAY SL={day_sl}"
+                                )
+                            else:
+                                # TP may have closed the position completely if the
+                                # original lot was too small to split.
+                                self.active_trade["partial_booked"] = True
+                                self.active_trade["size"] = 0
+                                logging.info(f"[{self.symbol}] Position fully closed at 1:5.")
+                            self.save()
+
+                        except Exception as e:
+                            logging.error(
+                                f"[{self.symbol}] 1:5 booking / SL modification error: {e}"
+                            )
+
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
-                old_trade = dict(self.active_trade) if self.active_trade else {}
-                stored_sl = old_trade.get("sl")
-                exit_price = stored_sl if stored_sl is not None else new_price
+                stored_sl = self.active_trade.get("sl") if self.active_trade else None
+                trigger_exit_price = stored_sl if stored_sl is not None else new_price
 
-                self.cancel_pending_orders()
-                self.finish_active_trade(
-                    exit_price,
-                    f"{old_dir}_SL_HIT_RE_LOCK_FLIP"
-                )
+                if self.product_id:
+                    # The exchange has already flattened the position with its
+                    # reduce-only SL. Cancel any remaining TP/SL order before
+                    # creating the next opposite trade.
+                    self.client.cancel_all_orders(self.product_id)
 
+                self.finish_active_trade(trigger_exit_price, f"{old_dir}_SL_HIT")
                 self.last_position = 0
                 self.active_trade = None
                 self.save()
 
-                # The 05:30 session range is NOT reset.
                 logging.info(
-                    f"[{self.symbol}] FLAT after {old_dir} SL. "
-                    f"Keeping session High={self.day_high} Low={self.day_low}."
+                    f"[{self.symbol}] {old_dir} SL HIT -> FLAT. "
+                    f"Keeping session range High={self.day_high} Low={self.day_low}."
                 )
 
-                # Flip only if the opposite boundary is crossed on this tick.
-                flip_direction = "SHORT" if old_dir == "LONG" else "LONG"
-                opposite_break = (
-                    old_price >= self.day_low and new_price < self.day_low
-                    if flip_direction == "SHORT"
-                    else old_price <= self.day_high and new_price > self.day_high
-                )
+                # TRUE FLIP: if the same tick that flattened the old position
+                # actually crosses the opposite session boundary, enter the
+                # opposite side immediately. No candle confirmation/filter.
+                if (
+                    self.bot_enabled
+                    and now.time() >= TRADING_START_TIME
+                    and self.day_high is not None
+                    and self.day_low is not None
+                    and not self.manual_squareoff_flag
+                ):
+                    if old_dir == "LONG" and old_price >= self.day_low and new_price < self.day_low:
+                        if self.enter("SHORT", new_price, self.day_high):
+                            return
+                    elif old_dir == "SHORT" and old_price <= self.day_high and new_price > self.day_high:
+                        if self.enter("LONG", new_price, self.day_low):
+                            return
 
-                if now.time() >= BOT_TRADING_START and opposite_break:
-                    flip_sl = self.day_high if flip_direction == "SHORT" else self.day_low
-                    self.enter(flip_direction, new_price, flip_sl)
+                # Do not return here if there was no opposite breakout. The normal
+                # flat breakout check below can process the current tick.
+                size = 0
 
-                return
+            if size == 0:
+                self.last_position = 0
+                if (
+                    self.bot_enabled
+                    and now.time() >= TRADING_START_TIME
+                    and self.day_high is not None
+                    and self.day_low is not None
+                    and not self.manual_squareoff_flag
+                ):
+                    # INSTANT BREAKOUT: crossing tick -> Market Order immediately.
+                    # No candle close, no candle-size filter, no confirmation.
+                    if old_price <= self.day_high and new_price > self.day_high:
+                        sl_to_use = self.day_low
+                        if self.enter("LONG", new_price, sl_to_use):
+                            return
+                    elif old_price >= self.day_low and new_price < self.day_low:
+                        sl_to_use = self.day_high
+                        if self.enter("SHORT", new_price, sl_to_use):
+                            return
 
-            # New entries only from 05:45 onward and only on a genuine crossing
-            # of the current complete 05:30-to-now session boundary.
-            if (
-                size == 0
-                and self.bot_enabled
-                and now.time() >= BOT_TRADING_START
-                and not self.manual_squareoff_flag
-            ):
-                if old_price <= self.day_high and new_price > self.day_high:
-                    if self.enter("LONG", new_price, self.day_low):
-                        return
-
-                if old_price >= self.day_low and new_price < self.day_low:
-                    if self.enter("SHORT", new_price, self.day_high):
-                        return
-
-            # IMPORTANT: update the session range only AFTER breakout detection.
-            # A new extreme becomes the next reference; it cannot self-trigger.
+            # Update the running 05:30-to-now session range AFTER the breakout
+            # decision. This keeps the breakout level from moving before the
+            # crossing is evaluated. The range is never reset after an SL.
             range_changed = False
-            if new_price > self.day_high:
+            if self.day_high is None or new_price > self.day_high:
                 self.day_high = new_price
                 range_changed = True
-            if new_price < self.day_low:
+            if self.day_low is None or new_price < self.day_low:
                 self.day_low = new_price
                 range_changed = True
-
             if range_changed:
-                self.ready = True
                 self.save()
 
             if size != 0:
                 self.last_position = size
-
 
 BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
@@ -1327,29 +1465,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "leverage": int(b.active_trade.get("leverage", b.leverage) if b.active_trade else b.leverage),
                     "balance_fraction": float(b.balance_fraction),
                     "contract_value": c_val_extracted,
+                    "target_5r": (
+                        float(b.active_trade.get("target_5r"))
+                        if b.active_trade and b.active_trade.get("target_5r") is not None
+                        else None
+                    ),
                     "position": {
                         "size": pos.get("size", 0),
                         "direction": direction,
                         "entry_price": entry_price_val,
                         "stop_loss": active_sl,
-                        "target_5r": (
-                            float(b.active_trade.get("target_5r"))
-                            if b.active_trade and b.active_trade.get("target_5r") is not None
-                            else None
-                        ),
-                        "target_size": (
-                            int(b.active_trade.get("target_size", 0))
-                            if b.active_trade else 0
-                        ),
-                        "partial_booked": (
-                            bool(b.active_trade.get("partial_booked", False))
-                            if b.active_trade else False
-                        ),
-                        "trade_leverage": (
-                            int(b.active_trade.get("leverage"))
-                            if b.active_trade and b.active_trade.get("leverage") is not None
-                            else (int(b.leverage) if direction != "FLAT" else None)
-                        ),
                         "liquidation_price": pos.get("liquidation_price"),
                         "bankruptcy_price": pos.get("bankruptcy_price"),
                         "margin": pos.get("margin"),
@@ -1590,10 +1715,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold text-amber-300">${finalEntry}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Trade Leverage:</span> <span class="font-bold text-cyan-300">${pos.trade_leverage ? pos.trade_leverage + 'x' : 'N/A'}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">1:5 Target:</span> <span class="font-semibold text-emerald-300">${pos.target_5r || 'N/A'} ${pos.target_size ? '(Half: ' + pos.target_size + ')' : ''}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Target Status:</span> <span class="font-semibold ${pos.partial_booked?'text-emerald-400':'text-slate-400'}">${pos.direction=='FLAT' ? 'N/A' : (pos.partial_booked ? 'HIT — SL moved to Entry' : 'PENDING')}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-rose-400'}">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Target 1:5:</span> <span class="font-semibold text-emerald-300">${acc.target_5r || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Liquidation:</span> <span class="font-semibold text-rose-300">${pos.liquidation_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Bankruptcy:</span> <span class="font-semibold text-slate-300">${pos.bankruptcy_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Margin:</span> <span class="font-semibold text-slate-300">${pos.margin || 'N/A'}</span></div>
@@ -1633,7 +1756,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                         <div class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between items-center">
                                             <div>
                                                 <span class="font-bold ${t.direction=='LONG'?'text-emerald-400':'text-rose-400'}">${t.direction}</span>
-                                                <span class="font-bold text-cyan-300 ml-1">${t.leverage ? t.leverage + 'x' : 'N/A'}</span>
                                                 <span class="text-slate-400 ml-1">(${t.date})</span>
                                                 <div class="text-[10px] text-slate-500">Entry: ${t.entry_price} → Exit: ${t.exit_price}</div>
                                             </div>
@@ -1789,7 +1911,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v76.0 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v79.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
