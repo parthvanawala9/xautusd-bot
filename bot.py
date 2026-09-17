@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v70.0 - 5:45 AM LOCK, DYNAMIC SLM & RE-LOCK)
+# DELTA PRO AUTOTRADER (v71.0 - HIGH/LOW DISPLAYED ON DASHBOARD)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/70.0"
+            "User-Agent": "MultiBot/71.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/70.0"
+            "User-Agent": "MultiBot/71.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -643,7 +643,6 @@ class AccountBot:
             self.save()
 
     def prepare(self, now):
-        # 5:30 to 5:45 AM: Keep bot flat and collecting high/low
         t = now.time()
         if t >= dtime(5, 30) and t < dtime(5, 45):
             current_price = self.last_price or self.client.last_traded_price()
@@ -653,7 +652,7 @@ class AccountBot:
                 if self.day_low is None or current_price < self.day_low:
                     self.day_low = current_price
                 self.save()
-            return False # Not ready to trade yet during 5:30-5:45 window
+            return False
 
         if self.ready:
             return True
@@ -824,7 +823,6 @@ class AccountBot:
             self.wait_until_flat()
             return False
 
-        # Place Independent SLM Order for Full Size
         try:
             self.client.place_slm_order(self.product_id, actual_size, direction, sl_level)
             logging.info(f"[{self.symbol}] SLM Order placed successfully at {sl_level} for size {actual_size}")
@@ -932,9 +930,6 @@ class AccountBot:
                 self.day_low = new_price
                 self.save()
 
-            # ==========================================
-            # 1:5 PARTIAL PROFIT BOOKING + DYNAMIC SLM CHECK
-            # ==========================================
             if size != 0 and self.active_trade and not self.active_trade.get("partial_booked", False):
                 direction = self.active_trade.get("direction")
                 entry_p = Decimal(str(self.active_trade.get("entry_price", 0)))
@@ -950,13 +945,10 @@ class AccountBot:
                         if half_size > 0:
                             try:
                                 logging.info(f"[{self.symbol}] 1:5 TARGET HIT! Booking half lot ({half_size}) at price {new_price}")
-                                # Cancel existing full-size SLM
                                 self.client.cancel_all_orders(self.product_id)
-                                # Execute partial market booking
                                 self.client.reduce_position_market(self.product_id, half_size, direction)
                                 
                                 time.sleep(0.5)
-                                # Check actual pending size on exchange to be 100% precise
                                 current_pos_data = self.client.position(self.product_id)
                                 actual_remaining_size = abs(int(current_pos_data.get("size", 0)))
 
@@ -969,16 +961,12 @@ class AccountBot:
                             except Exception as e:
                                 logging.error(f"[{self.symbol}] Partial booking & dynamic SLM update error: {e}")
 
-            # ==========================================
-            # UNCONDITIONAL INSTANT FLIP & RE-LOCK HIGH/LOW
-            # ==========================================
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
                 stored_sl = self.active_trade.get("sl") if self.active_trade else None
 
                 trigger_exit_price = stored_sl if stored_sl is not None else new_price
                 
-                # Clean up all pending/leftover orders on exchange
                 if self.product_id:
                     self.client.cancel_all_orders(self.product_id)
 
@@ -986,7 +974,6 @@ class AccountBot:
                 self.last_position = 0
                 self.active_trade = None
 
-                # RE-LOCK HIGH & LOW FROM CURRENT SESSION START TO NOW UPON FLAT
                 self.day_high = new_price
                 self.day_low = new_price
                 self.save()
@@ -994,7 +981,6 @@ class AccountBot:
                 logging.info(f"[{self.symbol}] Position became FLAT. Re-locked Day High/Low to {new_price}. Ready for next breakout.")
                 return
 
-            # Normal fresh breakout entry when flat
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -1157,6 +1143,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "server_ip": server_ip,
                     "balance": balance_val,
                     "current_price": float(b.last_price) if b.last_price else None,
+                    "day_high": float(b.day_high) if b.day_high is not None else None,
+                    "day_low": float(b.day_low) if b.day_low is not None else None,
                     "bot_enabled": b.bot_enabled and not b.is_expired(),
                     "is_expired": b.is_expired(),
                     "leverage": int(b.active_trade.get("leverage", b.leverage) if b.active_trade else b.leverage),
@@ -1367,6 +1355,18 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <input type="text" readonly value="${clientLink}" class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all">
                             </div>
                             ` : ''}
+
+                            <!-- LOCKED HIGH & LOW DISPLAY BOX -->
+                            <div class="grid grid-cols-2 gap-2 bg-slate-900/80 p-3 rounded-xl border border-amber-500/30 text-xs">
+                                <div>
+                                    <span class="text-slate-400 text-[10px] block uppercase">Locked Day High</span>
+                                    <span class="font-bold text-emerald-400 text-sm">${acc.day_high !== null ? acc.day_high : 'Waiting...'}</span>
+                                </div>
+                                <div>
+                                    <span class="text-slate-400 text-[10px] block uppercase">Locked Day Low</span>
+                                    <span class="font-bold text-rose-400 text-sm">${acc.day_low !== null ? acc.day_low : 'Waiting...'}</span>
+                                </div>
+                            </div>
 
                             <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
                                 <div class="text-xs font-semibold text-amber-400 uppercase tracking-wider">Bot Risk Settings</div>
@@ -1585,7 +1585,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v70.0 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v71.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
