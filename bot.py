@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v79.0 - INSTANT MARKET BREAKOUT + 1:5 HALF + BREAKEVEN FLIP)
+# DELTA PRO AUTOTRADER (v79.1 - DASHBOARD LEVERAGE & TARGET FIX)
 # =====================================================================
 
 load_dotenv()
@@ -137,7 +137,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/76.0"
+            "User-Agent": "MultiBot/79.1"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -148,7 +148,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/76.0"
+            "User-Agent": "MultiBot/79.1"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -185,7 +185,6 @@ class DeltaClient:
             if end_ts <= start_ts:
                 return None, None
 
-            # Delta historical candles require SYMBOL (not product_id).
             params = {
                 "resolution": "1m",
                 "symbol": self.symbol,
@@ -196,10 +195,6 @@ class DeltaClient:
             candles = data.get("result", [])
 
             if not isinstance(candles, list) or not candles:
-                logging.warning(
-                    f"[{self.symbol}] No candles for 05:30 session range "
-                    f"{session_start_dt.isoformat()} -> {now_ist().isoformat()}"
-                )
                 return None, None
 
             highest = None
@@ -236,10 +231,6 @@ class DeltaClient:
                     continue
 
             if highest is not None and lowest is not None:
-                logging.info(
-                    f"[{self.symbol}] SESSION RANGE 05:30->NOW | "
-                    f"High={highest} | Low={lowest}"
-                )
                 return highest, lowest
 
         except Exception as e:
@@ -384,12 +375,6 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def place_slm_order(self, product_id, size, direction, stop_price):
-        """
-        Delta v2 stop-loss market order.
-        IMPORTANT: Delta uses order_type=market_order plus
-        stop_order_type=stop_loss_order. The old code used
-        order_type=stop_market_order, which is not the create-order schema.
-        """
         side = "sell" if direction == "LONG" else "buy"
         body = {
             "product_id": int(product_id),
@@ -406,7 +391,6 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def place_tpm_order(self, product_id, size, direction, target_price):
-        """Delta v2 reduce-only take-profit market trigger for half the position."""
         side = "sell" if direction == "LONG" else "buy"
         body = {
             "product_id": int(product_id),
@@ -638,8 +622,11 @@ class AccountBot:
                         else:
                             self.active_trade["entry_price"] = float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low)
 
-                    # Backfill 1:5 target for an already-open trade created by an
-                    # earlier bot version.
+                    # Ensure leverage exists in active_trade for dashboard display
+                    if not self.active_trade.get("leverage"):
+                        self.active_trade["leverage"] = int(self.leverage)
+
+                    # Backfill 1:5 target for an already-open trade created by an earlier bot version.
                     if self.active_trade.get("target_5r") is None and self.active_trade.get("entry_price"):
                         ep = Decimal(str(self.active_trade["entry_price"]))
                         slv = Decimal(str(self.active_trade.get("sl", 0)))
@@ -689,6 +676,7 @@ class AccountBot:
                         "entry_price": float(p_val), 
                         "entry_time": now_ist().isoformat(), 
                         "size": abs(size),
+                        "leverage": int(self.leverage),
                         "sl": float(self.day_low) if direction == "LONG" else float(self.day_high),
                         "partial_booked": False,
                         "realized_partial_pnl": 0.0,
@@ -756,7 +744,6 @@ class AccountBot:
             self.ready = False
             self.trading_armed = False
             
-            # Fetch true 5:30 session high/low
             if self.product_id:
                 h, l = self.client.get_session_high_low(self.product_id, self.session_start)
                 if h is not None and l is not None:
@@ -776,7 +763,6 @@ class AccountBot:
         if self.session_start is None:
             self.session_start = get_current_session_start(now)
 
-        # Force fetch true 5:30 session high/low if missing
         if self.day_high is None or self.day_low is None:
             h, l = self.client.get_session_high_low(self.product_id, self.session_start)
             if h is not None and l is not None:
@@ -785,8 +771,6 @@ class AccountBot:
                 self.ready = True
                 self.save()
             else:
-                # Never manufacture a session range from the current price.
-                # Wait until Delta returns the real 05:30-to-now candle range.
                 self.ready = False
 
         return True
@@ -945,7 +929,6 @@ class AccountBot:
             self.wait_until_flat()
             return False
 
-        # Calculate the fixed 1:5 target from the ACTUAL exchange entry.
         entry_dec = Decimal(str(actual_entry))
         sl_dec = Decimal(str(sl_level))
         risk_dec = abs(entry_dec - sl_dec)
@@ -955,8 +938,6 @@ class AccountBot:
             else entry_dec - (risk_dec * Decimal("5"))
         )
 
-        # The protection orders are exchange-side reduce-only orders.
-        # SL protects the full position. TP protects half the position.
         half_size = actual_size // 2
         sl_ok = False
         tp_ok = False
@@ -964,9 +945,6 @@ class AccountBot:
         try:
             self.client.place_slm_order(self.product_id, actual_size, direction, sl_dec)
             sl_ok = True
-            logging.info(
-                f"[{self.symbol}] SL placed: {sl_dec} | size={actual_size} | direction={direction}"
-            )
         except Exception as e:
             logging.error(f"[{self.symbol}] FAILED TO PLACE SL: {e}")
 
@@ -976,16 +954,10 @@ class AccountBot:
                     self.product_id, half_size, direction, target_5r_dec
                 )
                 tp_ok = True
-                logging.info(
-                    f"[{self.symbol}] 1:5 TP placed: {target_5r_dec} | half_size={half_size}"
-                )
             except Exception as e:
                 logging.error(f"[{self.symbol}] FAILED TO PLACE 1:5 TP: {e}")
 
-        # Safety: if the exchange-side SL could not be created, do not leave
-        # a naked position running.
         if not sl_ok:
-            logging.error(f"[{self.symbol}] NO EXCHANGE SL AFTER ENTRY. Closing position for safety.")
             try:
                 self.client.close_position(self.product_id, actual_size)
                 self.wait_until_flat()
@@ -1072,10 +1044,6 @@ class AccountBot:
             
             self.last_price = price
 
-            # SPEED CRITICAL: when the bot is locally flat, do NOT make a REST
-            # position/margined-position request before checking the breakout.
-            # The WebSocket tick must go straight to the breakout decision so the
-            # market entry is submitted immediately on the crossing tick.
             if self.last_position != 0 or self.active_trade:
                 pos = self.refresh_position(force=True)
                 size = int(pos.get("size", 0))
@@ -1112,13 +1080,9 @@ class AccountBot:
             if not self.prepare(now):
                 return
 
-            # Never trade if the true 05:30-to-now range has not been loaded.
-            # This prevents a fake breakout caused by an uninitialized range.
             if self.day_high is None or self.day_low is None or not self.ready:
                 return
 
-            # Arm trading exactly from the first live tick at/after 05:45.
-            # This prevents any pre-05:45 move from being treated as a new breakout.
             if now.time() < TRADING_START_TIME:
                 self.trading_armed = False
             elif not self.trading_armed:
@@ -1126,18 +1090,6 @@ class AccountBot:
                 self.prev_price = new_price
                 self.save()
                 return
-
-            # IMPORTANT:
-            # Keep the current session High/Low locked while checking for a breakout.
-            # We must detect the breakout against the PREVIOUS session levels first.
-            # Updating day_high/day_low before this check would make:
-            #     new_price > day_high
-            # and:
-            #     new_price < day_low
-            # impossible on the same tick.
-            #
-            # After breakout/position handling below, the session range is updated
-            # from the live price so it remains the true 05:30-to-now range.
 
             if size != 0 and self.active_trade and not self.active_trade.get("partial_booked", False):
                 direction = self.active_trade.get("direction")
@@ -1152,8 +1104,6 @@ class AccountBot:
                         else new_price <= target_p
                     )
 
-                    # If exchange TP already reduced the position, size will be
-                    # smaller than the originally stored size. Detect that too.
                     original_size = int(self.active_trade.get("size", abs(size)))
                     half_size = original_size // 2
                     exchange_half_done = (
@@ -1163,19 +1113,11 @@ class AccountBot:
 
                     if hit_target or exchange_half_done:
                         try:
-                            # Remove the old full-size SL / TP orders first.
                             self.client.cancel_all_orders(self.product_id)
-
                             current_pos_data = self.client.position(self.product_id)
                             current_size = abs(int(current_pos_data.get("size", 0)))
 
-                            # If the exchange TP has NOT already reduced the position,
-                            # book half now with a market reduce-only order.
                             if hit_target and current_size >= original_size and half_size > 0:
-                                logging.info(
-                                    f"[{self.symbol}] 1:5 TARGET HIT at {new_price}. "
-                                    f"Booking half lot {half_size}."
-                                )
                                 self.client.reduce_position_market(
                                     self.product_id, half_size, direction
                                 )
@@ -1203,8 +1145,6 @@ class AccountBot:
                                     )
                                     self.active_trade["realized_partial_pnl"] = float(partial_pnl)
 
-                                # After 1:5 half booking, the remaining half keeps
-                                # the SAME DAY/SESSION SL. Never move SL to entry.
                                 day_sl = (
                                     float(self.day_low)
                                     if direction == "LONG"
@@ -1221,23 +1161,12 @@ class AccountBot:
                                 self.active_trade["partial_booked"] = True
                                 size = current_size
                                 self.active_trade["tp_exchange_order"] = False
-
-                                logging.info(
-                                    f"[{self.symbol}] 1:5 HALF BOOKED. "
-                                    f"Remaining={current_size} | SL REMAINS AT DAY SL={day_sl}"
-                                )
                             else:
-                                # TP may have closed the position completely if the
-                                # original lot was too small to split.
                                 self.active_trade["partial_booked"] = True
                                 self.active_trade["size"] = 0
-                                logging.info(f"[{self.symbol}] Position fully closed at 1:5.")
                             self.save()
-
                         except Exception as e:
-                            logging.error(
-                                f"[{self.symbol}] 1:5 booking / SL modification error: {e}"
-                            )
+                            logging.error(f"[{self.symbol}] 1:5 booking error: {e}")
 
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
@@ -1245,9 +1174,6 @@ class AccountBot:
                 trigger_exit_price = stored_sl if stored_sl is not None else new_price
 
                 if self.product_id:
-                    # The exchange has already flattened the position with its
-                    # reduce-only SL. Cancel any remaining TP/SL order before
-                    # creating the next opposite trade.
                     self.client.cancel_all_orders(self.product_id)
 
                 self.finish_active_trade(trigger_exit_price, f"{old_dir}_SL_HIT")
@@ -1255,14 +1181,6 @@ class AccountBot:
                 self.active_trade = None
                 self.save()
 
-                logging.info(
-                    f"[{self.symbol}] {old_dir} SL HIT -> FLAT. "
-                    f"Keeping session range High={self.day_high} Low={self.day_low}."
-                )
-
-                # TRUE FLIP: if the same tick that flattened the old position
-                # actually crosses the opposite session boundary, enter the
-                # opposite side immediately. No candle confirmation/filter.
                 if (
                     self.bot_enabled
                     and now.time() >= TRADING_START_TIME
@@ -1276,9 +1194,6 @@ class AccountBot:
                     elif old_dir == "SHORT" and old_price <= self.day_high and new_price > self.day_high:
                         if self.enter("LONG", new_price, self.day_low):
                             return
-
-                # Do not return here if there was no opposite breakout. The normal
-                # flat breakout check below can process the current tick.
                 size = 0
 
             if size == 0:
@@ -1290,8 +1205,6 @@ class AccountBot:
                     and self.day_low is not None
                     and not self.manual_squareoff_flag
                 ):
-                    # INSTANT BREAKOUT: crossing tick -> Market Order immediately.
-                    # No candle close, no candle-size filter, no confirmation.
                     if old_price <= self.day_high and new_price > self.day_high:
                         sl_to_use = self.day_low
                         if self.enter("LONG", new_price, sl_to_use):
@@ -1301,9 +1214,6 @@ class AccountBot:
                         if self.enter("SHORT", new_price, sl_to_use):
                             return
 
-            # Update the running 05:30-to-now session range AFTER the breakout
-            # decision. This keeps the breakout level from moving before the
-            # crossing is evaluated. The range is never reset after an SL.
             range_changed = False
             if self.day_high is None or new_price > self.day_high:
                 self.day_high = new_price
@@ -1449,6 +1359,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     except Exception:
                         pass
 
+                trade_lev = int(b.active_trade.get("leverage", b.leverage)) if b.active_trade else int(b.leverage)
+
                 accounts_data.append({
                     "account_id": b.unique_id,
                     "account_name": b.account_name,
@@ -1462,7 +1374,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "day_low": float(b.day_low) if b.day_low is not None else None,
                     "bot_enabled": b.bot_enabled and not b.is_expired(),
                     "is_expired": b.is_expired(),
-                    "leverage": int(b.active_trade.get("leverage", b.leverage) if b.active_trade else b.leverage),
+                    "leverage": trade_lev,
                     "balance_fraction": float(b.balance_fraction),
                     "contract_value": c_val_extracted,
                     "target_5r": (
@@ -1655,6 +1567,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                              <option value="1" ${acc.leverage==1?'selected':''}>1x</option>`;
 
                         let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : 'N/A';
+                        let tradeLevDisplay = acc.leverage ? acc.leverage + 'x' : 'N/A';
 
                         let html = `
                         <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
@@ -1676,7 +1589,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             </div>
                             ` : ''}
 
-                            <!-- LOCKED HIGH & LOW DISPLAY BOX -->
                             <div class="grid grid-cols-2 gap-2 bg-slate-900/80 p-3 rounded-xl border border-amber-500/30 text-xs">
                                 <div>
                                     <span class="text-slate-400 text-[10px] block uppercase">Locked Day High</span>
@@ -1715,6 +1627,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold text-amber-300">${finalEntry}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Trade Leverage:</span> <span class="font-semibold text-amber-400">${tradeLevDisplay}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-rose-400'}">${pos.stop_loss || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Target 1:5:</span> <span class="font-semibold text-emerald-300">${acc.target_5r || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Liquidation:</span> <span class="font-semibold text-rose-300">${pos.liquidation_price || 'N/A'}</span></div>
@@ -1884,7 +1797,6 @@ def run_websocket():
 
             def on_message(ws, message):
                 data = json.dumps(message)
-                # Parse message safely
                 try:
                     parsed = json.loads(message)
                     if parsed.get("type") != "trades":
@@ -1911,7 +1823,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v79.0 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v79.1 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
