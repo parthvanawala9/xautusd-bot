@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v79.1 - DASHBOARD LEVERAGE & TARGET FIX)
+# DELTA PRO AUTOTRADER (v79.2 - OLD ORDERS CANCELLATION ON FLIP/ENTRY FIX)
 # =====================================================================
 
 load_dotenv()
@@ -137,7 +137,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/79.1"
+            "User-Agent": "MultiBot/79.2"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -148,7 +148,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/79.1"
+            "User-Agent": "MultiBot/79.2"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -278,7 +278,7 @@ class DeltaClient:
                 pass
 
         def decimal_or_none(value):
-            if value is None or str(value).strip() in ("", "None", "null"):
+            if value is None or str(value).strip() not in ("", "None", "null"):
                 return None
             try:
                 return float(value)
@@ -622,11 +622,9 @@ class AccountBot:
                         else:
                             self.active_trade["entry_price"] = float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low)
 
-                    # Ensure leverage exists in active_trade for dashboard display
                     if not self.active_trade.get("leverage"):
                         self.active_trade["leverage"] = int(self.leverage)
 
-                    # Backfill 1:5 target for an already-open trade created by an earlier bot version.
                     if self.active_trade.get("target_5r") is None and self.active_trade.get("entry_price"):
                         ep = Decimal(str(self.active_trade["entry_price"]))
                         slv = Decimal(str(self.active_trade.get("sl", 0)))
@@ -823,6 +821,12 @@ class AccountBot:
             return False
         if is_weekend() or not self.bot_enabled or not self.product_id:
             return False
+
+        # CRITICAL FIX: Cancel any lingering old orders before taking a fresh trade / flip
+        try:
+            self.client.cancel_all_orders(self.product_id)
+        except Exception as e:
+            logging.warning(f"[{self.symbol}] Failed to cancel old orders before entry: {e}")
 
         if "BTC" in self.symbol:
             ladder = [200, 190, 180, 170, 160, 150, 140, 130, 120, 110, 100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
@@ -1575,7 +1579,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div>
                                     <h2 class="font-bold text-lg">${acc.account_name}</h2>
                                     <p class="text-xs text-slate-400">Balance: $${acc.balance.toFixed(2)} | Price: ${acc.current_price || 'N/A'}</p>
-                                    ${acc.account_type == 'client' ? `<p class="text-[10px] text-amber-400 mt-0.5">Expiry: ${expiryText} ${acc.is_expired ? '(EXPIRED)' : ''}</p>` : ''}
+                                    ${acc.account_type == 'client' ? `<p class="text-[10px] text-amber-400 mt-0.5">Expiry: ${expiryText}${acc.is_expired ? '(EXPIRED)' : ''}</p>` : ''}
                                 </div>
                                 <span class="px-3 py-1 rounded-full text-xs font-semibold ${acc.is_expired ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30' : (acc.bot_enabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30')}">
                                     ${acc.is_expired ? 'EXPIRED' : (acc.bot_enabled ? 'RUNNING' : 'STOPPED')}
@@ -1672,8 +1676,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                                 <span class="text-slate-400 ml-1">(${t.date})</span>
                                                 <div class="text-[10px] text-slate-500">Entry: ${t.entry_price} → Exit: ${t.exit_price}</div>
                                             </div>
-                                            <div class="text-right font-bold ${t.pnl>=0?'text-emerald-400':'text-rose-400'}">
-                                                $${t.pnl.toFixed(2)}
+                                            <div class="text-right font-bold ${t.pnl>=0?'text-emerald-400':'text-rose-400'}">                                                 $${t.pnl.toFixed(2)}
                                             </div>
                                         </div>
                                     `).join('')}
@@ -1823,7 +1826,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v79.1 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v79.2 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
