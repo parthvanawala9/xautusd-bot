@@ -178,41 +178,70 @@ class DeltaClient:
     def get_session_high_low(self, product_id, session_start_dt):
         try:
             start_ts = int(session_start_dt.timestamp())
-            end_ts = int(time.time())
+            end_ts = int(now_ist().timestamp())
+            if end_ts <= start_ts:
+                return None, None
+
+            # Delta historical candles require SYMBOL (not product_id).
             params = {
-                "product_id": int(product_id),
                 "resolution": "1m",
+                "symbol": self.symbol,
                 "start": start_ts,
                 "end": end_ts
             }
             data = self.api("GET", "/v2/history/candles", params=params)
             candles = data.get("result", [])
+
             if not isinstance(candles, list) or not candles:
+                logging.warning(
+                    f"[{self.symbol}] No candles for 05:30 session range "
+                    f"{session_start_dt.isoformat()} -> {now_ist().isoformat()}"
+                )
                 return None, None
 
             highest = None
             lowest = None
+
             for c in candles:
-                if isinstance(c, dict):
-                    h = float(c.get("high", 0) or 0)
-                    l = float(c.get("low", 0) or 0)
-                elif isinstance(c, list) and len(c) >= 4:
-                    h = float(c[2] or 0)
-                    l = float(c[3] or 0)
-                else:
+                try:
+                    if isinstance(c, dict):
+                        ts_raw = c.get("time") or c.get("timestamp") or c.get("start")
+                        h_raw = c.get("high")
+                        l_raw = c.get("low")
+                    elif isinstance(c, list) and len(c) >= 4:
+                        ts_raw = c[0]
+                        h_raw = c[2]
+                        l_raw = c[3]
+                    else:
+                        continue
+
+                    if ts_raw is not None:
+                        ts = float(ts_raw)
+                        if ts > 100000000000:
+                            ts /= 1000.0
+                        if ts < start_ts or ts > end_ts:
+                            continue
+
+                    h = Decimal(str(h_raw))
+                    l = Decimal(str(l_raw))
+
+                    if h > 0 and (highest is None or h > highest):
+                        highest = h
+                    if l > 0 and (lowest is None or l < lowest):
+                        lowest = l
+                except Exception:
                     continue
 
-                if h > 0:
-                    if highest is None or h > highest:
-                        highest = h
-                if l > 0:
-                    if lowest is None or l < lowest:
-                        lowest = l
-
             if highest is not None and lowest is not None:
-                return Decimal(str(highest)), Decimal(str(lowest))
+                logging.info(
+                    f"[{self.symbol}] SESSION RANGE 05:30->NOW | "
+                    f"High={highest} | Low={lowest}"
+                )
+                return highest, lowest
+
         except Exception as e:
-            logging.warning(f"[{self.symbol}] Session high/low candle fetch error: {e}")
+            logging.warning(f"[{self.symbol}] Session high/low fetch error: {e}")
+
         return None, None
 
     def position(self, product_id):
@@ -352,17 +381,41 @@ class DeltaClient:
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def place_slm_order(self, product_id, size, direction, stop_price):
+        """
+        Delta v2 stop-loss market order.
+        IMPORTANT: Delta uses order_type=market_order plus
+        stop_order_type=stop_loss_order. The old code used
+        order_type=stop_market_order, which is not the create-order schema.
+        """
         side = "sell" if direction == "LONG" else "buy"
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
             "size": int(abs(size)),
             "side": side,
-            "order_type": "stop_market_order",
+            "order_type": "market_order",
+            "stop_order_type": "stop_loss_order",
             "stop_price": str(stop_price),
             "stop_trigger_method": "last_traded_price",
             "reduce_only": True,
             "client_order_id": (f"slm_{int(time.time() * 1000)}")[-32:]
+        }
+        return self.api("POST", "/v2/orders", body=body, auth=True)
+
+    def place_tpm_order(self, product_id, size, direction, target_price):
+        """Delta v2 reduce-only take-profit market trigger for half the position."""
+        side = "sell" if direction == "LONG" else "buy"
+        body = {
+            "product_id": int(product_id),
+            "product_symbol": self.symbol,
+            "size": int(abs(size)),
+            "side": side,
+            "order_type": "market_order",
+            "stop_order_type": "take_profit_order",
+            "stop_price": str(target_price),
+            "stop_trigger_method": "last_traded_price",
+            "reduce_only": True,
+            "client_order_id": (f"tpm_{int(time.time() * 1000)}")[-32:]
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
@@ -578,7 +631,20 @@ class AccountBot:
                             self.active_trade["entry_price"] = float(cur_entry)
                         else:
                             self.active_trade["entry_price"] = float(self.day_high) if pos.get("size", 0) > 0 else float(self.day_low)
-                        self.save()
+
+                    # Backfill 1:5 target for an already-open trade created by an
+                    # earlier bot version.
+                    if self.active_trade.get("target_5r") is None and self.active_trade.get("entry_price"):
+                        ep = Decimal(str(self.active_trade["entry_price"]))
+                        slv = Decimal(str(self.active_trade.get("sl", 0)))
+                        if slv > 0:
+                            risk = abs(ep - slv)
+                            self.active_trade["target_5r"] = float(
+                                ep + risk * Decimal("5")
+                                if self.active_trade.get("direction") == "LONG"
+                                else ep - risk * Decimal("5")
+                            )
+                    self.save()
 
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry_price"] = float(self.active_trade["entry_price"])
@@ -870,11 +936,53 @@ class AccountBot:
             self.wait_until_flat()
             return False
 
+        # Calculate the fixed 1:5 target from the ACTUAL exchange entry.
+        entry_dec = Decimal(str(actual_entry))
+        sl_dec = Decimal(str(sl_level))
+        risk_dec = abs(entry_dec - sl_dec)
+        target_5r_dec = (
+            entry_dec + (risk_dec * Decimal("5"))
+            if direction == "LONG"
+            else entry_dec - (risk_dec * Decimal("5"))
+        )
+
+        # The protection orders are exchange-side reduce-only orders.
+        # SL protects the full position. TP protects half the position.
+        half_size = actual_size // 2
+        sl_ok = False
+        tp_ok = False
+
         try:
-            self.client.place_slm_order(self.product_id, actual_size, direction, sl_level)
-            logging.info(f"[{self.symbol}] SLM Order placed successfully at {sl_level} for size {actual_size}")
+            self.client.place_slm_order(self.product_id, actual_size, direction, sl_dec)
+            sl_ok = True
+            logging.info(
+                f"[{self.symbol}] SL placed: {sl_dec} | size={actual_size} | direction={direction}"
+            )
         except Exception as e:
-            logging.error(f"[{self.symbol}] Failed to place SLM order: {e}")
+            logging.error(f"[{self.symbol}] FAILED TO PLACE SL: {e}")
+
+        if half_size > 0:
+            try:
+                self.client.place_tpm_order(
+                    self.product_id, half_size, direction, target_5r_dec
+                )
+                tp_ok = True
+                logging.info(
+                    f"[{self.symbol}] 1:5 TP placed: {target_5r_dec} | half_size={half_size}"
+                )
+            except Exception as e:
+                logging.error(f"[{self.symbol}] FAILED TO PLACE 1:5 TP: {e}")
+
+        # Safety: if the exchange-side SL could not be created, do not leave
+        # a naked position running.
+        if not sl_ok:
+            logging.error(f"[{self.symbol}] NO EXCHANGE SL AFTER ENTRY. Closing position for safety.")
+            try:
+                self.client.close_position(self.product_id, actual_size)
+                self.wait_until_flat()
+            except Exception:
+                pass
+            return False
 
         self.active_trade = {
             "direction": direction, 
@@ -882,6 +990,9 @@ class AccountBot:
             "entry_time": now_ist().isoformat(), 
             "size": actual_size,
             "sl": float(sl_level),
+            "target_5r": float(target_5r_dec),
+            "sl_after_5r": float(actual_entry),
+            "tp_exchange_order": bool(tp_ok),
             "leverage": int(self.leverage),
             "estimated_liquidation": float(estimated_liq) if estimated_liq else None,
             "actual_liquidation": float(actual_liq_dec) if 'actual_liq_dec' in locals() else None,
@@ -994,32 +1105,76 @@ class AccountBot:
                 direction = self.active_trade.get("direction")
                 entry_p = Decimal(str(self.active_trade.get("entry_price", 0)))
                 sl_p = Decimal(str(self.active_trade.get("sl", 0)))
-                
-                if entry_p > 0 and sl_p > 0:
-                    risk = abs(entry_p - sl_p)
-                    target_1_5 = (entry_p + (risk * Decimal("5"))) if direction == "LONG" else (entry_p - (risk * Decimal("5")))
-                    
-                    hit_target = (new_price >= target_1_5) if direction == "LONG" else (new_price <= target_1_5)
-                    if hit_target:
-                        half_size = abs(size) // 2
-                        if half_size > 0:
-                            try:
-                                logging.info(f"[{self.symbol}] 1:5 TARGET HIT! Booking half lot ({half_size}) at price {new_price}")
-                                self.client.cancel_all_orders(self.product_id)
-                                self.client.reduce_position_market(self.product_id, half_size, direction)
-                                
-                                time.sleep(0.5)
+                target_p = Decimal(str(self.active_trade.get("target_5r", 0)))
+
+                if entry_p > 0 and sl_p > 0 and target_p > 0:
+                    hit_target = (
+                        new_price >= target_p
+                        if direction == "LONG"
+                        else new_price <= target_p
+                    )
+
+                    # If exchange TP already reduced the position, size will be
+                    # smaller than the originally stored size. Detect that too.
+                    original_size = int(self.active_trade.get("size", abs(size)))
+                    half_size = original_size // 2
+                    exchange_half_done = (
+                        half_size > 0 and abs(size) <= max(1, original_size - half_size)
+                        and abs(size) < original_size
+                    )
+
+                    if hit_target or exchange_half_done:
+                        try:
+                            # Remove the old full-size SL / TP orders first.
+                            self.client.cancel_all_orders(self.product_id)
+
+                            current_pos_data = self.client.position(self.product_id)
+                            current_size = abs(int(current_pos_data.get("size", 0)))
+
+                            # If the exchange TP has NOT already reduced the position,
+                            # book half now with a market reduce-only order.
+                            if hit_target and current_size >= original_size and half_size > 0:
+                                logging.info(
+                                    f"[{self.symbol}] 1:5 TARGET HIT at {new_price}. "
+                                    f"Booking half lot {half_size}."
+                                )
+                                self.client.reduce_position_market(
+                                    self.product_id, half_size, direction
+                                )
+                                time.sleep(0.7)
                                 current_pos_data = self.client.position(self.product_id)
-                                actual_remaining_size = abs(int(current_pos_data.get("size", 0)))
+                                current_size = abs(int(current_pos_data.get("size", 0)))
 
-                                if actual_remaining_size > 0:
-                                    self.client.place_slm_order(self.product_id, actual_remaining_size, direction, sl_p)
-                                    logging.info(f"[{self.symbol}] Checked Exchange -> Placed new SLM for remaining size {actual_remaining_size} at {sl_p}")
-
+                            if current_size > 0:
+                                # After 1:5 half booking, SL is moved to ACTUAL ENTRY.
+                                breakeven_sl = entry_p
+                                self.client.place_slm_order(
+                                    self.product_id,
+                                    current_size,
+                                    direction,
+                                    breakeven_sl
+                                )
+                                self.active_trade["sl"] = float(breakeven_sl)
+                                self.active_trade["size"] = current_size
                                 self.active_trade["partial_booked"] = True
-                                self.save()
-                            except Exception as e:
-                                logging.error(f"[{self.symbol}] Partial booking & dynamic SLM update error: {e}")
+                                self.active_trade["tp_exchange_order"] = False
+
+                                logging.info(
+                                    f"[{self.symbol}] 1:5 HALF BOOKED. "
+                                    f"Remaining={current_size} | SL MODIFIED TO ENTRY={breakeven_sl}"
+                                )
+                            else:
+                                # TP may have closed the position completely if the
+                                # original lot was too small to split.
+                                self.active_trade["partial_booked"] = True
+                                self.active_trade["size"] = 0
+                                logging.info(f"[{self.symbol}] Position fully closed at 1:5.")
+                            self.save()
+
+                        except Exception as e:
+                            logging.error(
+                                f"[{self.symbol}] 1:5 booking / SL modification error: {e}"
+                            )
 
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
@@ -1224,6 +1379,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "leverage": int(b.active_trade.get("leverage", b.leverage) if b.active_trade else b.leverage),
                     "balance_fraction": float(b.balance_fraction),
                     "contract_value": c_val_extracted,
+                    "target_5r": (
+                        float(b.active_trade.get("target_5r"))
+                        if b.active_trade and b.active_trade.get("target_5r") is not None
+                        else None
+                    ),
                     "position": {
                         "size": pos.get("size", 0),
                         "direction": direction,
@@ -1469,7 +1629,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                                 <div class="flex justify-between"><span class="text-slate-400">Direction:</span> <span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Size:</span> <span class="font-semibold">${pos.size}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span> <span class="font-semibold text-amber-300">${finalEntry}</span></div>
-                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-slate-400'}">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span> <span class="font-semibold ${pos.stop_loss?'text-slate-100':'text-rose-400'}">${pos.stop_loss || 'N/A'}</span></div>
+                                <div class="flex justify-between"><span class="text-slate-400">Target 1:5:</span> <span class="font-semibold text-emerald-300">${acc.target_5r || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Liquidation:</span> <span class="font-semibold text-rose-300">${pos.liquidation_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Bankruptcy:</span> <span class="font-semibold text-slate-300">${pos.bankruptcy_price || 'N/A'}</span></div>
                                 <div class="flex justify-between"><span class="text-slate-400">Margin:</span> <span class="font-semibold text-slate-300">${pos.margin || 'N/A'}</span></div>
