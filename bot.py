@@ -16,7 +16,7 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER (v69.2 - UNCONDITIONAL INSTANT FLIP ON SL HIT)
+# DELTA PRO AUTOTRADER (v70.0 - 5:45 AM LOCK, DYNAMIC SLM & RE-LOCK)
 # =====================================================================
 
 load_dotenv()
@@ -134,7 +134,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/69.2"
+            "User-Agent": "MultiBot/70.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -145,7 +145,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/69.2"
+            "User-Agent": "MultiBot/70.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -643,19 +643,31 @@ class AccountBot:
             self.save()
 
     def prepare(self, now):
+        # 5:30 to 5:45 AM: Keep bot flat and collecting high/low
+        t = now.time()
+        if t >= dtime(5, 30) and t < dtime(5, 45):
+            current_price = self.last_price or self.client.last_traded_price()
+            if current_price is not None:
+                if self.day_high is None or current_price > self.day_high:
+                    self.day_high = current_price
+                if self.day_low is None or current_price < self.day_low:
+                    self.day_low = current_price
+                self.save()
+            return False # Not ready to trade yet during 5:30-5:45 window
+
         if self.ready:
             return True
-        if now < self.session_start:
-            return False
-        
-        current_price = self.last_price or self.client.last_traded_price()
-        if current_price is not None:
-            self.day_high = current_price
-            self.day_low = current_price
-            self.manual_squareoff_flag = False
+
+        if t >= dtime(5, 45):
+            if self.day_high is None or self.day_low is None:
+                current_price = self.last_price or self.client.last_traded_price()
+                if current_price is not None:
+                    self.day_high = current_price
+                    self.day_low = current_price
             self.ready = True
             self.save()
             return True
+
         return False
 
     def estimate_liquidation_price(self, entry_price, leverage, direction):
@@ -733,7 +745,6 @@ class AccountBot:
                 self.client.set_leverage(self.product_id, lev_decimal)
                 size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
                 
-                # Pure Market Entry
                 self.client.market_entry_pure(self.product_id, side, size)
 
                 self.leverage = lev_decimal
@@ -922,7 +933,7 @@ class AccountBot:
                 self.save()
 
             # ==========================================
-            # 1:5 PARTIAL PROFIT BOOKING + SLM MODIFY
+            # 1:5 PARTIAL PROFIT BOOKING + DYNAMIC SLM CHECK
             # ==========================================
             if size != 0 and self.active_trade and not self.active_trade.get("partial_booked", False):
                 direction = self.active_trade.get("direction")
@@ -936,23 +947,30 @@ class AccountBot:
                     hit_target = (new_price >= target_1_5) if direction == "LONG" else (new_price <= target_1_5)
                     if hit_target:
                         half_size = abs(size) // 2
-                        remaining_size = abs(size) - half_size
                         if half_size > 0:
                             try:
                                 logging.info(f"[{self.symbol}] 1:5 TARGET HIT! Booking half lot ({half_size}) at price {new_price}")
+                                # Cancel existing full-size SLM
                                 self.client.cancel_all_orders(self.product_id)
+                                # Execute partial market booking
                                 self.client.reduce_position_market(self.product_id, half_size, direction)
-                                if remaining_size > 0:
-                                    self.client.place_slm_order(self.product_id, remaining_size, direction, sl_p)
-                                    logging.info(f"[{self.symbol}] SLM order modified for remaining size {remaining_size} at {sl_p}")
+                                
+                                time.sleep(0.5)
+                                # Check actual pending size on exchange to be 100% precise
+                                current_pos_data = self.client.position(self.product_id)
+                                actual_remaining_size = abs(int(current_pos_data.get("size", 0)))
+
+                                if actual_remaining_size > 0:
+                                    self.client.place_slm_order(self.product_id, actual_remaining_size, direction, sl_p)
+                                    logging.info(f"[{self.symbol}] Checked Exchange -> Placed new SLM for remaining size {actual_remaining_size} at {sl_p}")
 
                                 self.active_trade["partial_booked"] = True
                                 self.save()
                             except Exception as e:
-                                logging.error(f"[{self.symbol}] Partial booking & SLM update error: {e}")
+                                logging.error(f"[{self.symbol}] Partial booking & dynamic SLM update error: {e}")
 
             # ==========================================
-            # UNCONDITIONAL INSTANT FLIP ON SL HIT
+            # UNCONDITIONAL INSTANT FLIP & RE-LOCK HIGH/LOW
             # ==========================================
             if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
                 old_dir = "LONG" if self.last_position > 0 else "SHORT"
@@ -960,24 +978,23 @@ class AccountBot:
 
                 trigger_exit_price = stored_sl if stored_sl is not None else new_price
                 
-                # Clean up any leftover orders on exchange
+                # Clean up all pending/leftover orders on exchange
                 if self.product_id:
                     self.client.cancel_all_orders(self.product_id)
 
-                self.finish_active_trade(trigger_exit_price, f"{old_dir}_SL_HIT_UNCONDITIONAL_FLIP")
+                self.finish_active_trade(trigger_exit_price, f"{old_dir}_SL_HIT_RE_LOCK_FLIP")
                 self.last_position = 0
+                self.active_trade = None
+
+                # RE-LOCK HIGH & LOW FROM CURRENT SESSION START TO NOW UPON FLAT
+                self.day_high = new_price
+                self.day_low = new_price
                 self.save()
 
-                # IMMEDIATELY REVERSE WITHOUT WAITING FOR HIGH/LOW BREAK
-                if old_dir == "LONG":
-                    new_sl = new_price * Decimal("0.99") # Fallback SL below current price
-                    self.enter("SHORT", new_price, new_sl)
-                else:
-                    new_sl = new_price * Decimal("1.01") # Fallback SL above current price
-                    self.enter("LONG", new_price, new_sl)
+                logging.info(f"[{self.symbol}] Position became FLAT. Re-locked Day High/Low to {new_price}. Ready for next breakout.")
                 return
 
-            # Normal fresh entry if no active position
+            # Normal fresh breakout entry when flat
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
@@ -1568,7 +1585,7 @@ def run_websocket():
         time.sleep(RECONNECT_SECONDS)
 
 if __name__ == "__main__":
-    logging.warning("DELTA PRO AUTOTRADER v69.2 STARTING...")
+    logging.warning("DELTA PRO AUTOTRADER v70.0 STARTING...")
     update_server_ip()
     load_all_accounts()
     threading.Thread(target=background_timer_loop, daemon=True).start()
