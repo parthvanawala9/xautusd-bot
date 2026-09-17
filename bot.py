@@ -973,13 +973,17 @@ class AccountBot:
             if not self.prepare(now) or self.manual_squareoff_flag:
                 return
 
-            # Keep expanding day_high and day_low naturally with live ticks if price breaks them
-            if self.day_high is None or new_price > self.day_high:
-                self.day_high = new_price
-                self.save()
-            if self.day_low is None or new_price < self.day_low:
-                self.day_low = new_price
-                self.save()
+            # IMPORTANT:
+            # Keep the current session High/Low locked while checking for a breakout.
+            # We must detect the breakout against the PREVIOUS session levels first.
+            # Updating day_high/day_low before this check would make:
+            #     new_price > day_high
+            # and:
+            #     new_price < day_low
+            # impossible on the same tick.
+            #
+            # After breakout/position handling below, the session range is updated
+            # from the live price so it remains the true 05:30-to-now range.
 
             if size != 0 and self.active_trade and not self.active_trade.get("partial_booked", False):
                 direction = self.active_trade.get("direction")
@@ -1025,25 +1029,44 @@ class AccountBot:
                 self.last_position = 0
                 self.active_trade = None
 
-                self.day_high = new_price
-                self.day_low = new_price
+                # DO NOT reset the session High/Low after an SL.
+                # The 05:30 session range remains valid until the next 05:30 session.
                 self.save()
 
-                logging.info(f"[{self.symbol}] Position became FLAT. Re-locked Day High/Low to {new_price}. Ready for next breakout.")
+                logging.info(
+                    f"[{self.symbol}] Position became FLAT. "
+                    f"Keeping 05:30 Session High/Low unchanged: "
+                    f"High={self.day_high} | Low={self.day_low}. "
+                    f"Ready for next breakout."
+                )
                 return
 
             if size == 0:
                 self.last_position = 0
                 if self.bot_enabled and self.day_high is not None and self.day_low is not None and not self.manual_squareoff_flag:
-                    # Instant Breakout Check
+                    # Instant Breakout Check against the LOCKED session levels.
+                    # Use the previous price so a crossing is detected immediately.
                     if old_price <= self.day_high and new_price > self.day_high:
                         sl_to_use = self.day_low
-                        self.enter("LONG", new_price, sl_to_use)
-                        return
+                        if self.enter("LONG", new_price, sl_to_use):
+                            return
                     if old_price >= self.day_low and new_price < self.day_low:
                         sl_to_use = self.day_high
-                        self.enter("SHORT", new_price, sl_to_use)
-                        return
+                        if self.enter("SHORT", new_price, sl_to_use):
+                            return
+
+            # Update the running 05:30-to-now session range AFTER breakout detection.
+            # This means a newly made high/low becomes part of the displayed range,
+            # while the breakout itself is still detected against the prior level.
+            range_changed = False
+            if self.day_high is None or new_price > self.day_high:
+                self.day_high = new_price
+                range_changed = True
+            if self.day_low is None or new_price < self.day_low:
+                self.day_low = new_price
+                range_changed = True
+            if range_changed:
+                self.save()
 
             if size != 0:
                 self.last_position = size
