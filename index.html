@@ -3,159 +3,108 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>XAUTUSD Professional Trading Terminal</title>
-  <link rel="stylesheet" href="./style.css" />
+  <title>Delta Pro AutoTrader | Professional Terminal</title>
   <style>
     :root {
-      --bg-base: #07090e;
-      --bg-card: #0d1322;
-      --bg-card-hover: #111a2e;
+      --bg-app: #050811;
+      --bg-card: #0b1120;
       --border-color: #1e293b;
       --accent-gold: #f59e0b;
       --accent-green: #10b981;
       --accent-red: #ef4444;
       --text-main: #f8fafc;
-      --text-muted: #64748b;
+      --text-muted: #94a3b8;
     }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      background-color: var(--bg-base);
+      background-color: var(--bg-app);
       color: var(--text-main);
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      margin: 0;
-      padding: 15px;
-      -webkit-font-smoothing: antialiased;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 20px;
     }
 
-    .container {
-      max-width: 1500px;
+    .terminal-container {
+      max-width: 1600px;
       margin: 0 auto;
     }
 
-    /* Advanced Header */
-    header.header {
+    /* Top Navigation / Header */
+    .terminal-header {
+      background: linear-gradient(135deg, #0b1120 0%, #111827 100%);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 24px;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: linear-gradient(135deg, #0d1322 0%, #111a2e 100%);
-      padding: 24px;
-      border-radius: 16px;
-      border: 1px solid var(--border-color);
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
       margin-bottom: 20px;
     }
 
-    .header-left .eyebrow {
-      font-size: 11px;
-      letter-spacing: 2px;
-      color: var(--accent-gold);
-      font-weight: 800;
-      text-transform: uppercase;
-    }
-
-    .header-left h1 {
+    .header-title h1 {
       font-size: 24px;
-      margin: 6px 0 0 0;
+      color: var(--accent-gold);
       font-weight: 800;
       letter-spacing: -0.5px;
     }
 
-    #last-update {
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-top: 4px;
-    }
-
-    /* Status Badge Glow Effect */
-    .status {
-      padding: 8px 16px;
-      border-radius: 30px;
-      font-size: 11px;
-      font-weight: 800;
-      letter-spacing: 1px;
-      text-transform: uppercase;
-      box-shadow: inset 0 0 10px rgba(0,0,0,0.2);
-    }
-    .status.online {
-      background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.4);
-      box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
-    }
-
-    /* Server IP Banner */
-    .ip-banner {
-      background: linear-gradient(90deg, #0d1322 0%, #111a2e 100%);
-      border: 1px solid var(--border-color);
-      border-radius: 14px;
-      padding: 18px 24px;
-      margin-bottom: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-    .ip-title {
-      font-size: 10px;
-      color: var(--text-muted);
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 1.5px;
-    }
-    #server-ip-display {
-      font-size: 16px;
-      font-weight: 900;
+    .server-badge {
+      background: rgba(56, 189, 248, 0.1);
+      border: 1px solid rgba(56, 189, 248, 0.3);
       color: #38bdf8;
+      padding: 6px 14px;
+      border-radius: 8px;
+      font-size: 12px;
       font-family: monospace;
-      letter-spacing: 0.5px;
+      font-weight: bold;
     }
 
-    /* Management Section */
-    .management-card {
+    /* Admin Management Section */
+    .management-panel {
       background: var(--bg-card);
       border: 1px solid var(--border-color);
       border-radius: 16px;
       padding: 24px;
       margin-bottom: 25px;
     }
-    .management-header {
+
+    .management-top {
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
       gap: 15px;
     }
-    .add-client-button {
+
+    .btn-gold {
       background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-      color: #fff;
+      color: white;
       border: none;
       padding: 12px 20px;
-      font-weight: 800;
-      font-size: 12px;
       border-radius: 10px;
+      font-weight: 700;
       cursor: pointer;
-      transition: all 0.2s ease;
+      font-size: 13px;
+      transition: 0.2s;
       box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
     }
-    .add-client-button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(245, 158, 11, 0.4);
-    }
+    .btn-gold:hover { transform: translateY(-1px); opacity: 0.95; }
 
-    /* Client Form Grid */
-    .client-form {
+    .client-form-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 15px;
       margin-top: 20px;
       padding-top: 20px;
       border-top: 1px solid var(--border-color);
     }
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 15px;
+    @media (min-width: 768px) {
+      .client-form-grid { grid-template-columns: repeat(3, 1fr); }
     }
-    @media (min-width: 640px) { .form-grid { grid-template-columns: repeat(2, 1fr); } }
-    @media (min-width: 1024px) { .form-grid { grid-template-columns: repeat(3, 1fr); } }
 
-    .form-field label {
+    .input-group label {
       display: block;
       font-size: 11px;
       color: var(--text-muted);
@@ -163,104 +112,101 @@
       font-weight: 700;
       text-transform: uppercase;
     }
-    .form-field input {
+    .input-group input {
       width: 100%;
       background: #030712;
       border: 1px solid var(--border-color);
       border-radius: 10px;
       padding: 12px;
-      color: #fff;
+      color: white;
       font-size: 13px;
-      box-sizing: border-box;
-      transition: border-color 0.2s;
     }
-    .form-field input:focus {
-      outline: none;
-      border-color: var(--accent-gold);
-    }
-    .success-button {
+    .input-group input:focus { outline: none; border-color: var(--accent-gold); }
+
+    .btn-green {
       background: linear-gradient(135deg, #10b981 0%, #059669 100%);
       color: white;
       border: none;
       padding: 14px;
       width: 100%;
-      font-weight: 800;
-      font-size: 13px;
       border-radius: 10px;
+      font-weight: 800;
       cursor: pointer;
-      box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
-      transition: all 0.2s;
+      margin-top: 15px;
     }
-    .success-button:hover { opacity: 0.95; transform: translateY(-1px); }
 
-    /* Accounts Grid - PC 3 Columns, Mobile 1 Column */
+    /* Accounts Grid - Professional Terminal Layout */
     #accounts-container {
       display: grid;
       grid-template-columns: 1fr;
       gap: 20px;
     }
-    @media (min-width: 768px) {
+    @media (min-width: 900px) {
       #accounts-container { grid-template-columns: repeat(2, 1fr); }
     }
-    @media (min-width: 1200px) {
+    @media (min-width: 1350px) {
       #accounts-container { grid-template-columns: repeat(3, 1fr); }
+    }
+
+    /* Account Card Styling generated by app.js */
+    .account-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.3);
     }
   </style>
 </head>
 <body>
-  <div class="container">
-    <header class="header">
-      <div class="header-left">
-        <div class="eyebrow">DELTA EXCHANGE TERMINAL</div>
-        <h1>XAUTUSD AutoTrader</h1>
-        <p id="last-update">Establishing secure connection...</p>
+  <div class="terminal-container">
+    
+    <!-- HEADER -->
+    <header class="terminal-header">
+      <div class="header-title">
+        <div style="font-size: 10px; color: var(--text-muted); letter-spacing: 2px; font-weight: 800; text-transform: uppercase;">Institutional Grade Terminal</div>
+        <h1>Delta Pro AutoTrader</h1>
+        <p id="last-update" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Connecting to socket stream...</p>
       </div>
-      <div id="bot-status" class="status online">CONNECTING</div>
+      <div id="server-ip-display" class="server-badge">IP: Loading...</div>
     </header>
 
-    <!-- SERVER IP BANNER -->
-    <section class="ip-banner">
-      <div class="ip-title">Server Outbound IP (Whitelist in Delta API Settings)</div>
-      <div id="server-ip-display">Detecting server IP...</div>
-    </section>
-
-    <!-- CLIENT MANAGEMENT -->
-    <section class="management-card" id="admin-management-section">
-      <div class="management-header">
+    <!-- ADMIN MANAGEMENT -->
+    <section class="management-panel" id="admin-management-section">
+      <div class="management-top">
         <div>
-          <h2 style="margin:0; font-size: 18px; font-weight: 700;">Client Portal Control</h2>
-          <p style="margin:4px 0 0 0; font-size: 12px; color: var(--text-muted);">Add new client credentials and generate isolated API tracking links.</p>
+          <h2 style="font-size: 18px; font-weight: 700;">Client Management Portal</h2>
+          <p style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Deploy and manage isolated API trading instances.</p>
         </div>
-        <button class="add-client-button" onclick="openClientForm()">+ ADD NEW CLIENT</button>
+        <button class="btn-gold" onclick="toggleClientForm()">+ ADD NEW CLIENT</button>
       </div>
 
-      <div id="client-form" class="client-form" style="display:none;">
-        <div class="form-grid">
-          <div class="form-field"><label>Client Name</label><input id="client-name" type="text" placeholder="e.g. Rahul Sharma" /></div>
-          <div class="form-field"><label>Delta API Key</label><input id="client-api-key" type="text" placeholder="Paste API Key" /></div>
-          <div class="form-field"><label>Delta API Secret</label><input id="client-api-secret" type="password" placeholder="Paste API Secret" /></div>
-          <div class="form-field"><label>Subscription Fee</label><input id="client-fee" type="number" placeholder="100" /></div>
-          <div class="form-field"><label>Subscription Start</label><input id="client-start" type="datetime-local" /></div>
-          <div class="form-field"><label>Subscription Expiry</label><input id="client-expiry" type="datetime-local" /></div>
+      <div id="client-form" style="display:none;">
+        <div class="client-form-grid">
+          <div class="input-group"><label>Client Name</label><input id="client-name" type="text" placeholder="e.g. Rahul" /></div>
+          <div class="input-group"><label>Delta API Key</label><input id="client-api-key" type="text" placeholder="API Key" /></div>
+          <div class="input-group"><label>Delta API Secret</label><input id="client-api-secret" type="password" placeholder="API Secret" /></div>
+          <div class="input-group"><label>Subscription Fee</label><input id="client-fee" type="number" placeholder="50" /></div>
+          <div class="input-group"><label>Subscription Start</label><input id="client-start" type="datetime-local" /></div>
+          <div class="input-group"><label>Subscription Expiry</label><input id="client-expiry" type="datetime-local" /></div>
         </div>
-        <div style="margin-top: 20px;">
-          <button class="success-button" onclick="addClient()">SAVE & GENERATE SECURE CLIENT LINK</button>
-        </div>
+        <button class="btn-green" onclick="addClient()">SAVE & GENERATE SECURE CLIENT LINK</button>
       </div>
     </section>
 
-    <!-- ACCOUNTS LIST CONTAINER -->
+    <!-- ACCOUNTS GRID -->
     <main id="accounts-container">
       <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:16px; padding:40px; text-align:center; color:var(--text-muted); grid-column: 1 / -1;">
-        Loading live accounts data...
+        Initializing terminal data streams...
       </div>
     </main>
+
   </div>
 
   <script>
-    function openClientForm() {
-      const form = document.getElementById('client-form');
-      form.style.display = form.style.display === 'none' ? 'block' : 'none';
+    function toggleClientForm() {
+      const f = document.getElementById('client-form');
+      f.style.display = f.style.display === 'none' ? 'block' : 'none';
     }
   </script>
   <script src="./app.js"></script>
