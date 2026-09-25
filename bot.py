@@ -198,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/87.0"
+            "User-Agent": "MultiBot/88.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -213,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/87.0"
+            "User-Agent": "MultiBot/88.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -355,7 +355,7 @@ class DeltaClient:
             return {
                 "size": 0, "entry_price": None, "stop_loss": None,
                 "liquidation_price": None, "bankruptcy_price": None,
-                "margin": None, "mark_price": None, "unrealized_pnl": 0
+                "margin": None, "mark_price": None, "unrealized_pnl": 0, "leverage": None
             }
 
         raw_entry = (
@@ -364,6 +364,7 @@ class DeltaClient:
             pos_item.get("price")
         )
         entry_val = float(raw_entry) if raw_entry is not None and float(raw_entry) > 0 else None
+        lev_val = pos_item.get("leverage")
 
         return {
             "size": int(pos_item.get("size", 0) or 0),
@@ -373,7 +374,8 @@ class DeltaClient:
             "bankruptcy_price": float(pos_item.get("bankruptcy_price")) if pos_item.get("bankruptcy_price") else None,
             "margin": float(pos_item.get("margin")) if pos_item.get("margin") else None,
             "mark_price": float(pos_item.get("mark_price")) if pos_item.get("mark_price") else None,
-            "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
+            "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0),
+            "leverage": int(lev_val) if lev_val else None
         }
 
     def margined_position(self, product_id):
@@ -663,6 +665,7 @@ class AccountBot:
             pos = self.client.position(self.product_id)
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
+                cur_lev = pos.get("leverage")
                 if not self.active_trade:
                     direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
                     fallback_ep = float(cur_entry) if (cur_entry is not None and cur_entry > 0) else (float(self.day_high) if direction == "LONG" and self.day_high is not None else float(self.day_low) if self.day_low is not None else 0)
@@ -671,7 +674,7 @@ class AccountBot:
                         "direction": direction,
                         "entry_price": fallback_ep,
                         "size": abs(int(pos.get("size", 0))),
-                        "leverage": int(self.leverage),
+                        "leverage": int(cur_lev) if cur_lev else int(self.leverage),
                         "sl": fallback_sl
                     }
                     self.save()
@@ -681,14 +684,17 @@ class AccountBot:
                             self.active_trade["entry_price"] = float(cur_entry)
                     if not self.active_trade.get("sl"):
                         self.active_trade["sl"] = float(self.day_low) if self.active_trade.get("direction") == "LONG" and self.day_low else float(self.day_high) if self.day_high else None
+                    if cur_lev:
+                        self.active_trade["leverage"] = int(cur_lev)
                     self.save()
 
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry_price"] = float(self.active_trade["entry_price"])
                 if self.active_trade and self.active_trade.get("sl"):
                     pos["stop_loss"] = float(self.active_trade["sl"])
+                if self.active_trade and self.active_trade.get("leverage"):
+                    pos["leverage"] = int(self.active_trade["leverage"])
                 
-                # लाइव P&L कैलकुलेशन
                 if pos.get("entry_price") and self.last_price:
                     d_val = "LONG" if pos.get("size", 0) > 0 else "SHORT"
                     pos["unrealized_pnl"] = float(
@@ -1042,6 +1048,7 @@ class CandleSARBot:
                 "size": (self.size if self.position == "LONG" else -self.size) if self.position else 0,
                 "entry_price": self.entry_price,
                 "stop_loss": self.stop_loss,
+                "leverage": int(self.leverage),
                 "unrealized_pnl": 0
             }
             if self.position and self.size > 0 and self.entry_price and self.last_price:
@@ -1334,6 +1341,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                 entry_p = pos.get("entry_price")
                 active_sl = pos.get("stop_loss")
+                actual_lev = pos.get("leverage") if pos.get("leverage") else int(b.leverage)
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1352,7 +1360,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "current_price": price,
                     "bot_enabled": b.bot_enabled and not b.is_expired(),
                     "is_expired": b.is_expired(),
-                    "leverage": int(b.leverage),
+                    "leverage": actual_lev,
                     "balance_fraction": float(b.balance_fraction),
                     "position": {
                         "size": pos.get("size", 0),
