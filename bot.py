@@ -198,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/91.0"
+            "User-Agent": "MultiBot/93.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -213,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/91.0"
+            "User-Agent": "MultiBot/93.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -569,7 +569,7 @@ class AccountBot:
         self.prev_price = None
         self.ready = False
         self.trading_armed = False
-        self.bot_enabled = True
+        self.bot_enabled = False  # Default off
         self.stop_reason = None
         self.active_trade = None
         self.manual_squareoff_flag = False
@@ -613,7 +613,7 @@ class AccountBot:
                 self.leverage = Decimal(str(state["leverage"]))
             if state.get("balance_fraction") is not None:
                 self.balance_fraction = Decimal(str(state["balance_fraction"]))
-            self.bot_enabled = state.get("bot_enabled", True)
+            self.bot_enabled = state.get("bot_enabled", False)
             self.stop_reason = state.get("stop_reason", None)
             self.ready = state.get("ready", False)
             self.trading_armed = state.get("trading_armed", False)
@@ -639,6 +639,9 @@ class AccountBot:
         atomic_write_json(account_state_file(self.unique_id), data)
 
     def refresh_position(self, force=False):
+        if not self.bot_enabled:
+            return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
+
         if not self.product_id:
             try:
                 self.product = self.client.product()
@@ -652,43 +655,25 @@ class AccountBot:
 
         try:
             pos = self.client.position(self.product_id)
-            if pos.get("size", 0) != 0:
+            if pos.get("size", 0) != 0 and self.active_trade:
                 cur_entry = pos.get("entry_price")
                 cur_lev = pos.get("leverage")
                 
-                if not self.active_trade:
-                    direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
-                    fallback_ep = float(cur_entry) if (cur_entry is not None and cur_entry > 0) else (float(self.day_high) if direction == "LONG" and self.day_high is not None else float(self.day_low) if self.day_low is not None else 0)
-                    fallback_sl = float(self.day_low) if direction == "LONG" and self.day_low is not None else float(self.day_high) if self.day_high is not None else None
-                    self.active_trade = {
-                        "direction": direction,
-                        "entry_price": fallback_ep,
-                        "size": abs(int(pos.get("size", 0))),
-                        "leverage": int(cur_lev) if cur_lev else int(self.leverage),
-                        "sl": fallback_sl
-                    }
-                    self.save()
-                else:
-                    if not self.active_trade.get("entry_price") or float(self.active_trade.get("entry_price", 0)) <= 0:
-                        if cur_entry is not None and cur_entry > 0:
-                            self.active_trade["entry_price"] = float(cur_entry)
-                    if not self.active_trade.get("sl"):
-                        self.active_trade["sl"] = float(self.day_low) if self.active_trade.get("direction") == "LONG" and self.day_low else float(self.day_high) if self.day_high else None
-                    if cur_lev:
-                        self.active_trade["leverage"] = int(cur_lev)
-                    self.save()
+                if not self.active_trade.get("entry_price") or float(self.active_trade.get("entry_price", 0)) <= 0:
+                    if cur_entry is not None and cur_entry > 0:
+                        self.active_trade["entry_price"] = float(cur_entry)
+                if not self.active_trade.get("sl"):
+                    self.active_trade["sl"] = float(self.day_low) if self.active_trade.get("direction") == "LONG" and self.day_low else float(self.day_high) if self.day_high else None
+                if cur_lev:
+                    self.active_trade["leverage"] = int(cur_lev)
+                self.save()
 
-                if self.active_trade and self.active_trade.get("entry_price"):
-                    pos["entry_price"] = float(self.active_trade["entry_price"])
-                if self.active_trade and self.active_trade.get("sl"):
-                    pos["stop_loss"] = float(self.active_trade["sl"])
-                if self.active_trade and self.active_trade.get("leverage"):
-                    pos["leverage"] = int(self.active_trade["leverage"])
-                elif cur_lev:
-                    pos["leverage"] = int(cur_lev)
+                pos["entry_price"] = float(self.active_trade["entry_price"])
+                pos["stop_loss"] = float(self.active_trade["sl"])
+                pos["leverage"] = int(self.active_trade["leverage"])
                 
                 if pos.get("entry_price") and self.last_price:
-                    d_val = "LONG" if pos.get("size", 0) > 0 else "SHORT"
+                    d_val = self.active_trade.get("direction", "LONG")
                     pos["unrealized_pnl"] = float(
                         calculate_trade_pnl(
                             d_val,
@@ -699,8 +684,10 @@ class AccountBot:
                         )
                     )
             else:
-                self.active_trade = None
-                self.save()
+                pos["size"] = 0
+                pos["entry_price"] = None
+                pos["stop_loss"] = None
+                pos["unrealized_pnl"] = 0
 
             self.cached_position = pos
             self.position_cache_time = current
@@ -734,8 +721,6 @@ class AccountBot:
             self.bot_enabled = False
             self.stop_reason = "MANUAL STOP"
             self.manual_squareoff_flag = True
-            self.save()
-            # S1 बंद होने पर केवल S1 का स्टेट क्लियर होगा, एक्सचेंज की ग्लोबल पोजीशन को फोर्स क्लोज नहीं किया जाएगा ताकि S2 डिस्टर्ब न हो
             self.active_trade = None
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Strategy 1 Stopped."}
@@ -807,6 +792,10 @@ class AccountBot:
         if self.is_expired() or self.manual_squareoff_flag or not self.bot_enabled:
             return False
         try:
+            current_pos = self.client.position(self.product_id)
+            if current_pos.get("size", 0) != 0:
+                return False
+
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
             chosen_lev = self.leverage
@@ -897,7 +886,7 @@ class AccountBot:
                 self.active_trade = None
                 self.save()
 
-            if size == 0 and not self.manual_squareoff_flag:
+            if size == 0 and not self.manual_squareoff_flag and self.active_trade is None:
                 if old_price <= self.day_high and new_price > self.day_high:
                     self.enter("LONG", new_price, self.day_low)
                 elif old_price >= self.day_low and new_price < self.day_low:
@@ -936,7 +925,7 @@ class AccountBot:
 
 
 # =====================================================================
-# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (WITH INDEPENDENT TRACKING)
+# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (INDEPENDENT)
 # =====================================================================
 
 class CandleSARBot:
@@ -958,7 +947,7 @@ class CandleSARBot:
         self.size = 0
         self.last_checked_candle_time = 0
         self.last_price = None
-        self.bot_enabled = False
+        self.bot_enabled = False  # Default off
         self.leverage = Decimal("100")
         self.balance_fraction = Decimal("0.10")
         self.lock = threading.RLock()
@@ -1013,6 +1002,9 @@ class CandleSARBot:
         atomic_write_json(account_state_file(self.unique_id), data)
 
     def refresh_position(self):
+        if not self.bot_enabled:
+            return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
+
         if not self.product_id:
             try:
                 self.product = self.client.product()
@@ -1037,6 +1029,12 @@ class CandleSARBot:
                         self.product or {"contract_value": "0.001"}
                     )
                 )
+            else:
+                pos["size"] = 0
+                pos["entry_price"] = None
+                pos["stop_loss"] = None
+                pos["unrealized_pnl"] = 0
+
             self.cached_position = pos
             return pos
         except Exception:
@@ -1066,7 +1064,6 @@ class CandleSARBot:
         with self.lock:
             self.bot_enabled = False
             self.save()
-            # S2 बंद होने पर केवल S2 का स्टेट क्लियर होगा, एक्सचेंज की ग्लोबल पोजीशन को फोर्स क्लोज नहीं किया जाएगा
             self.finish_trade("MANUAL", self.last_price or 0)
             self.position = None
             self.entry_price = None
@@ -1173,6 +1170,10 @@ class CandleSARBot:
 
     def execute_entry(self, direction, initial_sl):
         try:
+            current_pos = self.client.position(self.product_id)
+            if current_pos.get("size", 0) != 0:
+                return
+
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
             chosen_lev = self.leverage
@@ -1311,7 +1312,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 try:
                     price = float(b.client.last_traded_price() or 0)
                     b.last_price = price
-                    pos = b.refresh_position()
+                    pos = b.refresh_position() if b.bot_enabled else {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance = float(b.client.balance())
                 except Exception:
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -1319,14 +1320,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     price = 0
 
                 direction = "FLAT"
-                if pos.get("size", 0) > 0:
-                    direction = "LONG"
-                elif pos.get("size", 0) < 0:
-                    direction = "SHORT"
+                if b.bot_enabled and pos.get("size", 0) != 0:
+                    if pos.get("size", 0) > 0:
+                        direction = "LONG"
+                    elif pos.get("size", 0) < 0:
+                        direction = "SHORT"
 
-                entry_p = pos.get("entry_price")
-                active_sl = pos.get("stop_loss")
-                actual_lev = pos.get("leverage") if pos.get("leverage") else (getattr(b, "active_trade", {}) or {}).get("leverage", int(b.leverage))
+                entry_p = pos.get("entry_price") if b.bot_enabled else None
+                active_sl = pos.get("stop_loss") if b.bot_enabled else None
+                actual_lev = pos.get("leverage") if (b.bot_enabled and pos.get("leverage")) else int(b.leverage)
+                unrealized_pnl = pos.get("unrealized_pnl", 0) if b.bot_enabled else 0
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1348,12 +1351,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "leverage": actual_lev,
                     "balance_fraction": float(b.balance_fraction),
                     "position": {
-                        "size": pos.get("size", 0),
+                        "size": pos.get("size", 0) if b.bot_enabled else 0,
                         "direction": direction,
                         "entry_price": entry_p,
                         "stop_loss": active_sl,
-                        "liquidation_price": pos.get("liquidation_price"),
-                        "unrealized_pnl": pos.get("unrealized_pnl", 0)
+                        "liquidation_price": pos.get("liquidation_price") if b.bot_enabled else None,
+                        "unrealized_pnl": unrealized_pnl
                     },
                     "statistics": stats,
                     "trade_history": history,
