@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 
 # =====================================================================
 # DELTA PRO AUTOTRADER - DUAL STRATEGY (XAUTUSD ONLY)
-# WITH LIVE EXCHANGE POSITION AUTO-SYNC
 # =====================================================================
 
 load_dotenv()
@@ -199,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/85.0"
+            "User-Agent": "MultiBot/86.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -214,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/85.0"
+            "User-Agent": "MultiBot/86.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -376,6 +375,21 @@ class DeltaClient:
             "mark_price": float(pos_item.get("mark_price")) if pos_item.get("mark_price") else None,
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
+
+    def margined_position(self, product_id):
+        try:
+            data = self.api("GET", "/v2/positions/margined", params={"product_id": int(product_id)}, auth=True)
+            result = data.get("result", [])
+            if isinstance(result, list):
+                for p in result:
+                    if isinstance(p, dict) and int(p.get("product_id", 0)) == int(product_id):
+                        return p
+                return result[0] if result and isinstance(result[0], dict) else {}
+            elif isinstance(result, dict):
+                return result
+        except Exception:
+            return {}
+        return {}
 
     def balance(self):
         data = self.api("GET", "/v2/wallet/balances", auth=True)
@@ -559,6 +573,7 @@ class AccountBot:
         self.session_start = None
         self.day_high = None
         self.day_low = None
+        self.last_position = 0
         self.last_price = None
         self.prev_price = None
         self.ready = False
@@ -575,7 +590,6 @@ class AccountBot:
         self.position_cache_time = 0
 
         self.load_state()
-        self.sync_exchange_position()
         self.save()
 
     def is_expired(self):
@@ -615,28 +629,6 @@ class AccountBot:
         except Exception:
             pass
 
-    def sync_exchange_position(self):
-        try:
-            if not self.product_id:
-                self.product = self.client.product()
-                self.product_id = int(self.product["id"])
-            
-            ex_pos = self.client.position(self.product_id)
-            sz = ex_pos.get("size", 0)
-            if sz != 0 and not self.active_trade:
-                direction = "LONG" if sz > 0 else "SHORT"
-                ep = ex_pos.get("entry_price") or float(self.day_high if direction == "LONG" and self.day_high else self.day_low if self.day_low else 0)
-                sl = float(self.day_low) if direction == "LONG" and self.day_low else float(self.day_high) if self.day_high else 0
-                self.active_trade = {
-                    "direction": direction,
-                    "entry_price": float(ep),
-                    "size": abs(int(sz)),
-                    "leverage": int(self.leverage),
-                    "sl": sl
-                }
-        except Exception:
-            pass
-
     def save(self):
         data = {
             "account_id": self.unique_id,
@@ -668,31 +660,35 @@ class AccountBot:
             return self.cached_position
 
         try:
-            pos = {
-                "size": 0,
-                "entry_price": None,
-                "stop_loss": None,
-                "liquidation_price": None,
-                "unrealized_pnl": 0
-            }
+            pos = self.client.position(self.product_id)
+            margined = self.client.margined_position(self.product_id)
+            pos["liquidation_price"] = margined.get("liquidation_price") or pos.get("liquidation_price")
+            pos["bankruptcy_price"] = margined.get("bankruptcy_price") or pos.get("bankruptcy_price")
+            pos["margin"] = margined.get("margin") or pos.get("margin")
+            pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
 
-            if self.active_trade and self.active_trade.get("size", 0) > 0:
-                sz = self.active_trade.get("size")
-                dir_val = self.active_trade.get("direction")
-                pos["size"] = sz if dir_val == "LONG" else -sz
-                pos["entry_price"] = self.active_trade.get("entry_price")
-                pos["stop_loss"] = self.active_trade.get("sl")
+            if pos.get("size", 0) != 0:
+                cur_entry = pos.get("entry_price")
+                if not self.active_trade:
+                    direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
+                    fallback_ep = float(cur_entry) if (cur_entry is not None and cur_entry > 0) else (float(self.day_high) if direction == "LONG" and self.day_high is not None else float(self.day_low) if self.day_low is not None else 0)
+                    fallback_sl = float(self.day_low) if direction == "LONG" and self.day_low is not None else float(self.day_high) if self.day_high is not None else None
+                    self.active_trade = {
+                        "direction": direction,
+                        "entry_price": fallback_ep,
+                        "size": abs(int(pos.get("size", 0))),
+                        "leverage": int(self.leverage),
+                        "sl": fallback_sl
+                    }
+                    self.save()
+                else:
+                    if not self.active_trade.get("entry_price") or float(self.active_trade.get("entry_price", 0)) <= 0:
+                        if cur_entry is not None and cur_entry > 0:
+                            self.active_trade["entry_price"] = float(cur_entry)
+                    self.save()
 
-                if pos["entry_price"] and self.last_price:
-                    pos["unrealized_pnl"] = float(
-                        calculate_trade_pnl(
-                            dir_val,
-                            pos["entry_price"],
-                            self.last_price,
-                            sz,
-                            self.product or {"contract_value": "0.001"}
-                        )
-                    )
+                if self.active_trade and self.active_trade.get("entry_price"):
+                    pos["entry_price"] = float(self.active_trade["entry_price"])
 
             self.cached_position = pos
             self.position_cache_time = current
@@ -729,15 +725,13 @@ class AccountBot:
             self.save()
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                if self.active_trade and self.active_trade.get("size", 0) > 0:
-                    try:
-                        sz = self.active_trade.get("size")
-                        dir_val = self.active_trade.get("direction")
-                        close_sz = sz if dir_val == "LONG" else -sz
-                        self.client.close_position(self.product_id, close_sz)
-                    except Exception:
-                        pass
-            self.finish_trade("MANUAL", self.last_price or 0)
+                try:
+                    pos = self.refresh_position(force=True)
+                    sz = int(pos.get("size", 0))
+                    if sz != 0:
+                        self.client.close_position(self.product_id, sz)
+                except Exception:
+                    pass
             self.active_trade = None
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Strategy 1 Stopped."}
@@ -747,18 +741,18 @@ class AccountBot:
         if self.session_start != current_sess:
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                if self.active_trade and self.active_trade.get("size", 0) > 0:
+                pos = self.refresh_position(force=True)
+                sz = int(pos.get("size", 0))
+                if sz != 0:
                     try:
-                        sz = self.active_trade.get("size")
-                        dir_val = self.active_trade.get("direction")
-                        close_sz = sz if dir_val == "LONG" else -sz
-                        self.client.close_position(self.product_id, close_sz)
+                        self.client.close_position(self.product_id, sz)
                     except Exception:
                         pass
             self.session_start = current_sess
             self.day_high = None
             self.day_low = None
             self.prev_price = None
+            self.last_position = 0
             self.active_trade = None
             self.manual_squareoff_flag = False
             self.ready = False
@@ -858,6 +852,7 @@ class AccountBot:
                 "sl": float(sl_level)
             }
             self.leverage = chosen_lev
+            self.last_position = size if direction == "LONG" else -size
             self.save()
             return True
         except Exception as e:
@@ -872,15 +867,18 @@ class AccountBot:
             price = price or self.client.last_traded_price()
             if price is None:
                 return
-            self.last_price = float(price)
+            self.last_price = price
+
+            pos = self.refresh_position(force=True)
+            size = int(pos.get("size", 0))
 
             if self.prev_price is None:
-                self.prev_price = self.last_price
+                self.prev_price = price
                 return
 
             old_price = self.prev_price
-            new_price = self.last_price
-            self.prev_price = new_price
+            new_price = price
+            self.prev_price = price
 
             if is_weekend(now):
                 return
@@ -896,36 +894,32 @@ class AccountBot:
                 self.trading_armed = True
                 return
 
-            has_pos = self.active_trade and self.active_trade.get("size", 0) > 0
-            if has_pos:
-                sl_val = self.active_trade.get("sl")
-                dir_val = self.active_trade.get("direction")
-                if sl_val:
-                    if (dir_val == "LONG" and new_price <= sl_val) or (dir_val == "SHORT" and new_price >= sl_val):
-                        self.finish_trade("SL_HIT", sl_val)
-                        self.active_trade = None
-                        self.save()
-                        has_pos = False
+            if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
+                old_dir = "LONG" if self.last_position > 0 else "SHORT"
+                self.finish_trade(old_dir, new_price)
+                self.last_position = 0
+                self.active_trade = None
+                self.save()
 
-            if not has_pos and not self.manual_squareoff_flag:
+            if size == 0 and not self.manual_squareoff_flag:
                 if old_price <= self.day_high and new_price > self.day_high:
                     self.enter("LONG", new_price, self.day_low)
                 elif old_price >= self.day_low and new_price < self.day_low:
                     self.enter("SHORT", new_price, self.day_high)
 
             if new_price > (self.day_high or 0):
-                self.day_high = Decimal(str(new_price))
+                self.day_high = new_price
                 self.save()
             if new_price < (self.day_low or 999999):
-                self.day_low = Decimal(str(new_price))
+                self.day_low = new_price
                 self.save()
+            self.last_position = size
 
-    def finish_trade(self, reason, exit_price):
+    def finish_trade(self, direction, exit_price):
         if not self.active_trade:
             return
-        direction = self.active_trade.get("direction", "LONG")
-        entry = self.active_trade.get("entry_price", exit_price)
-        size = self.active_trade.get("size", 0)
+        entry = self.active_trade.get("entry_price")
+        size = self.active_trade.get("size")
         pnl = calculate_trade_pnl(direction, entry, exit_price, size, self.product or {"contract_value": "0.001"})
         trade = {
             "id": f"s1_{int(time.time()*1000)}",
@@ -938,7 +932,7 @@ class AccountBot:
             "exit_price": float(exit_price),
             "size": size,
             "pnl": float(pnl),
-            "reason": reason
+            "reason": "SL_HIT"
         }
         history = load_trade_history(self.unique_id)
         history.append(trade)
@@ -975,7 +969,6 @@ class CandleSARBot:
         self.cached_position = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
         self.load_state()
-        self.sync_exchange_position()
         self.save()
 
     def is_expired(self):
@@ -1008,27 +1001,6 @@ class CandleSARBot:
         except Exception:
             pass
 
-    def sync_exchange_position(self):
-        try:
-            if not self.product_id:
-                self.product = self.client.product()
-                self.product_id = int(self.product["id"])
-            
-            ex_pos = self.client.position(self.product_id)
-            sz = ex_pos.get("size", 0)
-            if sz != 0 and not self.position:
-                self.position = "LONG" if sz > 0 else "SHORT"
-                self.size = abs(int(sz))
-                self.entry_price = ex_pos.get("entry_price") or self.last_price or 0.0
-                
-                # Fetch recent candles to set initial trailing SL if not set
-                candles = self.client.get_15m_candles(limit=2)
-                if candles:
-                    prev = candles[-2] if len(candles) >= 2 else candles[-1]
-                    self.stop_loss = float(prev["low"] if self.position == "LONG" else prev["high"])
-        except Exception:
-            pass
-
     def save(self):
         data = {
             "account_id": self.unique_id,
@@ -1053,28 +1025,21 @@ class CandleSARBot:
                 return self.cached_position
         try:
             pos = {
-                "size": 0,
-                "entry_price": None,
+                "size": (self.size if self.position == "LONG" else -self.size) if self.position else 0,
+                "entry_price": self.entry_price,
                 "stop_loss": self.stop_loss,
-                "liquidation_price": None,
                 "unrealized_pnl": 0
             }
-
-            if self.position and self.size > 0:
-                sz = self.size
-                pos["size"] = sz if self.position == "LONG" else -sz
-                pos["entry_price"] = self.entry_price
-                if self.entry_price and self.last_price:
-                    pos["unrealized_pnl"] = float(
-                        calculate_trade_pnl(
-                            self.position,
-                            self.entry_price,
-                            self.last_price,
-                            sz,
-                            self.product or {"contract_value": "0.001"}
-                        )
+            if self.position and self.size > 0 and self.entry_price and self.last_price:
+                pos["unrealized_pnl"] = float(
+                    calculate_trade_pnl(
+                        self.position,
+                        self.entry_price,
+                        self.last_price,
+                        self.size,
+                        self.product or {"contract_value": "0.001"}
                     )
-
+                )
             self.cached_position = pos
             return pos
         except Exception:
@@ -1281,12 +1246,14 @@ def load_all_accounts():
                 pass
         BOT_ACCOUNTS.clear()
 
+        # Primary Account - Both S1 and S2
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
             s1 = AccountBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL)
             s2 = CandleSARBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL)
             BOT_ACCOUNTS[s1.unique_id] = s1
             BOT_ACCOUNTS[s2.unique_id] = s2
 
+        # Client Accounts - Both S1 and S2
         clients_cfg = load_clients_config()
         for cid, cdata in clients_cfg.items():
             s1 = AccountBot(cid, cdata.get("name", "Client"), "client", cdata.get("api_key"), cdata.get("api_secret"), SYMBOL, {
@@ -1315,10 +1282,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
 
         if path == "/api/dashboard":
+            client_token = query.get("token", [None])[0]
+            server_ip = CACHED_SERVER_IP
+
             with ACCOUNTS_LOCK:
                 bots = list(BOT_ACCOUNTS.values())
 
+            if client_token:
+                clients_cfg = load_clients_config()
+                target_cid = None
+                for cid, cdata in clients_cfg.items():
+                    if cdata.get("token") == client_token:
+                        target_cid = cid
+                        break
+                if not target_cid:
+                    self.send_json({"success": False, "message": "Unauthorized client token"}, status=403)
+                    return
+                bots = [b for b in bots if b.base_account_id == target_cid]
+
             accounts_data = []
+            clients_cfg = load_clients_config()
 
             for b in bots:
                 try:
@@ -1342,12 +1325,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
 
+                token = clients_cfg.get(b.base_account_id, {}).get("token", "") if b.account_type == "client" else ""
+                sub_info = getattr(b, "subscription", {})
+
                 accounts_data.append({
                     "account_id": b.unique_id,
                     "account_name": b.account_name,
                     "account_type": b.account_type,
                     "symbol": b.symbol,
-                    "server_ip": CACHED_SERVER_IP,
+                    "token": token,
+                    "server_ip": server_ip,
                     "balance": balance,
                     "current_price": price,
                     "bot_enabled": b.bot_enabled and not b.is_expired(),
@@ -1363,10 +1350,16 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                         "unrealized_pnl": pos.get("unrealized_pnl", 0)
                     },
                     "statistics": stats,
-                    "trade_history": history
+                    "trade_history": history,
+                    "subscription": sub_info
                 })
 
-            self.send_json({"success": True, "accounts": accounts_data})
+            self.send_json({
+                "success": True,
+                "server_online": True,
+                "server_ip": server_ip,
+                "accounts": accounts_data
+            })
             return
 
         if path == "/" or path == "":
@@ -1411,14 +1404,35 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 self.send_json({"success": False, "message": "Missing fields"}, 400)
                 return
             cid = f"client_{int(time.time())}"
+            token = hashlib.sha256(f"{cid}_{time.time()}".encode()).hexdigest()[:16]
             clients_cfg[cid] = {
-                "name": name, "api_key": key, "api_secret": secret,
+                "name": name,
+                "api_key": key,
+                "api_secret": secret,
+                "token": token,
                 "subscription_start": now_ist().strftime("%Y-%m-%d"),
-                "subscription_expiry": expiry or "2099-12-31"
+                "subscription_expiry": expiry or "2099-12-31",
+                "subscription_fee": 0
             }
             save_clients_config(clients_cfg)
             load_all_accounts()
-            self.send_json({"success": True, "message": "Client added!"})
+            self.send_json({"success": True, "message": "Client added successfully!"})
+            return
+
+        if parsed == "/api/client/delete":
+            acc_id = body.get("account_id")
+            base_cid = acc_id.split("_")[0] + "_" + acc_id.split("_")[1] if acc_id and "_" in acc_id else acc_id
+            if base_cid in clients_cfg:
+                del clients_cfg[base_cid]
+                save_clients_config(clients_cfg)
+                with ACCOUNTS_LOCK:
+                    keys_to_del = [k for k in BOT_ACCOUNTS if k.startswith(base_cid)]
+                    for k in keys_to_del:
+                        BOT_ACCOUNTS[k].stop_bot()
+                        del BOT_ACCOUNTS[k]
+                self.send_json({"success": True, "message": "Client removed"})
+                return
+            self.send_json({"success": False, "message": "Client not found"}, 404)
             return
 
         self.send_json({"success": False, "message": "Not found"}, 404)
@@ -1429,23 +1443,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Delta Pro Dual Strategy Bot</title>
+    <title>Delta Pro AutoTrader</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
     <div class="max-w-md mx-auto space-y-6">
         <header class="text-center">
-            <h1 class="text-2xl font-bold text-amber-400">Delta Dual Strategy</h1>
+            <h1 class="text-2xl font-bold text-amber-400">Delta Pro AutoTrader</h1>
             <p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
         </header>
 
-        <div class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
-            <h3 class="font-bold text-sm text-amber-400 uppercase">Add Client Account</h3>
+        <div id="add-client-section" class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
+            <h3 class="font-bold text-sm text-amber-400 uppercase">Add New Client Account</h3>
             <input type="text" id="c-name" placeholder="Client Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
-            <input type="text" id="c-key" placeholder="API Key" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
-            <input type="password" id="c-secret" placeholder="API Secret" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
-            <input type="date" id="c-expiry" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
-            <button onclick="addClient()" class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg text-white">Add Client</button>
+            <input type="text" id="c-key" placeholder="Delta API Key" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            <input type="password" id="c-secret" placeholder="Delta API Secret" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            <div>
+                <label class="block text-[10px] text-slate-400 mb-1">Subscription Expiry Date</label>
+                <input type="date" id="c-expiry" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200">
+            </div>
+            <button onclick="addClient()" class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg transition text-white">Add Client & Generate Link</button>
         </div>
 
         <div id="accounts-container" class="space-y-6">
@@ -1454,18 +1471,30 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     </div>
 
 <script>
+let isEditingSettings = false;
+
 async function fetchDashboard() {
+    if (isEditingSettings) return;
     try {
-        let res = await fetch(`/api/dashboard?_t=${Date.now()}`);
+        let urlParams = new URLSearchParams(window.location.search);
+        let token = urlParams.get("token");
+        let fetchUrl = token ? `/api/dashboard?token=${token}&_t=${Date.now()}` : `/api/dashboard?_t=${Date.now()}`;
+        let res = await fetch(fetchUrl);
         let data = await res.json();
         if (data.success) {
-            document.getElementById("server-ip").innerText = "Server IP: " + data.accounts[0]?.server_ip;
+            document.getElementById("server-ip").innerText = "Server IP: " + data.server_ip;
+            if (token) {
+                let addSec = document.getElementById("add-client-section");
+                if (addSec) addSec.style.display = "none";
+            }
             let container = document.getElementById("accounts-container");
             container.innerHTML = "";
 
             data.accounts.forEach(acc => {
                 let pos = acc.position;
                 let stats = acc.statistics;
+                let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : "";
+                let expiryText = acc.subscription && acc.subscription.expiry ? acc.subscription.expiry : "N/A";
                 let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : "N/A";
                 let tradeLevDisplay = acc.leverage + "x";
 
@@ -1475,18 +1504,21 @@ async function fetchDashboard() {
                         <div>
                             <h2 class="font-bold text-base text-amber-300">${acc.account_name}</h2>
                             <p class="text-xs text-slate-400">Balance: $${acc.balance.toFixed(2)} | Price: ${acc.current_price || "N/A"}</p>
+                            ${acc.account_type == "client" ? `<p class="text-[10px] text-amber-400 mt-0.5">Expiry: ${expiryText}${acc.is_expired ? "(EXPIRED)" : ""}</p>` : ""}
                         </div>
                         <span class="px-3 py-1 rounded-full text-xs font-semibold ${acc.bot_enabled ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}">
                             ${acc.bot_enabled ? 'RUNNING' : 'STOPPED'}
                         </span>
                     </div>
 
+                    ${clientLink ? `<div class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs space-y-1"><span class="text-slate-400 text-[10px] block">Client Unique Link:</span><input type="text" readonly value="${clientLink}" class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all"></div>` : ""}
+
                     <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
                         <div class="text-xs font-semibold text-amber-400 uppercase">Risk Settings</div>
                         <div class="grid grid-cols-2 gap-2">
                             <div>
                                 <label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
-                                <select id="lev-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                <select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                     <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                                     <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                                     <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
@@ -1495,7 +1527,7 @@ async function fetchDashboard() {
                             </div>
                             <div>
                                 <label class="block text-[10px] text-slate-400 mb-1">Margin Fraction</label>
-                                <select id="frac-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                <select id="frac-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                     <option value="0.10" ${acc.balance_fraction==0.1?'selected':''}>10%</option>
                                     <option value="0.25" ${acc.balance_fraction==0.25?'selected':''}>25%</option>
                                     <option value="0.50" ${acc.balance_fraction==0.5?'selected':''}>50%</option>
@@ -1532,9 +1564,12 @@ async function fetchDashboard() {
                         </div>
                     </div>
 
-                    <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="w-full py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
-                        ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
-                    </button>
+                    <div class="flex gap-2">
+                        <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
+                            ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
+                        </button>
+                        ${acc.account_type == "client" && !token ? `<button onclick="deleteClient('${acc.account_id}')" class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold transition">Remove</button>` : ""}
+                    </div>
 
                     <div class="space-y-2 pt-2 border-t border-slate-700">
                         <div class="text-xs font-bold text-slate-400 uppercase">Trade History (${acc.trade_history.length})</div>
@@ -1564,11 +1599,27 @@ async function addClient() {
     let key = document.getElementById("c-key").value;
     let secret = document.getElementById("c-secret").value;
     let expiry = document.getElementById("c-expiry").value;
-    if(!name || !key || !secret) { alert("Fill required fields"); return; }
-    await fetch("/api/client/add", {
+    if(!name || !key || !secret || !expiry) { alert("Please fill all fields!"); return; }
+    let res = await fetch("/api/client/add", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({name, api_key: key, api_secret: secret, subscription_expiry: expiry})
+    });
+    let data = await res.json();
+    alert(data.message);
+    document.getElementById("c-name").value = "";
+    document.getElementById("c-key").value = "";
+    document.getElementById("c-secret").value = "";
+    document.getElementById("c-expiry").value = "";
+    fetchDashboard();
+}
+
+async function deleteClient(accId) {
+    if(!confirm("Are you sure you want to remove this client?")) return;
+    await fetch("/api/client/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({account_id: accId})
     });
     fetchDashboard();
 }
@@ -1586,6 +1637,7 @@ async function toggleBot(accId, state) {
 async function updateSettings(accId) {
     let lev = document.getElementById("lev-" + accId).value;
     let frac = document.getElementById("frac-" + accId).value;
+    isEditingSettings = true;
     let res = await fetch("/api/bot/settings", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -1593,6 +1645,7 @@ async function updateSettings(accId) {
     });
     let data = await res.json();
     alert(data.message);
+    isEditingSettings = false;
     fetchDashboard();
 }
 
