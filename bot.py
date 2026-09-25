@@ -298,41 +298,6 @@ class DeltaClient:
             logging.warning(f"[{self.symbol}] Session high/low fetch error: {e}")
         return None, None
 
-    def get_15m_candles(self, limit=5):
-        try:
-            end_ts = int(now_ist().timestamp())
-            start_ts = end_ts - (limit * 15 * 60)
-            params = {
-                "resolution": "15m",
-                "symbol": self.symbol,
-                "start": start_ts,
-                "end": end_ts
-            }
-            data = self.api("GET", "/v2/history/candles", params=params)
-            candles = data.get("result", [])
-            formatted = []
-            for c in candles:
-                try:
-                    if isinstance(c, dict):
-                        formatted.append({
-                            "time": float(c.get("time") or c.get("timestamp") or 0),
-                            "high": float(c.get("high")),
-                            "low": float(c.get("low")),
-                            "close": float(c.get("close"))
-                        })
-                    elif isinstance(c, list) and len(c) >= 5:
-                        formatted.append({
-                            "time": float(c[0]),
-                            "high": float(c[2]),
-                            "low": float(c[3]),
-                            "close": float(c[4])
-                        })
-                except Exception:
-                    continue
-            return formatted
-        except Exception:
-            return []
-
     def position(self, product_id):
         try:
             data = self.api("GET", "/v2/positions", params={"product_id": int(product_id)}, auth=True)
@@ -578,7 +543,6 @@ class AccountBot:
         self.balance_fraction = Decimal("0.10")
         self.lock = threading.RLock()
         self.cached_position = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
-        self.position_cache_time = 0
 
         self.load_state()
         self.save()
@@ -639,8 +603,6 @@ class AccountBot:
         atomic_write_json(account_state_file(self.unique_id), data)
 
     def refresh_position(self, force=False):
-        if not self.bot_enabled:
-            return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
         return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
     def update_settings(self, new_lev, new_frac):
@@ -873,16 +835,17 @@ class AccountBot:
 
 
 # =====================================================================
-# STRATEGY 2 BOT: 5-MIN CANDLE TRAILING SAR (INDEPENDENT)
+# STRATEGY 2 BOT: CANDLE TRAILING SAR (5m / 15m CONFIGURABLE)
 # =====================================================================
 
 class CandleSARBot:
-    def __init__(self, account_id, account_name, account_type, api_key, api_secret, symbol="XAUTUSD", subscription=None):
+    def __init__(self, account_id, account_name, account_type, api_key, api_secret, symbol="XAUTUSD", subscription=None, timeframe="5m"):
         self.base_account_id = account_id
         self.symbol = symbol.strip().upper()
-        self.strategy_key = "s2"
+        self.timeframe = timeframe.strip().lower() # "5m" या "15m"
+        self.strategy_key = f"s2_{self.timeframe}"
         self.unique_id = f"{account_id}_{self.symbol}_{self.strategy_key}"
-        self.account_name = f"{account_name} [S2: 5m SAR]"
+        self.account_name = f"{account_name} [S2: {self.timeframe.upper()} SAR]"
         self.account_type = account_type
         self.subscription = subscription or {}
         self.client = DeltaClient(api_key, api_secret, account_name, self.symbol)
@@ -931,6 +894,8 @@ class CandleSARBot:
                 self.leverage = Decimal(str(state["leverage"]))
             if state.get("balance_fraction"):
                 self.balance_fraction = Decimal(str(state["balance_fraction"]))
+            if state.get("timeframe"):
+                self.timeframe = state.get("timeframe")
         except Exception:
             pass
 
@@ -939,6 +904,7 @@ class CandleSARBot:
             "account_id": self.unique_id,
             "account_name": self.account_name,
             "symbol": self.symbol,
+            "timeframe": self.timeframe,
             "position": self.position,
             "stop_loss": self.stop_loss,
             "entry_price": self.entry_price,
@@ -949,12 +915,13 @@ class CandleSARBot:
         }
         atomic_write_json(account_state_file(self.unique_id), data)
 
-    def get_5m_candles(self, limit=5):
+    def get_candles(self, limit=5):
         try:
             end_ts = int(now_ist().timestamp())
-            start_ts = end_ts - (limit * 5 * 60)
+            multiplier = 900 if self.timeframe == "15m" else 300
+            start_ts = end_ts - (limit * multiplier)
             params = {
-                "resolution": "5m",
+                "resolution": self.timeframe,
                 "symbol": self.symbol,
                 "start": start_ts,
                 "end": end_ts
@@ -1007,7 +974,7 @@ class CandleSARBot:
                     self.entry_price = exchange_pos.get("entry_price")
                 
                 if not self.stop_loss or self.stop_loss == 0.0:
-                    candles = self.get_5m_candles(limit=2)
+                    candles = self.get_candles(limit=2)
                     if len(candles) >= 2:
                         self.stop_loss = candles[-2]["low"] if direction == "LONG" else candles[-2]["high"]
 
@@ -1039,15 +1006,22 @@ class CandleSARBot:
         except Exception:
             return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
-    def update_settings(self, new_lev, new_frac):
+    def update_settings(self, new_lev, new_frac, new_tf="5m"):
         with self.lock:
             try:
                 self.leverage = Decimal(str(new_lev))
                 self.balance_fraction = Decimal(str(new_frac))
+                
+                if new_tf in ["5m", "15m"] and new_tf != self.timeframe:
+                    self.timeframe = new_tf
+                    self.strategy_key = f"s2_{self.timeframe}"
+                    self.unique_id = f"{self.base_account_id}_{self.symbol}_{self.strategy_key}"
+                    self.account_name = f"{self.account_name.split('[')[0].strip()} [S2: {self.timeframe.upper()} SAR]"
+
                 if self.product_id:
                     self.client.set_leverage(self.product_id, self.leverage)
                 self.save()
-                return {"success": True, "message": f"Saved S2 Settings! Leverage: {int(self.leverage)}x"}
+                return {"success": True, "message": f"Saved S2 Settings! TF: {self.timeframe.upper()} | Lev: {int(self.leverage)}x"}
             except Exception as e:
                 return {"success": False, "message": str(e)}
 
@@ -1057,7 +1031,7 @@ class CandleSARBot:
                 return {"success": False, "message": "Subscription expired."}
             self.bot_enabled = True
             self.save()
-            return {"success": True, "bot_enabled": True, "message": "Strategy 2 (5m SAR) Started."}
+            return {"success": True, "bot_enabled": True, "message": f"Strategy 2 ({self.timeframe.upper()} SAR) Started."}
 
     def stop_bot(self):
         with self.lock:
@@ -1100,7 +1074,7 @@ class CandleSARBot:
             now = now_ist()
             if is_weekend(now):
                 if self.position and self.size > 0:
-                    logging.info("[S2] Weekend detected. Closing active position...")
+                    logging.info(f"[S2-{self.timeframe}] Weekend detected. Closing active position...")
                     try:
                         close_sz = self.size if self.position == "LONG" else -self.size
                         self.client.close_position(self.product_id, close_sz)
@@ -1125,7 +1099,7 @@ class CandleSARBot:
                 return
             self.last_price = float(price)
 
-            candles = self.get_5m_candles(limit=3)
+            candles = self.get_candles(limit=3)
             if len(candles) < 2:
                 return
 
@@ -1151,7 +1125,7 @@ class CandleSARBot:
 
             if self.position == "LONG":
                 if self.last_price <= self.stop_loss:
-                    logging.info("[S2] LONG SL Hit. Reversing to SHORT...")
+                    logging.info(f"[S2-{self.timeframe}] LONG SL Hit. Reversing to SHORT...")
                     self.finish_trade("SL_HIT", self.last_price)
                     self.client.close_position(self.product_id, self.size)
                     self.execute_entry("SHORT", prev_candle["high"])
@@ -1163,7 +1137,7 @@ class CandleSARBot:
 
             elif self.position == "SHORT":
                 if self.last_price >= self.stop_loss:
-                    logging.info("[S2] SHORT SL Hit. Reversing to LONG...")
+                    logging.info(f"[S2-{self.timeframe}] SHORT SL Hit. Reversing to LONG...")
                     self.finish_trade("SL_HIT", self.last_price)
                     self.client.close_position(self.product_id, -self.size)
                     self.execute_entry("LONG", prev_candle["low"])
@@ -1214,7 +1188,7 @@ class CandleSARBot:
             self.leverage = chosen_lev
             self.stop_loss = float(initial_sl)
             self.save()
-            logging.info(f"[S2-5m] Entered {direction} | Lev: {int(self.leverage)}x | Entry: {self.entry_price} | SL: {initial_sl}")
+            logging.info(f"[S2-{self.timeframe}] Entered {direction} | Lev: {int(self.leverage)}x | Entry: {self.entry_price} | SL: {initial_sl}")
         except Exception as e:
             logging.error(f"[S2] Entry execution error: {e}")
 
@@ -1223,7 +1197,7 @@ class CandleSARBot:
             return
         pnl = calculate_trade_pnl(self.position, self.entry_price, exit_price, self.size, self.product or {"contract_value": "0.001"})
         trade = {
-            "id": f"s2_{int(time.time()*1000)}",
+            "id": f"s2_{self.timeframe}_{int(time.time()*1000)}",
             "account_id": self.unique_id,
             "account": self.account_name,
             "symbol": self.symbol,
@@ -1260,7 +1234,7 @@ def load_all_accounts():
 
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
             s1 = AccountBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL)
-            s2 = CandleSARBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL)
+            s2 = CandleSARBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL, timeframe="5m")
             BOT_ACCOUNTS[s1.unique_id] = s1
             BOT_ACCOUNTS[s2.unique_id] = s2
 
@@ -1273,7 +1247,7 @@ def load_all_accounts():
             s2 = CandleSARBot(cid, cdata.get("name", "Client"), "client", cdata.get("api_key"), cdata.get("api_secret"), SYMBOL, {
                 "start": cdata.get("subscription_start"),
                 "expiry": cdata.get("subscription_expiry")
-            })
+            }, timeframe="5m")
             BOT_ACCOUNTS[s1.unique_id] = s1
             BOT_ACCOUNTS[s2.unique_id] = s2
 
@@ -1335,6 +1309,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 active_sl = pos.get("stop_loss") if b.bot_enabled else None
                 actual_lev = pos.get("leverage") if (b.bot_enabled and pos.get("leverage")) else int(b.leverage)
                 unrealized_pnl = pos.get("unrealized_pnl", 0) if b.bot_enabled else 0
+                timeframe_val = getattr(b, "timeframe", "")
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1347,6 +1322,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "account_name": b.account_name,
                     "account_type": b.account_type,
                     "symbol": b.symbol,
+                    "timeframe": timeframe_val,
                     "token": token,
                     "server_ip": server_ip,
                     "balance": balance,
@@ -1406,7 +1382,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed == "/api/bot/settings":
             bot = BOT_ACCOUNTS.get(body.get("account_id"))
             if bot:
-                res = bot.update_settings(body.get("leverage"), body.get("balance_fraction"))
+                # यदि S2 बॉट है, तो timeframe भी अपडेट करें
+                if isinstance(bot, CandleSARBot):
+                    res = bot.update_settings(body.get("leverage"), body.get("balance_fraction"), body.get("timeframe", "5m"))
+                else:
+                    res = bot.update_settings(body.get("leverage"), body.get("balance_fraction"))
                 self.send_json(res)
                 return
             self.send_json({"success": False, "message": "Not found"}, 404)
@@ -1512,6 +1492,7 @@ async function fetchDashboard() {
                 let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : "N/A";
                 let finalSl = (pos.stop_loss !== null && pos.stop_loss !== undefined && pos.stop_loss > 0) ? pos.stop_loss : "N/A";
                 let tradeLevDisplay = acc.leverage + "x";
+                let isS2 = acc.account_id.includes("s2");
 
                 let html = `
                 <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
@@ -1529,10 +1510,18 @@ async function fetchDashboard() {
                     ${clientLink ? `<div class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs space-y-1"><span class="text-slate-400 text-[10px] block">Client Unique Link:</span><input type="text" readonly value="${clientLink}" class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all"></div>` : ""}
 
                     <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
-                        <div class="text-xs font-semibold text-amber-400 uppercase">Risk Settings</div>
-                        <div class="grid grid-cols-2 gap-2">
+                        <div class="text-xs font-semibold text-amber-400 uppercase">Risk & Strategy Settings</div>
+                        <div class="grid grid-cols-${isS2 ? '3' : '2'} gap-2">
+                            ${isS2 ? `
                             <div>
-                                <label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
+                                <label class="block text-[10px] text-slate-400 mb-1">Timeframe</label>
+                                <select id="tf-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                    <option value="5m" ${acc.timeframe=='5m'?'selected':''}>5m</option>
+                                    <option value="15m" ${acc.timeframe=='15m'?'selected':''}>15m</option>
+                                </select>
+                            </div>` : ''}
+                            <div>
+                                <label class="block text-[10px] text-slate-400 mb-1">Leverage</label>
                                 <select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                     <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                                     <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
@@ -1541,7 +1530,7 @@ async function fetchDashboard() {
                                 </select>
                             </div>
                             <div>
-                                <label class="block text-[10px] text-slate-400 mb-1">Margin Fraction</label>
+                                <label class="block text-[10px] text-slate-400 mb-1">Margin</label>
                                 <select id="frac-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                     <option value="0.10" ${acc.balance_fraction==0.1?'selected':''}>10%</option>
                                     <option value="0.25" ${acc.balance_fraction==0.25?'selected':''}>25%</option>
@@ -1549,7 +1538,7 @@ async function fetchDashboard() {
                                 </select>
                             </div>
                         </div>
-                        <button onclick="updateSettings('${acc.account_id}')" class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg">Save Settings</button>
+                        <button onclick="updateSettings('${acc.account_id}', ${isS2})" class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg">Save Settings</button>
                     </div>
 
                     <div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
@@ -1649,14 +1638,15 @@ async function toggleBot(accId, state) {
     fetchDashboard();
 }
 
-async function updateSettings(accId) {
+async function updateSettings(accId, isS2) {
     let lev = document.getElementById("lev-" + accId).value;
     let frac = document.getElementById("frac-" + accId).value;
+    let tf = isS2 ? document.getElementById("tf-" + accId).value : "5m";
     isEditingSettings = true;
     let res = await fetch("/api/bot/settings", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({account_id: accId, leverage: lev, balance_fraction: frac})
+        body: JSON.stringify({account_id: accId, leverage: lev, balance_fraction: frac, timeframe: tf})
     });
     let data = await res.json();
     alert(data.message);
