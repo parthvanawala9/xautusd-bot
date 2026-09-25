@@ -17,8 +17,7 @@ from dotenv import load_dotenv
 
 # =====================================================================
 # DELTA PRO AUTOTRADER - DUAL STRATEGY (XAUTUSD ONLY)
-# S1: DAY HIGH/LOW BREAKOUT + BRACKET SL
-# S2: 15-MIN CANDLE TRAILING SAR (STOP AND REVERSE)
+# WITH LIVE EXCHANGE POSITION AUTO-SYNC
 # =====================================================================
 
 load_dotenv()
@@ -200,7 +199,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/84.0"
+            "User-Agent": "MultiBot/85.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -215,7 +214,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/84.0"
+            "User-Agent": "MultiBot/85.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -377,21 +376,6 @@ class DeltaClient:
             "mark_price": float(pos_item.get("mark_price")) if pos_item.get("mark_price") else None,
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0)
         }
-
-    def margined_position(self, product_id):
-        try:
-            data = self.api("GET", "/v2/positions/margined", params={"product_id": int(product_id)}, auth=True)
-            result = data.get("result", [])
-            if isinstance(result, list):
-                for p in result:
-                    if isinstance(p, dict) and int(p.get("product_id", 0)) == int(product_id):
-                        return p
-                return result[0] if result and isinstance(result[0], dict) else {}
-            elif isinstance(result, dict):
-                return result
-        except Exception:
-            return {}
-        return {}
 
     def balance(self):
         data = self.api("GET", "/v2/wallet/balances", auth=True)
@@ -575,7 +559,6 @@ class AccountBot:
         self.session_start = None
         self.day_high = None
         self.day_low = None
-        self.last_position = 0
         self.last_price = None
         self.prev_price = None
         self.ready = False
@@ -592,6 +575,7 @@ class AccountBot:
         self.position_cache_time = 0
 
         self.load_state()
+        self.sync_exchange_position()
         self.save()
 
     def is_expired(self):
@@ -631,6 +615,28 @@ class AccountBot:
         except Exception:
             pass
 
+    def sync_exchange_position(self):
+        try:
+            if not self.product_id:
+                self.product = self.client.product()
+                self.product_id = int(self.product["id"])
+            
+            ex_pos = self.client.position(self.product_id)
+            sz = ex_pos.get("size", 0)
+            if sz != 0 and not self.active_trade:
+                direction = "LONG" if sz > 0 else "SHORT"
+                ep = ex_pos.get("entry_price") or float(self.day_high if direction == "LONG" and self.day_high else self.day_low if self.day_low else 0)
+                sl = float(self.day_low) if direction == "LONG" and self.day_low else float(self.day_high) if self.day_high else 0
+                self.active_trade = {
+                    "direction": direction,
+                    "entry_price": float(ep),
+                    "size": abs(int(sz)),
+                    "leverage": int(self.leverage),
+                    "sl": sl
+                }
+        except Exception:
+            pass
+
     def save(self):
         data = {
             "account_id": self.unique_id,
@@ -662,7 +668,6 @@ class AccountBot:
             return self.cached_position
 
         try:
-            # S1 के लिए हम अपनी खुद की active_trade से एंट्री और PnL ट्रैक करेंगे
             pos = {
                 "size": 0,
                 "entry_price": None,
@@ -754,7 +759,6 @@ class AccountBot:
             self.day_high = None
             self.day_low = None
             self.prev_price = None
-            self.last_position = 0
             self.active_trade = None
             self.manual_squareoff_flag = False
             self.ready = False
@@ -854,7 +858,6 @@ class AccountBot:
                 "sl": float(sl_level)
             }
             self.leverage = chosen_lev
-            self.last_position = size if direction == "LONG" else -size
             self.save()
             return True
         except Exception as e:
@@ -893,7 +896,6 @@ class AccountBot:
                 self.trading_armed = True
                 return
 
-            # Check if SL hit
             has_pos = self.active_trade and self.active_trade.get("size", 0) > 0
             if has_pos:
                 sl_val = self.active_trade.get("sl")
@@ -973,6 +975,7 @@ class CandleSARBot:
         self.cached_position = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
         self.load_state()
+        self.sync_exchange_position()
         self.save()
 
     def is_expired(self):
@@ -1002,6 +1005,27 @@ class CandleSARBot:
                 self.leverage = Decimal(str(state["leverage"]))
             if state.get("balance_fraction"):
                 self.balance_fraction = Decimal(str(state["balance_fraction"]))
+        except Exception:
+            pass
+
+    def sync_exchange_position(self):
+        try:
+            if not self.product_id:
+                self.product = self.client.product()
+                self.product_id = int(self.product["id"])
+            
+            ex_pos = self.client.position(self.product_id)
+            sz = ex_pos.get("size", 0)
+            if sz != 0 and not self.position:
+                self.position = "LONG" if sz > 0 else "SHORT"
+                self.size = abs(int(sz))
+                self.entry_price = ex_pos.get("entry_price") or self.last_price or 0.0
+                
+                # Fetch recent candles to set initial trailing SL if not set
+                candles = self.client.get_15m_candles(limit=2)
+                if candles:
+                    prev = candles[-2] if len(candles) >= 2 else candles[-1]
+                    self.stop_loss = float(prev["low"] if self.position == "LONG" else prev["high"])
         except Exception:
             pass
 
