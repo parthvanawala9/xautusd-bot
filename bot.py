@@ -200,7 +200,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/83.0"
+            "User-Agent": "MultiBot/84.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -215,7 +215,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/83.0"
+            "User-Agent": "MultiBot/84.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -662,28 +662,32 @@ class AccountBot:
             return self.cached_position
 
         try:
-            pos = self.client.position(self.product_id)
-            margined = self.client.margined_position(self.product_id)
-            pos["liquidation_price"] = margined.get("liquidation_price") or pos.get("liquidation_price")
-            pos["bankruptcy_price"] = margined.get("bankruptcy_price") or pos.get("bankruptcy_price")
-            pos["margin"] = margined.get("margin") or pos.get("margin")
-            pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
+            # S1 के लिए हम अपनी खुद की active_trade से एंट्री और PnL ट्रैक करेंगे
+            pos = {
+                "size": 0,
+                "entry_price": None,
+                "stop_loss": None,
+                "liquidation_price": None,
+                "unrealized_pnl": 0
+            }
 
-            if pos.get("size", 0) != 0 and not self.active_trade:
-                direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
-                ep = pos.get("entry_price") or (float(self.day_high) if direction == "LONG" and self.day_high else float(self.day_low) if self.day_low else 0)
-                sl = float(self.day_low) if direction == "LONG" and self.day_low else float(self.day_high) if self.day_high else None
-                self.active_trade = {
-                    "direction": direction,
-                    "entry_price": float(ep),
-                    "size": abs(int(pos.get("size", 0))),
-                    "leverage": int(self.leverage),
-                    "sl": sl
-                }
-                self.save()
+            if self.active_trade and self.active_trade.get("size", 0) > 0:
+                sz = self.active_trade.get("size")
+                dir_val = self.active_trade.get("direction")
+                pos["size"] = sz if dir_val == "LONG" else -sz
+                pos["entry_price"] = self.active_trade.get("entry_price")
+                pos["stop_loss"] = self.active_trade.get("sl")
 
-            if self.active_trade and self.active_trade.get("entry_price"):
-                pos["entry_price"] = float(self.active_trade["entry_price"])
+                if pos["entry_price"] and self.last_price:
+                    pos["unrealized_pnl"] = float(
+                        calculate_trade_pnl(
+                            dir_val,
+                            pos["entry_price"],
+                            self.last_price,
+                            sz,
+                            self.product or {"contract_value": "0.001"}
+                        )
+                    )
 
             self.cached_position = pos
             self.position_cache_time = current
@@ -720,13 +724,14 @@ class AccountBot:
             self.save()
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                try:
-                    pos = self.refresh_position(force=True)
-                    sz = int(pos.get("size", 0))
-                    if sz != 0:
-                        self.client.close_position(self.product_id, sz)
-                except Exception:
-                    pass
+                if self.active_trade and self.active_trade.get("size", 0) > 0:
+                    try:
+                        sz = self.active_trade.get("size")
+                        dir_val = self.active_trade.get("direction")
+                        close_sz = sz if dir_val == "LONG" else -sz
+                        self.client.close_position(self.product_id, close_sz)
+                    except Exception:
+                        pass
             self.finish_trade("MANUAL", self.last_price or 0)
             self.active_trade = None
             self.save()
@@ -737,11 +742,12 @@ class AccountBot:
         if self.session_start != current_sess:
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                pos = self.refresh_position(force=True)
-                sz = int(pos.get("size", 0))
-                if sz != 0:
+                if self.active_trade and self.active_trade.get("size", 0) > 0:
                     try:
-                        self.client.close_position(self.product_id, sz)
+                        sz = self.active_trade.get("size")
+                        dir_val = self.active_trade.get("direction")
+                        close_sz = sz if dir_val == "LONG" else -sz
+                        self.client.close_position(self.product_id, close_sz)
                     except Exception:
                         pass
             self.session_start = current_sess
@@ -863,18 +869,15 @@ class AccountBot:
             price = price or self.client.last_traded_price()
             if price is None:
                 return
-            self.last_price = price
-
-            pos = self.refresh_position(force=True)
-            size = int(pos.get("size", 0))
+            self.last_price = float(price)
 
             if self.prev_price is None:
-                self.prev_price = price
+                self.prev_price = self.last_price
                 return
 
             old_price = self.prev_price
-            new_price = price
-            self.prev_price = price
+            new_price = self.last_price
+            self.prev_price = new_price
 
             if is_weekend(now):
                 return
@@ -890,26 +893,30 @@ class AccountBot:
                 self.trading_armed = True
                 return
 
-            if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
-                old_dir = "LONG" if self.last_position > 0 else "SHORT"
-                self.finish_trade(old_dir, new_price)
-                self.last_position = 0
-                self.active_trade = None
-                self.save()
+            # Check if SL hit
+            has_pos = self.active_trade and self.active_trade.get("size", 0) > 0
+            if has_pos:
+                sl_val = self.active_trade.get("sl")
+                dir_val = self.active_trade.get("direction")
+                if sl_val:
+                    if (dir_val == "LONG" and new_price <= sl_val) or (dir_val == "SHORT" and new_price >= sl_val):
+                        self.finish_trade("SL_HIT", sl_val)
+                        self.active_trade = None
+                        self.save()
+                        has_pos = False
 
-            if size == 0 and not self.manual_squareoff_flag:
+            if not has_pos and not self.manual_squareoff_flag:
                 if old_price <= self.day_high and new_price > self.day_high:
                     self.enter("LONG", new_price, self.day_low)
                 elif old_price >= self.day_low and new_price < self.day_low:
                     self.enter("SHORT", new_price, self.day_high)
 
             if new_price > (self.day_high or 0):
-                self.day_high = new_price
+                self.day_high = Decimal(str(new_price))
                 self.save()
             if new_price < (self.day_low or 999999):
-                self.day_low = new_price
+                self.day_low = Decimal(str(new_price))
                 self.save()
-            self.last_position = size
 
     def finish_trade(self, reason, exit_price):
         if not self.active_trade:
@@ -1021,12 +1028,29 @@ class CandleSARBot:
             except Exception:
                 return self.cached_position
         try:
-            pos = self.client.position(self.product_id)
-            if pos.get("size", 0) == 0:
-                self.position = None
-                self.entry_price = None
-                self.size = 0
-                self.save()
+            pos = {
+                "size": 0,
+                "entry_price": None,
+                "stop_loss": self.stop_loss,
+                "liquidation_price": None,
+                "unrealized_pnl": 0
+            }
+
+            if self.position and self.size > 0:
+                sz = self.size
+                pos["size"] = sz if self.position == "LONG" else -sz
+                pos["entry_price"] = self.entry_price
+                if self.entry_price and self.last_price:
+                    pos["unrealized_pnl"] = float(
+                        calculate_trade_pnl(
+                            self.position,
+                            self.entry_price,
+                            self.last_price,
+                            sz,
+                            self.product or {"contract_value": "0.001"}
+                        )
+                    )
+
             self.cached_position = pos
             return pos
         except Exception:
@@ -1058,10 +1082,10 @@ class CandleSARBot:
             self.save()
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                pos = self.refresh_position()
-                if pos.get("size", 0) != 0:
+                if self.position and self.size > 0:
                     try:
-                        self.client.close_position(self.product_id, pos.get("size"))
+                        close_sz = self.size if self.position == "LONG" else -self.size
+                        self.client.close_position(self.product_id, close_sz)
                     except Exception:
                         pass
             self.finish_trade("MANUAL", self.last_price or 0)
@@ -1117,12 +1141,10 @@ class CandleSARBot:
             curr_candle = candles[-1]
             curr_time = curr_candle["time"]
 
-            pos_info = self.refresh_position()
-            sz = pos_info.get("size", 0)
-
-            if self.position is None or sz == 0:
+            if self.position is None or self.size == 0:
                 self.position = None
                 self.entry_price = None
+                self.size = 0
                 if self.last_price > prev_candle["high"]:
                     self.execute_entry("LONG", prev_candle["low"])
                 elif self.last_price < prev_candle["low"]:
@@ -1133,7 +1155,7 @@ class CandleSARBot:
                 if self.last_price <= self.stop_loss:
                     logging.info("[S2] LONG SL Hit. Reversing to SHORT...")
                     self.finish_trade("SL_HIT", self.last_price)
-                    self.client.close_position(self.product_id, sz)
+                    self.client.close_position(self.product_id, self.size)
                     self.execute_entry("SHORT", prev_candle["high"])
                 else:
                     if curr_time != self.last_checked_candle_time:
@@ -1145,7 +1167,7 @@ class CandleSARBot:
                 if self.last_price >= self.stop_loss:
                     logging.info("[S2] SHORT SL Hit. Reversing to LONG...")
                     self.finish_trade("SL_HIT", self.last_price)
-                    self.client.close_position(self.product_id, sz)
+                    self.client.close_position(self.product_id, -self.size)
                     self.execute_entry("LONG", prev_candle["low"])
                 else:
                     if curr_time != self.last_checked_candle_time:
@@ -1290,21 +1312,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 elif pos.get("size", 0) < 0:
                     direction = "SHORT"
 
-                entry_p = None
-                if hasattr(b, "active_trade") and b.active_trade and b.active_trade.get("entry_price"):
-                    entry_p = b.active_trade.get("entry_price")
-                elif hasattr(b, "entry_price") and b.entry_price:
-                    entry_p = b.entry_price
-                elif pos.get("entry_price"):
-                    entry_p = pos.get("entry_price")
-
-                active_sl = None
-                if hasattr(b, "active_trade") and b.active_trade and b.active_trade.get("sl"):
-                    active_sl = b.active_trade.get("sl")
-                elif hasattr(b, "stop_loss") and b.stop_loss:
-                    active_sl = b.stop_loss
-                else:
-                    active_sl = pos.get("stop_loss")
+                entry_p = pos.get("entry_price")
+                active_sl = pos.get("stop_loss")
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
