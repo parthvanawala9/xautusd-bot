@@ -198,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/89.0"
+            "User-Agent": "MultiBot/90.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -213,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/89.0"
+            "User-Agent": "MultiBot/90.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -364,8 +364,6 @@ class DeltaClient:
             pos_item.get("price")
         )
         entry_val = float(raw_entry) if raw_entry is not None and float(raw_entry) > 0 else None
-        
-        # लिवरेज निकालने के लिए कई संभावित फील्ड्स चेक करें
         lev_val = (
             pos_item.get("leverage") or 
             pos_item.get("user_leverage") or 
@@ -383,21 +381,6 @@ class DeltaClient:
             "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0),
             "leverage": int(lev_val) if lev_val else None
         }
-
-    def margined_position(self, product_id):
-        try:
-            data = self.api("GET", "/v2/positions/margined", params={"product_id": int(product_id)}, auth=True)
-            result = data.get("result", [])
-            if isinstance(result, list):
-                for p in result:
-                    if isinstance(p, dict) and int(p.get("product_id", 0)) == int(product_id):
-                        return p
-                return result[0] if result and isinstance(result[0], dict) else {}
-            elif isinstance(result, dict):
-                return result
-        except Exception:
-            return {}
-        return {}
 
     def balance(self):
         data = self.api("GET", "/v2/wallet/balances", auth=True)
@@ -969,7 +952,7 @@ class AccountBot:
 
 
 # =====================================================================
-# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR
+# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (WITH WEEKEND CHECK)
 # =====================================================================
 
 class CandleSARBot:
@@ -1140,6 +1123,24 @@ class CandleSARBot:
         with self.lock:
             if not self.bot_enabled or self.is_expired():
                 return
+            
+            now = now_ist()
+            # Weekend Check: Agar weekend hai toh position close karke return ho jao
+            if is_weekend(now):
+                if self.position and self.size > 0:
+                    logging.info("[S2] Weekend detected. Closing active position...")
+                    try:
+                        close_sz = self.size if self.position == "LONG" else -self.size
+                        self.client.close_position(self.product_id, close_sz)
+                        self.finish_trade("WEEKEND_CLOSE", self.last_price or 0)
+                    except Exception as e:
+                        logging.error(f"[S2] Weekend close error: {e}")
+                    self.position = None
+                    self.entry_price = None
+                    self.size = 0
+                    self.save()
+                return
+
             if not self.product_id:
                 try:
                     self.product = self.client.product()
