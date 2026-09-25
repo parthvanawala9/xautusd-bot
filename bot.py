@@ -198,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/86.0"
+            "User-Agent": "MultiBot/87.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -213,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/86.0"
+            "User-Agent": "MultiBot/87.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -661,12 +661,6 @@ class AccountBot:
 
         try:
             pos = self.client.position(self.product_id)
-            margined = self.client.margined_position(self.product_id)
-            pos["liquidation_price"] = margined.get("liquidation_price") or pos.get("liquidation_price")
-            pos["bankruptcy_price"] = margined.get("bankruptcy_price") or pos.get("bankruptcy_price")
-            pos["margin"] = margined.get("margin") or pos.get("margin")
-            pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
-
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
                 if not self.active_trade:
@@ -685,10 +679,30 @@ class AccountBot:
                     if not self.active_trade.get("entry_price") or float(self.active_trade.get("entry_price", 0)) <= 0:
                         if cur_entry is not None and cur_entry > 0:
                             self.active_trade["entry_price"] = float(cur_entry)
+                    if not self.active_trade.get("sl"):
+                        self.active_trade["sl"] = float(self.day_low) if self.active_trade.get("direction") == "LONG" and self.day_low else float(self.day_high) if self.day_high else None
                     self.save()
 
                 if self.active_trade and self.active_trade.get("entry_price"):
                     pos["entry_price"] = float(self.active_trade["entry_price"])
+                if self.active_trade and self.active_trade.get("sl"):
+                    pos["stop_loss"] = float(self.active_trade["sl"])
+                
+                # लाइव P&L कैलकुलेशन
+                if pos.get("entry_price") and self.last_price:
+                    d_val = "LONG" if pos.get("size", 0) > 0 else "SHORT"
+                    pos["unrealized_pnl"] = float(
+                        calculate_trade_pnl(
+                            d_val,
+                            pos["entry_price"],
+                            self.last_price,
+                            abs(pos.get("size", 0)),
+                            self.product or {"contract_value": "0.001"}
+                        )
+                    )
+            else:
+                self.active_trade = None
+                self.save()
 
             self.cached_position = pos
             self.position_cache_time = current
@@ -1246,14 +1260,12 @@ def load_all_accounts():
                 pass
         BOT_ACCOUNTS.clear()
 
-        # Primary Account - Both S1 and S2
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
             s1 = AccountBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL)
             s2 = CandleSARBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, SYMBOL)
             BOT_ACCOUNTS[s1.unique_id] = s1
             BOT_ACCOUNTS[s2.unique_id] = s2
 
-        # Client Accounts - Both S1 and S2
         clients_cfg = load_clients_config()
         for cid, cdata in clients_cfg.items():
             s1 = AccountBot(cid, cdata.get("name", "Client"), "client", cdata.get("api_key"), cdata.get("api_secret"), SYMBOL, {
@@ -1305,9 +1317,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
             for b in bots:
                 try:
+                    price = float(b.client.last_traded_price() or 0)
+                    b.last_price = price
                     pos = b.refresh_position()
                     balance = float(b.client.balance())
-                    price = float(b.client.last_traded_price() or 0)
                 except Exception:
                     pos = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
                     balance = 0
@@ -1496,6 +1509,7 @@ async function fetchDashboard() {
                 let clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : "";
                 let expiryText = acc.subscription && acc.subscription.expiry ? acc.subscription.expiry : "N/A";
                 let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : "N/A";
+                let finalSl = (pos.stop_loss !== null && pos.stop_loss !== undefined && pos.stop_loss > 0) ? pos.stop_loss : "N/A";
                 let tradeLevDisplay = acc.leverage + "x";
 
                 let html = `
@@ -1542,7 +1556,7 @@ async function fetchDashboard() {
                         <div class="flex justify-between"><span class="text-slate-400">Size:</span><span class="font-semibold">${pos.size}</span></div>
                         <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span><span class="font-semibold text-amber-300">${finalEntry}</span></div>
                         <div class="flex justify-between"><span class="text-slate-400">Trade Leverage:</span><span class="font-semibold text-amber-400">${tradeLevDisplay}</span></div>
-                        <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span><span class="font-semibold text-rose-400">${pos.stop_loss || "N/A"}</span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span><span class="font-semibold text-rose-400">${finalSl}</span></div>
                         <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span><span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
                     </div>
 
