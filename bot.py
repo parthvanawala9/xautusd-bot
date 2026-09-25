@@ -842,7 +842,7 @@ class CandleSARBot:
     def __init__(self, account_id, account_name, account_type, api_key, api_secret, symbol="XAUTUSD", subscription=None, timeframe="5m"):
         self.base_account_id = account_id
         self.symbol = symbol.strip().upper()
-        self.timeframe = timeframe.strip().lower() # "5m" या "15m"
+        self.timeframe = timeframe.strip().lower()
         self.strategy_key = f"s2_{self.timeframe}"
         self.unique_id = f"{account_id}_{self.symbol}_{self.strategy_key}"
         self.account_name = f"{account_name} [S2: {self.timeframe.upper()} SAR]"
@@ -852,7 +852,7 @@ class CandleSARBot:
 
         self.product = None
         self.product_id = 0
-        self.position = None  # 'LONG', 'SHORT', None
+        self.position = None
         self.stop_loss = 0.0
         self.entry_price = None
         self.size = 0
@@ -1309,7 +1309,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 active_sl = pos.get("stop_loss") if b.bot_enabled else None
                 actual_lev = pos.get("leverage") if (b.bot_enabled and pos.get("leverage")) else int(b.leverage)
                 unrealized_pnl = pos.get("unrealized_pnl", 0) if b.bot_enabled else 0
-                timeframe_val = getattr(b, "timeframe", "")
+                timeframe_val = getattr(b, "timeframe", "5m")
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
@@ -1382,7 +1382,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if parsed == "/api/bot/settings":
             bot = BOT_ACCOUNTS.get(body.get("account_id"))
             if bot:
-                # यदि S2 बॉट है, तो timeframe भी अपडेट करें
                 if isinstance(bot, CandleSARBot):
                     res = bot.update_settings(body.get("leverage"), body.get("balance_fraction"), body.get("timeframe", "5m"))
                 else:
@@ -1511,7 +1510,7 @@ async function fetchDashboard() {
 
                     <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
                         <div class="text-xs font-semibold text-amber-400 uppercase">Risk & Strategy Settings</div>
-                        <div class="grid grid-cols-${isS2 ? '3' : '2'} gap-2">
+                        <div class="grid ${isS2 ? 'grid-cols-3' : 'grid-cols-2'} gap-2">
                             ${isS2 ? `
                             <div>
                                 <label class="block text-[10px] text-slate-400 mb-1">Timeframe</label>
