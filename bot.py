@@ -198,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/88.0"
+            "User-Agent": "MultiBot/89.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -213,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/88.0"
+            "User-Agent": "MultiBot/89.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -364,7 +364,13 @@ class DeltaClient:
             pos_item.get("price")
         )
         entry_val = float(raw_entry) if raw_entry is not None and float(raw_entry) > 0 else None
-        lev_val = pos_item.get("leverage")
+        
+        # लिवरेज निकालने के लिए कई संभावित फील्ड्स चेक करें
+        lev_val = (
+            pos_item.get("leverage") or 
+            pos_item.get("user_leverage") or 
+            pos_item.get("effective_leverage")
+        )
 
         return {
             "size": int(pos_item.get("size", 0) or 0),
@@ -666,6 +672,7 @@ class AccountBot:
             if pos.get("size", 0) != 0:
                 cur_entry = pos.get("entry_price")
                 cur_lev = pos.get("leverage")
+                
                 if not self.active_trade:
                     direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
                     fallback_ep = float(cur_entry) if (cur_entry is not None and cur_entry > 0) else (float(self.day_high) if direction == "LONG" and self.day_high is not None else float(self.day_low) if self.day_low is not None else 0)
@@ -694,6 +701,8 @@ class AccountBot:
                     pos["stop_loss"] = float(self.active_trade["sl"])
                 if self.active_trade and self.active_trade.get("leverage"):
                     pos["leverage"] = int(self.active_trade["leverage"])
+                elif cur_lev:
+                    pos["leverage"] = int(cur_lev)
                 
                 if pos.get("entry_price") and self.last_price:
                     d_val = "LONG" if pos.get("size", 0) > 0 else "SHORT"
@@ -1341,7 +1350,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
                 entry_p = pos.get("entry_price")
                 active_sl = pos.get("stop_loss")
-                actual_lev = pos.get("leverage") if pos.get("leverage") else int(b.leverage)
+                actual_lev = pos.get("leverage") if pos.get("leverage") else (getattr(b, "active_trade", {}) or {}).get("leverage", int(b.leverage))
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
