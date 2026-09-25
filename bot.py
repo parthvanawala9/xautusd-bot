@@ -16,8 +16,9 @@ import websocket
 from dotenv import load_dotenv
 
 # =====================================================================
-# DELTA PRO AUTOTRADER
-# DUAL STRATEGY EDITION (XAUTUSD ONLY) - SAFE LIQUIDATION LADDER
+# DELTA PRO AUTOTRADER - DUAL STRATEGY (XAUTUSD ONLY)
+# S1: DAY HIGH/LOW BREAKOUT + BRACKET SL
+# S2: 15-MIN CANDLE TRAILING SAR (STOP AND REVERSE)
 # =====================================================================
 
 load_dotenv()
@@ -199,7 +200,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/82.0"
+            "User-Agent": "MultiBot/83.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -214,7 +215,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/82.0"
+            "User-Agent": "MultiBot/83.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -361,7 +362,8 @@ class DeltaClient:
 
         raw_entry = (
             pos_item.get("entry_price") or pos_item.get("entry") or
-            pos_item.get("avg_price") or pos_item.get("average_price")
+            pos_item.get("avg_price") or pos_item.get("average_price") or
+            pos_item.get("price")
         )
         entry_val = float(raw_entry) if raw_entry is not None and float(raw_entry) > 0 else None
 
@@ -667,6 +669,22 @@ class AccountBot:
             pos["margin"] = margined.get("margin") or pos.get("margin")
             pos["mark_price"] = margined.get("mark_price") or pos.get("mark_price")
 
+            if pos.get("size", 0) != 0 and not self.active_trade:
+                direction = "LONG" if pos.get("size", 0) > 0 else "SHORT"
+                ep = pos.get("entry_price") or (float(self.day_high) if direction == "LONG" and self.day_high else float(self.day_low) if self.day_low else 0)
+                sl = float(self.day_low) if direction == "LONG" and self.day_low else float(self.day_high) if self.day_high else None
+                self.active_trade = {
+                    "direction": direction,
+                    "entry_price": float(ep),
+                    "size": abs(int(pos.get("size", 0))),
+                    "leverage": int(self.leverage),
+                    "sl": sl
+                }
+                self.save()
+
+            if self.active_trade and self.active_trade.get("entry_price"):
+                pos["entry_price"] = float(self.active_trade["entry_price"])
+
             self.cached_position = pos
             self.position_cache_time = current
             return pos
@@ -709,6 +727,7 @@ class AccountBot:
                         self.client.close_position(self.product_id, sz)
                 except Exception:
                     pass
+            self.finish_trade("MANUAL", self.last_price or 0)
             self.active_trade = None
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Strategy 1 Stopped."}
@@ -790,6 +809,8 @@ class AccountBot:
             self.client.cancel_all_orders(self.product_id)
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
+            chosen_lev = self.leverage
+            size = 0
 
             for lev in ladder:
                 lev_decimal = Decimal(str(lev))
@@ -806,7 +827,7 @@ class AccountBot:
                     size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
                     side = "buy" if direction == "LONG" else "sell"
                     self.client.market_entry_pure(self.product_id, side, size)
-                    self.leverage = lev_decimal
+                    chosen_lev = lev_decimal
                     order_done = True
                     break
                 except Exception:
@@ -823,8 +844,10 @@ class AccountBot:
                 "entry_price": float(price),
                 "entry_time": now_ist().isoformat(),
                 "size": size,
+                "leverage": int(chosen_lev),
                 "sl": float(sl_level)
             }
+            self.leverage = chosen_lev
             self.last_position = size if direction == "LONG" else -size
             self.save()
             return True
@@ -888,11 +911,12 @@ class AccountBot:
                 self.save()
             self.last_position = size
 
-    def finish_trade(self, direction, exit_price):
+    def finish_trade(self, reason, exit_price):
         if not self.active_trade:
             return
-        entry = self.active_trade.get("entry_price")
-        size = self.active_trade.get("size")
+        direction = self.active_trade.get("direction", "LONG")
+        entry = self.active_trade.get("entry_price", exit_price)
+        size = self.active_trade.get("size", 0)
         pnl = calculate_trade_pnl(direction, entry, exit_price, size, self.product or {"contract_value": "0.001"})
         trade = {
             "id": f"s1_{int(time.time()*1000)}",
@@ -905,7 +929,7 @@ class AccountBot:
             "exit_price": float(exit_price),
             "size": size,
             "pnl": float(pnl),
-            "reason": "SL_HIT"
+            "reason": reason
         }
         history = load_trade_history(self.unique_id)
         history.append(trade)
@@ -913,7 +937,7 @@ class AccountBot:
 
 
 # =====================================================================
-# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (WITH LEVERAGE LADDER)
+# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR
 # =====================================================================
 
 class CandleSARBot:
@@ -931,6 +955,8 @@ class CandleSARBot:
         self.product_id = 0
         self.position = None  # 'LONG', 'SHORT', None
         self.stop_loss = 0.0
+        self.entry_price = None
+        self.size = 0
         self.last_checked_candle_time = 0
         self.last_price = None
         self.bot_enabled = False
@@ -962,6 +988,8 @@ class CandleSARBot:
                 state = json.load(f)
             self.position = state.get("position")
             self.stop_loss = float(state.get("stop_loss", 0.0))
+            self.entry_price = state.get("entry_price")
+            self.size = state.get("size", 0)
             self.bot_enabled = state.get("bot_enabled", False)
             if state.get("leverage"):
                 self.leverage = Decimal(str(state["leverage"]))
@@ -977,6 +1005,8 @@ class CandleSARBot:
             "symbol": self.symbol,
             "position": self.position,
             "stop_loss": self.stop_loss,
+            "entry_price": self.entry_price,
+            "size": self.size,
             "bot_enabled": self.bot_enabled,
             "leverage": int(self.leverage),
             "balance_fraction": float(self.balance_fraction)
@@ -992,6 +1022,11 @@ class CandleSARBot:
                 return self.cached_position
         try:
             pos = self.client.position(self.product_id)
+            if pos.get("size", 0) == 0:
+                self.position = None
+                self.entry_price = None
+                self.size = 0
+                self.save()
             self.cached_position = pos
             return pos
         except Exception:
@@ -1029,7 +1064,10 @@ class CandleSARBot:
                         self.client.close_position(self.product_id, pos.get("size"))
                     except Exception:
                         pass
+            self.finish_trade("MANUAL", self.last_price or 0)
             self.position = None
+            self.entry_price = None
+            self.size = 0
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Strategy 2 Stopped."}
 
@@ -1082,19 +1120,19 @@ class CandleSARBot:
             pos_info = self.refresh_position()
             sz = pos_info.get("size", 0)
 
-            # 1. No Position: Look for initial breakout
             if self.position is None or sz == 0:
                 self.position = None
+                self.entry_price = None
                 if self.last_price > prev_candle["high"]:
                     self.execute_entry("LONG", prev_candle["low"])
                 elif self.last_price < prev_candle["low"]:
                     self.execute_entry("SHORT", prev_candle["high"])
                 return
 
-            # 2. Manage Active Position & Trailing Stop-Loss
             if self.position == "LONG":
                 if self.last_price <= self.stop_loss:
                     logging.info("[S2] LONG SL Hit. Reversing to SHORT...")
+                    self.finish_trade("SL_HIT", self.last_price)
                     self.client.close_position(self.product_id, sz)
                     self.execute_entry("SHORT", prev_candle["high"])
                 else:
@@ -1106,6 +1144,7 @@ class CandleSARBot:
             elif self.position == "SHORT":
                 if self.last_price >= self.stop_loss:
                     logging.info("[S2] SHORT SL Hit. Reversing to LONG...")
+                    self.finish_trade("SL_HIT", self.last_price)
                     self.client.close_position(self.product_id, sz)
                     self.execute_entry("LONG", prev_candle["low"])
                 else:
@@ -1119,6 +1158,8 @@ class CandleSARBot:
             self.client.cancel_all_orders(self.product_id)
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
+            chosen_lev = self.leverage
+            size = 0
 
             for lev in ladder:
                 lev_decimal = Decimal(str(lev))
@@ -1135,7 +1176,7 @@ class CandleSARBot:
                     size = self.client.order_size(self.product, Decimal(str(self.last_price)), lev_decimal, self.balance_fraction)
                     side = "buy" if direction == "LONG" else "sell"
                     self.client.market_entry_pure(self.product_id, side, size)
-                    self.leverage = lev_decimal
+                    chosen_lev = lev_decimal
                     order_done = True
                     break
                 except Exception:
@@ -1145,11 +1186,35 @@ class CandleSARBot:
                 return
 
             self.position = direction
+            self.entry_price = float(self.last_price)
+            self.size = size
+            self.leverage = chosen_lev
             self.stop_loss = float(initial_sl)
             self.save()
-            logging.info(f"[S2] Entered {direction} | Lev: {int(self.leverage)}x | SL set to {initial_sl}")
+            logging.info(f"[S2] Entered {direction} | Lev: {int(self.leverage)}x | Entry: {self.entry_price} | SL: {initial_sl}")
         except Exception as e:
             logging.error(f"[S2] Entry execution error: {e}")
+
+    def finish_trade(self, reason, exit_price):
+        if not self.position or not self.entry_price:
+            return
+        pnl = calculate_trade_pnl(self.position, self.entry_price, exit_price, self.size, self.product or {"contract_value": "0.001"})
+        trade = {
+            "id": f"s2_{int(time.time()*1000)}",
+            "account_id": self.unique_id,
+            "account": self.account_name,
+            "symbol": self.symbol,
+            "date": now_ist().strftime("%Y-%m-%d %H:%M"),
+            "direction": self.position,
+            "entry_price": float(self.entry_price),
+            "exit_price": float(exit_price),
+            "size": self.size,
+            "pnl": float(pnl),
+            "reason": reason
+        }
+        history = load_trade_history(self.unique_id)
+        history.append(trade)
+        save_trade_history(self.unique_id, history)
 
 
 # =====================================================================
@@ -1208,7 +1273,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 bots = list(BOT_ACCOUNTS.values())
 
             accounts_data = []
-            clients_cfg = load_clients_config()
 
             for b in bots:
                 try:
@@ -1226,7 +1290,23 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 elif pos.get("size", 0) < 0:
                     direction = "SHORT"
 
-                history = load_trade_history(b.unique_id) if hasattr(b, "unique_id") and "s1" in b.unique_id else []
+                entry_p = None
+                if hasattr(b, "active_trade") and b.active_trade and b.active_trade.get("entry_price"):
+                    entry_p = b.active_trade.get("entry_price")
+                elif hasattr(b, "entry_price") and b.entry_price:
+                    entry_p = b.entry_price
+                elif pos.get("entry_price"):
+                    entry_p = pos.get("entry_price")
+
+                active_sl = None
+                if hasattr(b, "active_trade") and b.active_trade and b.active_trade.get("sl"):
+                    active_sl = b.active_trade.get("sl")
+                elif hasattr(b, "stop_loss") and b.stop_loss:
+                    active_sl = b.stop_loss
+                else:
+                    active_sl = pos.get("stop_loss")
+
+                history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
 
                 accounts_data.append({
@@ -1244,8 +1324,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "position": {
                         "size": pos.get("size", 0),
                         "direction": direction,
-                        "entry_price": pos.get("entry_price"),
-                        "stop_loss": getattr(b, "stop_loss", pos.get("stop_loss")),
+                        "entry_price": entry_p,
+                        "stop_loss": active_sl,
                         "liquidation_price": pos.get("liquidation_price"),
                         "unrealized_pnl": pos.get("unrealized_pnl", 0)
                     },
@@ -1352,6 +1432,10 @@ async function fetchDashboard() {
 
             data.accounts.forEach(acc => {
                 let pos = acc.position;
+                let stats = acc.statistics;
+                let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : "N/A";
+                let tradeLevDisplay = acc.leverage + "x";
+
                 let html = `
                 <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
                     <div class="flex justify-between items-center border-b border-slate-700 pb-3">
@@ -1368,7 +1452,7 @@ async function fetchDashboard() {
                         <div class="text-xs font-semibold text-amber-400 uppercase">Risk Settings</div>
                         <div class="grid grid-cols-2 gap-2">
                             <div>
-                                <label class="block text-[10px] text-slate-400 mb-1">Leverage</label>
+                                <label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
                                 <select id="lev-${acc.account_id}" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
                                     <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                                     <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
@@ -1391,14 +1475,50 @@ async function fetchDashboard() {
                     <div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
                         <div class="flex justify-between"><span class="text-slate-400">Direction:</span><span class="font-bold ${pos.direction=='LONG'?'text-emerald-400':pos.direction=='SHORT'?'text-rose-400':'text-slate-300'}">${pos.direction}</span></div>
                         <div class="flex justify-between"><span class="text-slate-400">Size:</span><span class="font-semibold">${pos.size}</span></div>
-                        <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span><span class="font-semibold text-amber-300">${pos.entry_price || "N/A"}</span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">Entry Price:</span><span class="font-semibold text-amber-300">${finalEntry}</span></div>
+                        <div class="flex justify-between"><span class="text-slate-400">Trade Leverage:</span><span class="font-semibold text-amber-400">${tradeLevDisplay}</span></div>
                         <div class="flex justify-between"><span class="text-slate-400">Stop Loss:</span><span class="font-semibold text-rose-400">${pos.stop_loss || "N/A"}</span></div>
                         <div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span><span class="font-semibold ${pos.unrealized_pnl>=0?'text-emerald-400':'text-rose-400'}">$${pos.unrealized_pnl.toFixed(2)}</span></div>
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="text-xs font-bold text-slate-400 uppercase">Trading Performance</div>
+                        <div class="grid grid-cols-2 gap-2 text-xs">
+                            <div class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60 space-y-1">
+                                <div class="font-semibold text-amber-400">TODAY</div>
+                                <div class="text-slate-400">Trades: ${stats.today.total_trades}</div>
+                                <div class="text-slate-400">Win Rate: ${stats.today.win_rate.toFixed(1)}%</div>
+                                <div class="font-bold ${stats.today.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">P&L: $${stats.today.pnl.toFixed(2)}</div>
+                            </div>
+                            <div class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60 space-y-1">
+                                <div class="font-semibold text-amber-400">ALL TIME</div>
+                                <div class="text-slate-400">Trades: ${stats.all_time.total_trades}</div>
+                                <div class="text-slate-400">Win Rate: ${stats.all_time.win_rate.toFixed(1)}%</div>
+                                <div class="font-bold ${stats.all_time.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">P&L: $${stats.all_time.pnl.toFixed(2)}</div>
+                            </div>
+                        </div>
                     </div>
 
                     <button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="w-full py-2.5 rounded-xl font-semibold text-sm transition ${acc.bot_enabled ? 'bg-rose-600 hover:bg-rose-500 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}">
                         ${acc.bot_enabled ? 'STOP BOT' : 'START BOT'}
                     </button>
+
+                    <div class="space-y-2 pt-2 border-t border-slate-700">
+                        <div class="text-xs font-bold text-slate-400 uppercase">Trade History (${acc.trade_history.length})</div>
+                        <div class="max-h-40 overflow-y-auto space-y-1.5 text-xs">
+                            ${acc.trade_history.length === 0 ? '<div class="text-slate-500 text-center py-2">No closed trades yet.</div>' : ''}
+                            ${acc.trade_history.slice().reverse().map(t => `
+                                <div class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between items-center">
+                                    <div>
+                                        <span class="font-bold ${t.direction=='LONG'?'text-emerald-400':'text-rose-400'}">${t.direction}</span>
+                                        <span class="text-slate-400 ml-1">(${t.date})</span>
+                                        <div class="text-[10px] text-slate-500">Entry: ${t.entry_price} → Exit: ${t.exit_price}</div>
+                                    </div>
+                                    <div class="text-right font-bold ${t.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}">$${t.pnl.toFixed(2)}</div>
+                                </div>
+                            `).join("")}
+                        </div>
+                    </div>
                 </div>`;
                 container.innerHTML += html;
             });
@@ -1511,8 +1631,8 @@ def run_websocket():
                     price = Decimal(str(p_val))
                     with ACCOUNTS_LOCK:
                         bots = list(BOT_ACCOUNTS.values())
-                    for b, bot_obj in enumerate(bots):
-                        bot_obj.evaluate(price)
+                    for b in bots:
+                        b.evaluate(price)
                 except Exception:
                     pass
 
@@ -1530,6 +1650,6 @@ if __name__ == "__main__":
     update_server_ip()
     load_all_accounts()
 
-    (threading.Thread(target=background_timer_loop, daemon=True)).start()
-    (threading.Thread(target=run_websocket, daemon=True)).start()
+    threading.Thread(target=background_timer_loop, daemon=True).start()
+    threading.Thread(target=run_websocket, daemon=True).start()
     start_dashboard()
