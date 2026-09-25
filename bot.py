@@ -198,7 +198,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/90.0"
+            "User-Agent": "MultiBot/91.0"
         })
 
     def sign(self, method, path, query="", body=""):
@@ -213,7 +213,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/90.0"
+            "User-Agent": "MultiBot/91.0"
         }
 
     def api(self, method, path, params=None, body=None, auth=False):
@@ -735,15 +735,7 @@ class AccountBot:
             self.stop_reason = "MANUAL STOP"
             self.manual_squareoff_flag = True
             self.save()
-            if self.product_id:
-                self.client.cancel_all_orders(self.product_id)
-                try:
-                    pos = self.refresh_position(force=True)
-                    sz = int(pos.get("size", 0))
-                    if sz != 0:
-                        self.client.close_position(self.product_id, sz)
-                except Exception:
-                    pass
+            # S1 बंद होने पर केवल S1 का स्टेट क्लियर होगा, एक्सचेंज की ग्लोबल पोजीशन को फोर्स क्लोज नहीं किया जाएगा ताकि S2 डिस्टर्ब न हो
             self.active_trade = None
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Strategy 1 Stopped."}
@@ -753,13 +745,6 @@ class AccountBot:
         if self.session_start != current_sess:
             if self.product_id:
                 self.client.cancel_all_orders(self.product_id)
-                pos = self.refresh_position(force=True)
-                sz = int(pos.get("size", 0))
-                if sz != 0:
-                    try:
-                        self.client.close_position(self.product_id, sz)
-                    except Exception:
-                        pass
             self.session_start = current_sess
             self.day_high = None
             self.day_low = None
@@ -822,7 +807,6 @@ class AccountBot:
         if self.is_expired() or self.manual_squareoff_flag or not self.bot_enabled:
             return False
         try:
-            self.client.cancel_all_orders(self.product_id)
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
             chosen_lev = self.leverage
@@ -952,7 +936,7 @@ class AccountBot:
 
 
 # =====================================================================
-# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (WITH WEEKEND CHECK)
+# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (WITH INDEPENDENT TRACKING)
 # =====================================================================
 
 class CandleSARBot:
@@ -1082,14 +1066,7 @@ class CandleSARBot:
         with self.lock:
             self.bot_enabled = False
             self.save()
-            if self.product_id:
-                self.client.cancel_all_orders(self.product_id)
-                if self.position and self.size > 0:
-                    try:
-                        close_sz = self.size if self.position == "LONG" else -self.size
-                        self.client.close_position(self.product_id, close_sz)
-                    except Exception:
-                        pass
+            # S2 बंद होने पर केवल S2 का स्टेट क्लियर होगा, एक्सचेंज की ग्लोबल पोजीशन को फोर्स क्लोज नहीं किया जाएगा
             self.finish_trade("MANUAL", self.last_price or 0)
             self.position = None
             self.entry_price = None
@@ -1125,7 +1102,6 @@ class CandleSARBot:
                 return
             
             now = now_ist()
-            # Weekend Check: Agar weekend hai toh position close karke return ho jao
             if is_weekend(now):
                 if self.position and self.size > 0:
                     logging.info("[S2] Weekend detected. Closing active position...")
@@ -1197,7 +1173,6 @@ class CandleSARBot:
 
     def execute_entry(self, direction, initial_sl):
         try:
-            self.client.cancel_all_orders(self.product_id)
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
             chosen_lev = self.leverage
