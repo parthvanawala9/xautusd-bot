@@ -409,18 +409,6 @@ class DeltaClient:
         }
         return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def place_bracket_sl_order(self, product_id, stop_price):
-        body = {
-            "product_id": int(product_id),
-            "product_symbol": self.symbol,
-            "stop_loss_order": {
-                "order_type": "market_order",
-                "stop_price": str(stop_price)
-            },
-            "bracket_stop_trigger_method": "last_traded_price"
-        }
-        return self.api("POST", "/v2/orders/bracket", body=body, auth=True)
-
     def close_position(self, product_id, size):
         if size == 0:
             return
@@ -510,16 +498,16 @@ def calculate_statistics(history):
 
 
 # =====================================================================
-# STRATEGY 1 BOT: DAY HIGH/LOW BREAKOUT
+# STRATEGY 1 BOT: DAY HIGH/LOW BREAKOUT + 5M CANDLE TRAILING SL
 # =====================================================================
 
 class AccountBot:
     def __init__(self, account_id, account_name, account_type, api_key, api_secret, symbol="XAUTUSD", subscription=None):
         self.base_account_id = account_id
         self.symbol = symbol.strip().upper()
-        self.strategy_key = "s1"
+        self.strategy_key = "s1_trailsar"
         self.unique_id = f"{account_id}_{self.symbol}_{self.strategy_key}"
-        self.account_name = f"{account_name} [S1: Breakout]"
+        self.account_name = f"{account_name} [S1: Breakout + 5m SAR]"
         self.account_type = account_type
         self.subscription = subscription or {}
         self.client = DeltaClient(api_key, api_secret, account_name, self.symbol)
@@ -536,13 +524,17 @@ class AccountBot:
         self.trading_armed = False
         self.bot_enabled = False
         self.stop_reason = None
-        self.active_trade = None
         self.manual_squareoff_flag = False
+
+        self.position = None  # 'LONG', 'SHORT', None
+        self.stop_loss = 0.0
+        self.entry_price = None
+        self.size = 0
+        self.last_checked_candle_time = 0
 
         self.leverage = Decimal("100")
         self.balance_fraction = Decimal("0.10")
         self.lock = threading.RLock()
-        self.cached_position = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
         self.load_state()
         self.save()
@@ -571,8 +563,10 @@ class AccountBot:
                 self.day_high = Decimal(str(state["day_high"]))
             if state.get("day_low") is not None:
                 self.day_low = Decimal(str(state["day_low"]))
-            if state.get("active_trade"):
-                self.active_trade = state["active_trade"]
+            self.position = state.get("position")
+            self.stop_loss = float(state.get("stop_loss", 0.0))
+            self.entry_price = state.get("entry_price")
+            self.size = state.get("size", 0)
             if state.get("leverage") is not None:
                 self.leverage = Decimal(str(state["leverage"]))
             if state.get("balance_fraction") is not None:
@@ -592,7 +586,10 @@ class AccountBot:
             "session_start": self.session_start.isoformat() if self.session_start else None,
             "day_high": str(self.day_high) if self.day_high is not None else None,
             "day_low": str(self.day_low) if self.day_low is not None else None,
-            "active_trade": getattr(self, "active_trade", None),
+            "position": self.position,
+            "stop_loss": self.stop_loss,
+            "entry_price": self.entry_price,
+            "size": self.size,
             "leverage": int(self.leverage),
             "balance_fraction": float(self.balance_fraction),
             "bot_enabled": self.bot_enabled,
@@ -602,8 +599,89 @@ class AccountBot:
         }
         atomic_write_json(account_state_file(self.unique_id), data)
 
-    def refresh_position(self, force=False):
-        return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
+    def get_5m_candles(self, limit=5):
+        try:
+            end_ts = int(now_ist().timestamp())
+            start_ts = end_ts - (limit * 5 * 60)
+            params = {
+                "resolution": "5m",
+                "symbol": self.symbol,
+                "start": start_ts,
+                "end": end_ts
+            }
+            data = self.client.api("GET", "/v2/history/candles", params=params)
+            candles = data.get("result", [])
+            formatted = []
+            for c in candles:
+                try:
+                    if isinstance(c, dict):
+                        formatted.append({
+                            "time": float(c.get("time") or c.get("timestamp") or 0),
+                            "high": float(c.get("high")),
+                            "low": float(c.get("low")),
+                            "close": float(c.get("close"))
+                        })
+                    elif isinstance(c, list) and len(c) >= 5:
+                        formatted.append({
+                            "time": float(c[0]),
+                            "high": float(c[2]),
+                            "low": float(c[3]),
+                            "close": float(c[4])
+                        })
+                except Exception:
+                    continue
+            return formatted
+        except Exception:
+            return []
+
+    def refresh_position(self):
+        if not self.bot_enabled:
+            return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
+
+        if not self.product_id:
+            try:
+                self.product = self.client.product()
+                self.product_id = int(self.product["id"])
+            except Exception:
+                return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
+
+        try:
+            exchange_pos = self.client.position(self.product_id)
+            ex_size = exchange_pos.get("size", 0)
+
+            if ex_size != 0:
+                self.position = "LONG" if ex_size > 0 else "SHORT"
+                self.size = abs(ex_size)
+                if exchange_pos.get("entry_price"):
+                    self.entry_price = exchange_pos.get("entry_price")
+                
+                unrealized_pnl = 0
+                if self.entry_price and self.last_price:
+                    unrealized_pnl = float(
+                        calculate_trade_pnl(
+                            self.position,
+                            self.entry_price,
+                            self.last_price,
+                            self.size,
+                            self.product or {"contract_value": "0.001"}
+                        )
+                    )
+
+                return {
+                    "size": ex_size,
+                    "entry_price": self.entry_price,
+                    "stop_loss": self.stop_loss,
+                    "leverage": exchange_pos.get("leverage") or int(self.leverage),
+                    "liquidation_price": exchange_pos.get("liquidation_price"),
+                    "unrealized_pnl": unrealized_pnl
+                }
+            else:
+                self.position = None
+                self.entry_price = None
+                self.size = 0
+                return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
+        except Exception:
+            return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
     def update_settings(self, new_lev, new_frac):
         with self.lock:
@@ -631,7 +709,16 @@ class AccountBot:
             self.bot_enabled = False
             self.stop_reason = "MANUAL STOP"
             self.manual_squareoff_flag = True
-            self.active_trade = None
+            if self.position and self.size > 0:
+                try:
+                    close_sz = self.size if self.position == "LONG" else -self.size
+                    self.client.close_position(self.product_id, close_sz)
+                    self.finish_trade("MANUAL", self.last_price or 0)
+                except Exception:
+                    pass
+            self.position = None
+            self.entry_price = None
+            self.size = 0
             self.save()
             return {"success": True, "bot_enabled": False, "message": "Strategy 1 Stopped."}
 
@@ -645,7 +732,9 @@ class AccountBot:
             self.day_low = None
             self.prev_price = None
             self.last_position = 0
-            self.active_trade = None
+            self.position = None
+            self.entry_price = None
+            self.size = 0
             self.manual_squareoff_flag = False
             self.ready = False
             self.trading_armed = False
@@ -698,13 +787,13 @@ class AccountBot:
             return entry * (Decimal("1") - (Decimal("1") / lev) + effective_mm)
         return entry * (Decimal("1") + (Decimal("1") / lev) - effective_mm)
 
-    def enter(self, direction, price, sl_level):
+    def enter(self, direction, price, initial_sl):
         if self.is_expired() or self.manual_squareoff_flag or not self.bot_enabled:
-            return False
+            return
         try:
             current_pos = self.client.position(self.product_id)
             if current_pos.get("size", 0) != 0:
-                return False
+                return
 
             ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
             order_done = False
@@ -716,14 +805,14 @@ class AccountBot:
                 candidate_liq = self.estimate_liquidation_price(price, lev_decimal, direction)
                 if candidate_liq is None:
                     continue
-                if direction == "LONG" and candidate_liq >= Decimal(str(sl_level)):
+                if direction == "LONG" and candidate_liq >= Decimal(str(initial_sl)):
                     continue
-                if direction == "SHORT" and candidate_liq <= Decimal(str(sl_level)):
+                if direction == "SHORT" and candidate_liq <= Decimal(str(initial_sl)):
                     continue
 
                 try:
                     self.client.set_leverage(self.product_id, lev_decimal)
-                    size = self.client.order_size(self.product, price, lev_decimal, self.balance_fraction)
+                    size = self.client.order_size(self.product, Decimal(str(price)), lev_decimal, self.balance_fraction)
                     side = "buy" if direction == "LONG" else "sell"
                     self.client.market_entry_pure(self.product_id, side, size)
                     chosen_lev = lev_decimal
@@ -733,26 +822,17 @@ class AccountBot:
                     continue
 
             if not order_done:
-                return False
+                return
 
-            time.sleep(0.5)
-            self.client.place_bracket_sl_order(self.product_id, sl_level)
-
-            self.active_trade = {
-                "direction": direction,
-                "entry_price": float(price),
-                "entry_time": now_ist().isoformat(),
-                "size": size,
-                "leverage": int(chosen_lev),
-                "sl": float(sl_level)
-            }
+            self.position = direction
+            self.entry_price = float(price)
+            self.size = size
             self.leverage = chosen_lev
-            self.last_position = size if direction == "LONG" else -size
+            self.stop_loss = float(initial_sl)
             self.save()
-            return True
+            logging.info(f"[S1] Entered {direction} | Price: {price} | Initial SL: {initial_sl}")
         except Exception as e:
             logging.error(f"[S1] Entry error: {e}")
-            return False
 
     def evaluate(self, price=None):
         with self.lock:
@@ -762,17 +842,28 @@ class AccountBot:
             price = price or self.client.last_traded_price()
             if price is None:
                 return
-            self.last_price = price
+            self.last_price = float(price)
 
             if self.prev_price is None:
-                self.prev_price = price
+                self.prev_price = self.last_price
                 return
 
             old_price = self.prev_price
-            new_price = price
-            self.prev_price = price
+            new_price = self.last_price
+            self.prev_price = new_price
 
             if is_weekend(now):
+                if self.position and self.size > 0:
+                    try:
+                        close_sz = self.size if self.position == "LONG" else -self.size
+                        self.client.close_position(self.product_id, close_sz)
+                        self.finish_trade("WEEKEND_CLOSE", self.last_price)
+                    except Exception:
+                        pass
+                    self.position = None
+                    self.entry_price = None
+                    self.size = 0
+                    self.save()
                 return
 
             self.check_session_change(now)
@@ -786,48 +877,73 @@ class AccountBot:
                 self.trading_armed = True
                 return
 
-            pos = self.client.position(self.product_id)
-            size = int(pos.get("size", 0))
+            candles = self.get_5m_candles(limit=3)
+            if len(candles) < 2:
+                return
 
-            if self.last_position != 0 and size == 0 and not self.manual_squareoff_flag:
-                old_dir = "LONG" if self.last_position > 0 else "SHORT"
-                self.finish_trade(old_dir, new_price)
-                self.last_position = 0
-                self.active_trade = None
-                self.save()
+            prev_candle = candles[-2]
+            curr_candle = candles[-1]
+            curr_time = curr_candle["time"]
 
-            if size == 0 and not self.manual_squareoff_flag and self.active_trade is None:
+            if self.position == "LONG" and self.size > 0:
+                if self.last_price <= self.stop_loss:
+                    logging.info("[S1] LONG SL Hit. Closing position...")
+                    self.finish_trade("SL_HIT", self.last_price)
+                    self.client.close_position(self.product_id, self.size)
+                    self.position = None
+                    self.entry_price = None
+                    self.size = 0
+                    self.save()
+                else:
+                    if curr_time != self.last_checked_candle_time:
+                        self.stop_loss = prev_candle["low"]
+                        self.last_checked_candle_time = curr_time
+                        self.save()
+
+            elif self.position == "SHORT" and self.size > 0:
+                if self.last_price >= self.stop_loss:
+                    logging.info("[S1] SHORT SL Hit. Closing position...")
+                    self.finish_trade("SL_HIT", self.last_price)
+                    self.client.close_position(self.product_id, -self.size)
+                    self.position = None
+                    self.entry_price = None
+                    self.size = 0
+                    self.save()
+                else:
+                    if curr_time != self.last_checked_candle_time:
+                        self.stop_loss = prev_candle["high"]
+                        self.last_checked_candle_time = curr_time
+                        self.save()
+
+            if (self.position is None or self.size == 0) and not self.manual_squareoff_flag:
                 if old_price <= self.day_high and new_price > self.day_high:
-                    self.enter("LONG", new_price, self.day_low)
+                    self.enter("LONG", new_price, prev_candle["low"])
                 elif old_price >= self.day_low and new_price < self.day_low:
-                    self.enter("SHORT", new_price, self.day_high)
+                    self.enter("SHORT", new_price, prev_candle["high"])
 
             if new_price > (self.day_high or 0):
-                self.day_high = new_price
+                self.day_high = Decimal(str(new_price))
                 self.save()
             if new_price < (self.day_low or 999999):
-                self.day_low = new_price
+                self.day_low = Decimal(str(new_price))
                 self.save()
-            self.last_position = size
 
-    def finish_trade(self, direction, exit_price):
-        if not self.active_trade:
+    def finish_trade(self, reason, exit_price):
+        if not self.position or not self.entry_price:
             return
-        entry = self.active_trade.get("entry_price")
-        size = self.active_trade.get("size")
-        pnl = calculate_trade_pnl(direction, entry, exit_price, size, self.product or {"contract_value": "0.001"})
+        pnl = calculate_trade_pnl(self.position, self.entry_price, exit_price, self.size, self.product or {"contract_value": "0.001"})
         trade = {
             "id": f"s1_{int(time.time()*1000)}",
             "account_id": self.unique_id,
             "account": self.account_name,
             "symbol": self.symbol,
             "date": now_ist().strftime("%Y-%m-%d %H:%M"),
-            "direction": direction,
-            "entry_price": float(entry),
+            "direction": self.position,
+            "entry_price": float(self.entry_price),
             "exit_price": float(exit_price),
-            "size": size,
+            "size": self.size,
             "pnl": float(pnl),
-            "reason": "SL_HIT"
+            "reason": reason
         }
         history = load_trade_history(self.unique_id)
         history.append(trade)
@@ -862,7 +978,6 @@ class CandleSARBot:
         self.leverage = Decimal("100")
         self.balance_fraction = Decimal("0.10")
         self.lock = threading.RLock()
-        self.cached_position = {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
         self.load_state()
         self.save()
@@ -1309,7 +1424,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 active_sl = pos.get("stop_loss") if b.bot_enabled else None
                 actual_lev = pos.get("leverage") if (b.bot_enabled and pos.get("leverage")) else int(b.leverage)
                 unrealized_pnl = pos.get("unrealized_pnl", 0) if b.bot_enabled else 0
-                timeframe_val = getattr(b, "timeframe", "5m")
+                timeframe_val = getattr(b, "timeframe", "5m") if isinstance(b, CandleSARBot) else "5m"
 
                 history = load_trade_history(b.unique_id)
                 stats = calculate_statistics(history)
