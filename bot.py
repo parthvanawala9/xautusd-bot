@@ -873,7 +873,7 @@ class AccountBot:
 
 
 # =====================================================================
-# STRATEGY 2 BOT: 15-MIN CANDLE TRAILING SAR (INDEPENDENT)
+# STRATEGY 2 BOT: 5-MIN CANDLE TRAILING SAR (INDEPENDENT)
 # =====================================================================
 
 class CandleSARBot:
@@ -882,7 +882,7 @@ class CandleSARBot:
         self.symbol = symbol.strip().upper()
         self.strategy_key = "s2"
         self.unique_id = f"{account_id}_{self.symbol}_{self.strategy_key}"
-        self.account_name = f"{account_name} [S2: 15m SAR]"
+        self.account_name = f"{account_name} [S2: 5m SAR]"
         self.account_type = account_type
         self.subscription = subscription or {}
         self.client = DeltaClient(api_key, api_secret, account_name, self.symbol)
@@ -949,6 +949,41 @@ class CandleSARBot:
         }
         atomic_write_json(account_state_file(self.unique_id), data)
 
+    def get_5m_candles(self, limit=5):
+        try:
+            end_ts = int(now_ist().timestamp())
+            start_ts = end_ts - (limit * 5 * 60)
+            params = {
+                "resolution": "5m",
+                "symbol": self.symbol,
+                "start": start_ts,
+                "end": end_ts
+            }
+            data = self.client.api("GET", "/v2/history/candles", params=params)
+            candles = data.get("result", [])
+            formatted = []
+            for c in candles:
+                try:
+                    if isinstance(c, dict):
+                        formatted.append({
+                            "time": float(c.get("time") or c.get("timestamp") or 0),
+                            "high": float(c.get("high")),
+                            "low": float(c.get("low")),
+                            "close": float(c.get("close"))
+                        })
+                    elif isinstance(c, list) and len(c) >= 5:
+                        formatted.append({
+                            "time": float(c[0]),
+                            "high": float(c[2]),
+                            "low": float(c[3]),
+                            "close": float(c[4])
+                        })
+                except Exception:
+                    continue
+            return formatted
+        except Exception:
+            return []
+
     def refresh_position(self):
         if not self.bot_enabled:
             return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
@@ -961,7 +996,6 @@ class CandleSARBot:
                 return {"size": 0, "entry_price": None, "stop_loss": None, "unrealized_pnl": 0}
 
         try:
-            # सीधे एक्सचेंज से लाइव पोजीशन फेच करें ताकि मैन्युअल या बोट द्वारा ली गई पोजीशन डैशबोर्ड में दिखे
             exchange_pos = self.client.position(self.product_id)
             ex_size = exchange_pos.get("size", 0)
 
@@ -972,9 +1006,8 @@ class CandleSARBot:
                 if exchange_pos.get("entry_price"):
                     self.entry_price = exchange_pos.get("entry_price")
                 
-                # यदि स्टॉप लॉस सेट नहीं है, तो कैंडल के हिसाब से डिफॉल्ट सेट करें
                 if not self.stop_loss or self.stop_loss == 0.0:
-                    candles = self.client.get_15m_candles(limit=2)
+                    candles = self.get_5m_candles(limit=2)
                     if len(candles) >= 2:
                         self.stop_loss = candles[-2]["low"] if direction == "LONG" else candles[-2]["high"]
 
@@ -1024,7 +1057,7 @@ class CandleSARBot:
                 return {"success": False, "message": "Subscription expired."}
             self.bot_enabled = True
             self.save()
-            return {"success": True, "bot_enabled": True, "message": "Strategy 2 (15m SAR) Started."}
+            return {"success": True, "bot_enabled": True, "message": "Strategy 2 (5m SAR) Started."}
 
     def stop_bot(self):
         with self.lock:
@@ -1092,7 +1125,7 @@ class CandleSARBot:
                 return
             self.last_price = float(price)
 
-            candles = self.client.get_15m_candles(limit=3)
+            candles = self.get_5m_candles(limit=3)
             if len(candles) < 2:
                 return
 
@@ -1181,7 +1214,7 @@ class CandleSARBot:
             self.leverage = chosen_lev
             self.stop_loss = float(initial_sl)
             self.save()
-            logging.info(f"[S2] Entered {direction} | Lev: {int(self.leverage)}x | Entry: {self.entry_price} | SL: {initial_sl}")
+            logging.info(f"[S2-5m] Entered {direction} | Lev: {int(self.leverage)}x | Entry: {self.entry_price} | SL: {initial_sl}")
         except Exception as e:
             logging.error(f"[S2] Entry execution error: {e}")
 
