@@ -126,10 +126,8 @@ def is_weekend(symbol, dt=None):
     dt = dt or now_ist()
     wday = dt.weekday()
     t = dt.time()
-    # BTCUSD (Crypto) 24/7 चलता है, इसलिए उसपर वीकेंड होल्ड नहीं लगेगा
     if "BTC" in symbol.upper():
         return False
-    # XAUTUSD / Gold के लिए वीकेंड नियम
     if wday == 5:
         return t >= dtime(5, 30)
     if wday == 6:
@@ -535,8 +533,9 @@ class BreakoutSARBot:
         self.size = 0
         self.last_checked_candle_time = 0
 
-        self.leverage = Decimal("100")
-        self.balance_fraction = Decimal("0.10")
+        # Default Leverage: 100x for XAUTUSD, 200x for BTCUSD
+        self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
+        self.balance_fraction = Decimal("0.10")  # Fixed 10% Margin
         self.lock = threading.RLock()
 
         self.load_state()
@@ -694,7 +693,7 @@ class BreakoutSARBot:
                 if self.product_id:
                     self.client.set_leverage(self.product_id, self.leverage)
                 self.save()
-                return {"success": True, "message": f"Saved {self.symbol} Settings! Leverage: {int(self.leverage)}x"}
+                return {"success": True, "message": f"Saved {self.symbol} Settings! Lev: {int(self.leverage)}x | Margin: {float(self.balance_fraction)*100}%"}
             except Exception as e:
                 return {"success": False, "message": str(e)}
 
@@ -797,12 +796,17 @@ class BreakoutSARBot:
             if current_pos.get("size", 0) != 0:
                 return
 
-            ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+            # Leverage Ladder: BTCUSD ke liye 200 se 10 tak 10-10 ke gap me, XAUTUSD ke liye 100 se 10 tak
+            if "BTC" in self.symbol:
+                lev_ladder = list(range(200, 9, -10))
+            else:
+                lev_ladder = [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+
             order_done = False
             chosen_lev = self.leverage
             size = 0
 
-            for lev in ladder:
+            for lev in lev_ladder:
                 lev_decimal = Decimal(str(lev))
                 candidate_liq = self.estimate_liquidation_price(price, lev_decimal, direction)
                 if candidate_liq is None:
@@ -832,7 +836,7 @@ class BreakoutSARBot:
             self.leverage = chosen_lev
             self.stop_loss = float(initial_sl)
             self.save()
-            logging.info(f"[{self.symbol}] Entered {direction} | Price: {price} | Initial SL: {initial_sl}")
+            logging.info(f"[{self.symbol}] Entered {direction} | Price: {price} | Lev: {int(chosen_lev)}x | Margin: {float(self.balance_fraction)*100}% | SL: {initial_sl}")
         except Exception as e:
             logging.error(f"[{self.symbol}] Entry error: {e}")
 
@@ -969,7 +973,6 @@ def load_all_accounts():
                 pass
         BOT_ACCOUNTS.clear()
 
-        # Primary Account: XAUTUSD & BTCUSD both running Breakout SAR Strategy
         if PRIMARY_API_KEY and PRIMARY_API_SECRET:
             bot_xaut = BreakoutSARBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, "XAUTUSD")
             bot_btc = BreakoutSARBot(PRIMARY_ACCOUNT_ID, PRIMARY_ACCOUNT_NAME, "primary", PRIMARY_API_KEY, PRIMARY_API_SECRET, "BTCUSD")
@@ -1222,6 +1225,7 @@ async function fetchDashboard() {
                 let finalEntry = (pos.entry_price !== null && pos.entry_price !== undefined && pos.entry_price > 0) ? pos.entry_price : "N/A";
                 let finalSl = (pos.stop_loss !== null && pos.stop_loss !== undefined && pos.stop_loss > 0) ? pos.stop_loss : "N/A";
                 let tradeLevDisplay = acc.leverage + "x";
+                let isBtc = acc.symbol.includes("BTC");
 
                 let html = `
                 <div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
@@ -1239,24 +1243,28 @@ async function fetchDashboard() {
                     ${clientLink ? `<div class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs space-y-1"><span class="text-slate-400 text-[10px] block">Client Unique Link:</span><input type="text" readonly value="${clientLink}" class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all"></div>` : ""}
 
                     <div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
-                        <div class="text-xs font-semibold text-amber-400 uppercase">Risk Settings</div>
+                        <div class="text-xs font-semibold text-amber-400 uppercase">Risk Settings (Fixed 10% Margin)</div>
                         <div class="grid grid-cols-2 gap-2">
                             <div>
                                 <label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
                                 <select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
+                                    ${isBtc ? `
+                                    <option value="200" ${acc.leverage==200?'selected':''}>200x</option>
+                                    <option value="150" ${acc.leverage==150?'selected':''}>150x</option>
+                                    <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
+                                    <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
+                                    ` : `
                                     <option value="100" ${acc.leverage==100?'selected':''}>100x</option>
                                     <option value="50" ${acc.leverage==50?'selected':''}>50x</option>
                                     <option value="25" ${acc.leverage==25?'selected':''}>25x</option>
                                     <option value="10" ${acc.leverage==10?'selected':''}>10x</option>
+                                    `}
                                 </select>
                             </div>
                             <div>
                                 <label class="block text-[10px] text-slate-400 mb-1">Margin Fraction</label>
                                 <select id="frac-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200">
-                                    <option value="1.00" ${acc.balance_fraction==1.0?'selected':''}>100%</option>
-                                    <option value="0.50" ${acc.balance_fraction==0.5?'selected':''}>50%</option>
-                                    <option value="0.25" ${acc.balance_fraction==0.25?'selected':''}>25%</option>
-                                    <option value="0.10" ${acc.balance_fraction==0.1?'selected':''}>10%</option>
+                                    <option value="0.10" selected>10%</option>
                                 </select>
                             </div>
                         </div>
@@ -1362,7 +1370,7 @@ async function toggleBot(accId, state) {
 
 async function updateSettings(accId) {
     let lev = document.getElementById("lev-" + accId).value;
-    let frac = document.getElementById("frac-" + accId).value;
+    let frac = 0.10; // Fixed 10%
     isEditingSettings = true;
     let res = await fetch("/api/bot/settings", {
         method: "POST",
