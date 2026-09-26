@@ -22,27 +22,56 @@ from dotenv import load_dotenv
 #
 # STRATEGY:
 #
-# BASIC BREAKOUT:
-#   DAY HIGH BREAK  -> LONG
-#   DAY LOW BREAK   -> SHORT
+# BASE BREAKOUT:
+#   DAY HIGH BREAK -> LONG
+#   DAY LOW BREAK  -> SHORT
 #
 # NORMAL TRADE SL:
 #   LONG  -> previous completed 5M candle LOW
 #   SHORT -> previous completed 5M candle HIGH
 #
 # REVERSAL:
-#   LONG SL hit  -> SHORT reversal
-#   SHORT SL hit -> LONG reversal
+#   NORMAL LONG SL  -> ONE SHORT reversal
+#   NORMAL SHORT SL -> ONE LONG reversal
 #
 # REVERSAL SL:
-#   SHORT reversal -> previous completed 5M candle HIGH
-#   LONG reversal  -> previous completed 5M candle LOW
+#   REVERSAL SHORT -> previous completed 5M candle HIGH
+#   REVERSAL LONG  -> previous completed 5M candle LOW
 #
 # IMPORTANT:
-#   Reversal trade SL hit -> FLAT.
-#   No immediate second reversal.
-#   Next trade can only come from the original Day High / Day Low
-#   breakout logic.
+#   Each BASE BREAKOUT gets ONLY ONE reversal.
+#
+#   Example:
+#
+#   Day High Break
+#       ->
+#   LONG
+#       ->
+#   LONG SL HIT
+#       ->
+#   ONE SHORT REVERSAL
+#       ->
+#   SHORT REVERSAL SL HIT
+#       ->
+#   FLAT
+#       ->
+#   WAIT FOR BASE BREAKOUT AGAIN
+#       ->
+#   NEW DAY HIGH BREAK
+#       ->
+#   NEW LONG
+#
+#   After a reversal SL:
+#       NO SECOND IMMEDIATE REVERSAL.
+#
+#   But BASE DAY HIGH / DAY LOW BREAKOUT logic is NEVER disabled.
+#
+#   Therefore, after becoming FLAT:
+#
+#       NEW DAY HIGH BREAK -> NEW LONG
+#       NEW DAY LOW BREAK  -> NEW SHORT
+#
+#   A NEW BASE BREAKOUT starts a completely new one-reversal cycle.
 # =====================================================================
 
 
@@ -1059,7 +1088,8 @@ def calculate_statistics(history):
 # STRATEGY BOT
 # DAY HIGH / LOW BREAKOUT
 # + 5M TRAILING SL
-# + REVERSAL TRADING
+# + ONE REVERSAL PER BREAKOUT
+# + RETURN TO BASE BREAKOUT MODE
 # =====================================================================
 
 class BreakoutSARBot:
@@ -1135,15 +1165,32 @@ class BreakoutSARBot:
         self.last_checked_candle_time = 0
 
         # -------------------------------------------------------------
-        # NEW:
-        # True = current position is a reversal trade.
+        # TRUE:
+        #   Current position is the ONE allowed reversal.
         #
-        # False = current position is the original Day High/Day Low
-        # breakout trade.
+        # FALSE:
+        #   Current position is the BASE Day High / Day Low breakout.
         #
-        # A reversal trade's SL hit DOES NOT reverse again.
+        # When reversal SL hits:
+        #   position -> FLAT
+        #   is_reversal_position -> FALSE
+        #
+        # After that BASE BREAKOUT logic becomes active again.
         # -------------------------------------------------------------
         self.is_reversal_position = False
+
+        # -------------------------------------------------------------
+        # Explicit base-breakout mode.
+        #
+        # True means:
+        #   If FLAT, the bot is allowed to take the next
+        #   Day High / Day Low breakout.
+        #
+        # This remains TRUE after a reversal SL.
+        #
+        # It is set FALSE only while an active position exists.
+        # -------------------------------------------------------------
+        self.base_breakout_ready = True
 
         # Default leverage
         self.leverage = (
@@ -1295,11 +1342,23 @@ class BreakoutSARBot:
                 False
             )
 
-            # NEW
             self.is_reversal_position = state.get(
                 "is_reversal_position",
                 False
             )
+
+            # IMPORTANT:
+            # If an old state file does not contain this field,
+            # BASE BREAKOUT mode is allowed by default.
+            self.base_breakout_ready = state.get(
+                "base_breakout_ready",
+                True
+            )
+
+            # If there is no active position, always make sure
+            # the bot can return to base breakout mode.
+            if not self.position or self.size <= 0:
+                self.base_breakout_ready = True
 
         except Exception:
             pass
@@ -1355,9 +1414,16 @@ class BreakoutSARBot:
 
             "trading_armed": self.trading_armed,
 
-            # NEW
             "is_reversal_position": (
                 self.is_reversal_position
+            ),
+
+            # NEW:
+            # Explicitly stores that the bot must return to
+            # base Day High / Day Low breakout mode after a
+            # reversal SL.
+            "base_breakout_ready": (
+                self.base_breakout_ready
             )
         }
 
@@ -1597,6 +1663,13 @@ class BreakoutSARBot:
                 self.entry_price = None
                 self.size = 0
 
+                # -----------------------------------------------------
+                # IMPORTANT:
+                # If exchange confirms FLAT, the bot is again allowed
+                # to take the next BASE Day High / Day Low breakout.
+                # -----------------------------------------------------
+                self.base_breakout_ready = True
+
                 return {
                     "size": 0,
                     "entry_price": None,
@@ -1680,6 +1753,11 @@ class BreakoutSARBot:
 
             self.bot_enabled = True
 
+            # Starting bot while FLAT means base breakout mode
+            # is available again.
+            if not self.position or self.size <= 0:
+                self.base_breakout_ready = True
+
             self.save()
 
             return {
@@ -1729,8 +1807,13 @@ class BreakoutSARBot:
             self.position = None
             self.entry_price = None
             self.size = 0
+            self.stop_loss = 0.0
 
             self.is_reversal_position = False
+
+            # Bot is manually stopped, so base breakout will only
+            # become active again when bot is started.
+            self.base_breakout_ready = True
 
             self.save()
 
@@ -1776,8 +1859,12 @@ class BreakoutSARBot:
             self.position = None
             self.entry_price = None
             self.size = 0
+            self.stop_loss = 0.0
 
             self.is_reversal_position = False
+
+            # New session starts in BASE BREAKOUT mode.
+            self.base_breakout_ready = True
 
             self.manual_squareoff_flag = False
 
@@ -1956,14 +2043,13 @@ class BreakoutSARBot:
     # =================================================================
     # ENTER
     #
-    # is_reversal=False
-    #   Normal Day High / Day Low breakout trade
+    # is_reversal=False:
+    #   BASE Day High / Day Low breakout.
     #
-    # is_reversal=True
-    #   Reversal trade
+    # is_reversal=True:
+    #   ONE reversal belonging to the current base breakout.
     #
-    # IMPORTANT:
-    # leverage and margin are EXACTLY the same for both.
+    # Same leverage and same 10% margin for both.
     # =================================================================
 
     def enter(
@@ -2115,23 +2201,29 @@ class BreakoutSARBot:
                 initial_sl
             )
 
-            # NEW:
-            # Mark whether this is a reversal trade.
             self.is_reversal_position = bool(
                 is_reversal
             )
 
-            # Current completed previous candle is already being used
-            # for the reversal SL / normal SL.
+            # ---------------------------------------------------------
+            # IMPORTANT:
             #
-            # We keep this candle as the current SL reference until
-            # the next completed candle arrives.
+            # Once ANY position is entered, we are no longer waiting
+            # for a base breakout.
+            #
+            # If it is a reversal, it belongs to the previous base
+            # breakout.
+            #
+            # If it is a new breakout, this starts a new cycle.
+            # ---------------------------------------------------------
+            self.base_breakout_ready = False
+
             self.save()
 
             logging.info(
                 f"[{self.symbol}] "
                 f"Entered {direction} "
-                f"{'REVERSAL' if is_reversal else 'BREAKOUT'} "
+                f"{'REVERSAL' if is_reversal else 'BASE BREAKOUT'} "
                 f"| Price: {price} "
                 f"| Lev: {int(chosen_lev)}x "
                 f"| Margin: "
@@ -2201,26 +2293,39 @@ class BreakoutSARBot:
             self.size = 0
             self.stop_loss = 0.0
 
+            self.is_reversal_position = False
+
+            # ---------------------------------------------------------
+            # CRITICAL:
+            #
+            # After a reversal SL, the bot becomes FLAT and immediately
+            # returns to BASE BREAKOUT MODE.
+            #
+            # This means a later NEW Day High / Day Low breakout can
+            # start a completely new trade.
+            # ---------------------------------------------------------
+            self.base_breakout_ready = True
+
             self.save()
 
     # =================================================================
     # REVERSAL
     #
-    # IMPORTANT:
+    # ONE REVERSAL ONLY PER BASE BREAKOUT.
     #
-    # LONG SL hit:
-    #   LONG closes
-    #   SHORT immediately enters
-    #   SHORT SL = SAME previous completed candle HIGH
+    # NORMAL LONG SL:
+    #     LONG -> SHORT reversal
     #
-    # SHORT SL hit:
-    #   SHORT closes
-    #   LONG immediately enters
-    #   LONG SL = SAME previous completed candle LOW
+    # NORMAL SHORT SL:
+    #     SHORT -> LONG reversal
     #
-    # If current trade is already a reversal:
-    #   SL hit -> CLOSE -> FLAT
-    #   NO SECOND IMMEDIATE REVERSAL
+    # REVERSAL LONG SL:
+    #     LONG -> FLAT
+    #
+    # REVERSAL SHORT SL:
+    #     SHORT -> FLAT
+    #
+    # NO SECOND IMMEDIATE REVERSAL.
     # =================================================================
 
     def reverse_from_sl(
@@ -2243,21 +2348,32 @@ class BreakoutSARBot:
 
         old_size = self.size
 
-        # -------------------------------------------------------------
+        # =============================================================
         # LONG SL HIT
-        # -------------------------------------------------------------
+        # =============================================================
 
         if old_direction == "LONG":
 
-            # If this LONG was already a reversal,
-            # its SL simply closes the trade.
+            # ---------------------------------------------------------
+            # CASE 1:
+            # This LONG is already the ONE reversal.
+            #
+            # Its SL means:
+            #   CLOSE
+            #   FLAT
+            #   NO MORE REVERSAL
+            #   BASE BREAKOUT MODE ACTIVE
+            # ---------------------------------------------------------
+
             if old_is_reversal:
 
                 logging.info(
                     f"[{self.symbol}] "
                     f"REVERSAL LONG SL HIT "
                     f"| Price: {price} "
-                    f"| No further reversal."
+                    f"| Closing FLAT "
+                    f"| No further reversal "
+                    f"| BASE BREAKOUT MODE ACTIVE"
                 )
 
                 self.close_current_position(
@@ -2265,26 +2381,24 @@ class BreakoutSARBot:
                     price
                 )
 
-                self.is_reversal_position = False
-
-                self.save()
-
                 return True
 
             # ---------------------------------------------------------
-            # NORMAL LONG SL:
-            # reverse to SHORT.
+            # CASE 2:
+            # This is the BASE LONG.
             #
-            # SHORT SL = previous candle HIGH.
+            # Its SL triggers ONE SHORT reversal.
+            #
+            # SHORT SL = SAME previous completed candle HIGH.
             # ---------------------------------------------------------
 
             reversal_sl = prev_candle["high"]
 
             logging.info(
                 f"[{self.symbol}] "
-                f"LONG SL HIT "
+                f"BASE LONG SL HIT "
                 f"| Price: {price} "
-                f"| REVERSING TO SHORT "
+                f"| ONE REVERSAL -> SHORT "
                 f"| SHORT SL: {reversal_sl}"
             )
 
@@ -2319,7 +2433,10 @@ class BreakoutSARBot:
 
             self.save()
 
-            # Immediately enter opposite direction.
+            # ---------------------------------------------------------
+            # Immediately enter the ONE SHORT reversal.
+            # ---------------------------------------------------------
+
             success = self.enter(
                 "SHORT",
                 price,
@@ -2327,23 +2444,58 @@ class BreakoutSARBot:
                 is_reversal=True
             )
 
+            # ---------------------------------------------------------
+            # If reversal entry fails, remain FLAT and return to
+            # base breakout mode.
+            # ---------------------------------------------------------
+
+            if not success:
+
+                self.position = None
+                self.entry_price = None
+                self.size = 0
+                self.stop_loss = 0.0
+
+                self.is_reversal_position = False
+
+                self.base_breakout_ready = True
+
+                self.save()
+
+                logging.warning(
+                    f"[{self.symbol}] "
+                    f"SHORT reversal entry failed. "
+                    f"BOT IS FLAT -> BASE BREAKOUT MODE ACTIVE."
+                )
+
             return success
 
-        # -------------------------------------------------------------
+        # =============================================================
         # SHORT SL HIT
-        # -------------------------------------------------------------
+        # =============================================================
 
         if old_direction == "SHORT":
 
-            # If this SHORT was already a reversal,
-            # its SL simply closes the trade.
+            # ---------------------------------------------------------
+            # CASE 1:
+            # This SHORT is already the ONE reversal.
+            #
+            # Its SL means:
+            #   CLOSE
+            #   FLAT
+            #   NO MORE REVERSAL
+            #   BASE BREAKOUT MODE ACTIVE
+            # ---------------------------------------------------------
+
             if old_is_reversal:
 
                 logging.info(
                     f"[{self.symbol}] "
                     f"REVERSAL SHORT SL HIT "
                     f"| Price: {price} "
-                    f"| No further reversal."
+                    f"| Closing FLAT "
+                    f"| No further reversal "
+                    f"| BASE BREAKOUT MODE ACTIVE"
                 )
 
                 self.close_current_position(
@@ -2351,26 +2503,24 @@ class BreakoutSARBot:
                     price
                 )
 
-                self.is_reversal_position = False
-
-                self.save()
-
                 return True
 
             # ---------------------------------------------------------
-            # NORMAL SHORT SL:
-            # reverse to LONG.
+            # CASE 2:
+            # This is the BASE SHORT.
             #
-            # LONG SL = previous candle LOW.
+            # Its SL triggers ONE LONG reversal.
+            #
+            # LONG SL = SAME previous completed candle LOW.
             # ---------------------------------------------------------
 
             reversal_sl = prev_candle["low"]
 
             logging.info(
                 f"[{self.symbol}] "
-                f"SHORT SL HIT "
+                f"BASE SHORT SL HIT "
                 f"| Price: {price} "
-                f"| REVERSING TO LONG "
+                f"| ONE REVERSAL -> LONG "
                 f"| LONG SL: {reversal_sl}"
             )
 
@@ -2405,13 +2555,40 @@ class BreakoutSARBot:
 
             self.save()
 
-            # Immediately enter opposite direction.
+            # ---------------------------------------------------------
+            # Immediately enter the ONE LONG reversal.
+            # ---------------------------------------------------------
+
             success = self.enter(
                 "LONG",
                 price,
                 reversal_sl,
                 is_reversal=True
             )
+
+            # ---------------------------------------------------------
+            # If reversal entry fails, remain FLAT and return to
+            # base breakout mode.
+            # ---------------------------------------------------------
+
+            if not success:
+
+                self.position = None
+                self.entry_price = None
+                self.size = 0
+                self.stop_loss = 0.0
+
+                self.is_reversal_position = False
+
+                self.base_breakout_ready = True
+
+                self.save()
+
+                logging.warning(
+                    f"[{self.symbol}] "
+                    f"LONG reversal entry failed. "
+                    f"BOT IS FLAT -> BASE BREAKOUT MODE ACTIVE."
+                )
 
             return success
 
@@ -2504,6 +2681,8 @@ class BreakoutSARBot:
 
                     self.is_reversal_position = False
 
+                    self.base_breakout_ready = True
+
                     self.save()
 
                 return
@@ -2554,7 +2733,10 @@ class BreakoutSARBot:
             # candles[-2] = previous completed 5M candle
             # candles[-1] = current/latest candle
             #
-            # Your universal SL rule uses candles[-2].
+            # Universal SL rule:
+            #
+            # LONG  -> previous completed candle LOW
+            # SHORT -> previous completed candle HIGH
             # ---------------------------------------------------------
 
             prev_candle = candles[-2]
@@ -2563,7 +2745,7 @@ class BreakoutSARBot:
             curr_time = curr_candle["time"]
 
             # =========================================================
-            # ACTIVE POSITION
+            # ACTIVE LONG
             # =========================================================
 
             if (
@@ -2573,7 +2755,9 @@ class BreakoutSARBot:
 
                 # -----------------------------------------------------
                 # FIRST:
-                # Check whether current SL is hit.
+                # Check current SL.
+                #
+                # This is checked BEFORE changing the trailing SL.
                 # -----------------------------------------------------
 
                 if (
@@ -2586,8 +2770,8 @@ class BreakoutSARBot:
                         f"LONG SL HIT "
                         f"| Price: {self.last_price} "
                         f"| SL: {self.stop_loss} "
-                        f"| Reversal: "
-                        f"{not self.is_reversal_position}"
+                        f"| Reversal Trade: "
+                        f"{self.is_reversal_position}"
                     )
 
                     self.reverse_from_sl(
@@ -2596,16 +2780,14 @@ class BreakoutSARBot:
                     )
 
                     # IMPORTANT:
-                    # Do not run breakout logic again in this same
-                    # evaluation after a reversal.
+                    # After SL/reversal processing, do NOT run base
+                    # breakout logic again in this same evaluation.
                     return
 
                 # -----------------------------------------------------
                 # NEW COMPLETED CANDLE:
                 #
-                # LONG SL = previous completed candle LOW
-                #
-                # Existing strategy retained.
+                # LONG SL = previous completed candle LOW.
                 # -----------------------------------------------------
 
                 if (
@@ -2622,6 +2804,10 @@ class BreakoutSARBot:
                     )
 
                     self.save()
+
+            # =========================================================
+            # ACTIVE SHORT
+            # =========================================================
 
             elif (
                 self.position == "SHORT"
@@ -2643,8 +2829,8 @@ class BreakoutSARBot:
                         f"SHORT SL HIT "
                         f"| Price: {self.last_price} "
                         f"| SL: {self.stop_loss} "
-                        f"| Reversal: "
-                        f"{not self.is_reversal_position}"
+                        f"| Reversal Trade: "
+                        f"{self.is_reversal_position}"
                     )
 
                     self.reverse_from_sl(
@@ -2658,7 +2844,7 @@ class BreakoutSARBot:
                 # -----------------------------------------------------
                 # NEW COMPLETED CANDLE:
                 #
-                # SHORT SL = previous completed candle HIGH
+                # SHORT SL = previous completed candle HIGH.
                 # -----------------------------------------------------
 
                 if (
@@ -2677,37 +2863,42 @@ class BreakoutSARBot:
                     self.save()
 
             # =========================================================
-            # BASIC BREAKOUT ENTRY
+            # BASE BREAKOUT MODE
             #
-            # IMPORTANT:
+            # THIS IS THE IMPORTANT PART.
             #
-            # This remains your original basic strategy.
+            # We only enter a new base trade when:
             #
-            # Day High -> LONG
-            # Day Low  -> SHORT
+            #   1. Bot is FLAT
+            #   2. base_breakout_ready == TRUE
+            #   3. manual squareoff is FALSE
             #
-            # Reversal trades do NOT create another reversal.
-            # They simply close at their SL.
+            # Therefore:
             #
-            # After that, the next entry is again only Day High /
-            # Day Low breakout.
+            # Reversal SL -> FLAT -> base_breakout_ready TRUE
+            #
+            # Then:
+            #
+            # Day High break -> NEW LONG
+            # Day Low break  -> NEW SHORT
+            #
+            # This starts a completely new breakout/reversal cycle.
             # =========================================================
 
             if (
-                (
-                    self.position is None
-                    or self.size == 0
-                )
+                self.position is None
+                and self.size == 0
+                and self.base_breakout_ready
                 and not self.manual_squareoff_flag
             ):
 
                 # -----------------------------------------------------
-                # DAY HIGH BREAKOUT -> LONG
+                # DAY HIGH BREAKOUT -> NEW BASE LONG
                 # -----------------------------------------------------
 
                 if (
-                    old_price <= self.day_high
-                    and new_price > self.day_high
+                    old_price <= float(self.day_high)
+                    and new_price > float(self.day_high)
                 ):
 
                     # Previous completed candle LOW
@@ -2716,22 +2907,42 @@ class BreakoutSARBot:
                         prev_candle["low"]
                     )
 
-                    self.enter(
+                    logging.info(
+                        f"[{self.symbol}] "
+                        f"NEW DAY HIGH BREAKOUT "
+                        f"| Old: {old_price} "
+                        f"| New: {new_price} "
+                        f"| Day High: {self.day_high} "
+                        f"| ENTER NEW BASE LONG "
+                        f"| SL: {initial_sl}"
+                    )
+
+                    success = self.enter(
                         "LONG",
                         new_price,
                         initial_sl,
                         is_reversal=False
                     )
 
+                    if success:
+
+                        # A new base breakout has started a NEW
+                        # reversal cycle.
+                        self.is_reversal_position = False
+
+                        self.base_breakout_ready = False
+
+                        self.save()
+
                     return
 
                 # -----------------------------------------------------
-                # DAY LOW BREAKDOWN -> SHORT
+                # DAY LOW BREAKDOWN -> NEW BASE SHORT
                 # -----------------------------------------------------
 
                 elif (
-                    old_price >= self.day_low
-                    and new_price < self.day_low
+                    old_price >= float(self.day_low)
+                    and new_price < float(self.day_low)
                 ):
 
                     # Previous completed candle HIGH
@@ -2740,24 +2951,60 @@ class BreakoutSARBot:
                         prev_candle["high"]
                     )
 
-                    self.enter(
+                    logging.info(
+                        f"[{self.symbol}] "
+                        f"NEW DAY LOW BREAKDOWN "
+                        f"| Old: {old_price} "
+                        f"| New: {new_price} "
+                        f"| Day Low: {self.day_low} "
+                        f"| ENTER NEW BASE SHORT "
+                        f"| SL: {initial_sl}"
+                    )
+
+                    success = self.enter(
                         "SHORT",
                         new_price,
                         initial_sl,
                         is_reversal=False
                     )
 
+                    if success:
+
+                        # A new base breakout has started a NEW
+                        # reversal cycle.
+                        self.is_reversal_position = False
+
+                        self.base_breakout_ready = False
+
+                        self.save()
+
                     return
 
-            # ---------------------------------------------------------
+            # =========================================================
             # UPDATE SESSION HIGH / LOW
             #
-            # EXISTING BEHAVIOUR RETAINED.
-            # ---------------------------------------------------------
+            # IMPORTANT:
+            #
+            # Day High and Day Low remain dynamic/running extremes.
+            #
+            # Example:
+            #
+            # Existing Day High = 100
+            #
+            # Price reaches 103
+            # -> Day High becomes 103
+            #
+            # Later bot is FLAT.
+            #
+            # Price returns to 103 and then breaks above 103
+            # -> NEW LONG
+            #
+            # This is exactly the required behaviour.
+            # =========================================================
 
             if (
                 new_price
-                > (self.day_high or 0)
+                > float(self.day_high or 0)
             ):
 
                 self.day_high = Decimal(
@@ -2766,9 +3013,15 @@ class BreakoutSARBot:
 
                 self.save()
 
+                logging.info(
+                    f"[{self.symbol}] "
+                    f"NEW DAY HIGH UPDATED -> "
+                    f"{self.day_high}"
+                )
+
             if (
                 new_price
-                < (
+                < float(
                     self.day_low
                     or 999999
                 )
@@ -2779,6 +3032,12 @@ class BreakoutSARBot:
                 )
 
                 self.save()
+
+                logging.info(
+                    f"[{self.symbol}] "
+                    f"NEW DAY LOW UPDATED -> "
+                    f"{self.day_low}"
+                )
 
     # =================================================================
     # TRADE HISTORY
@@ -2840,8 +3099,6 @@ class BreakoutSARBot:
 
             "reason": reason,
 
-            # NEW:
-            # Allows dashboard/history to distinguish reversal trades.
             "trade_type": (
                 "REVERSAL"
                 if self.is_reversal_position
@@ -3258,6 +3515,9 @@ class DashboardHandler(
                         float(
                             b.balance_fraction
                         ),
+
+                    "base_breakout_ready":
+                        b.base_breakout_ready,
 
                     "position": {
                         "size":
