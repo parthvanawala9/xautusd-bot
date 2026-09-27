@@ -22,68 +22,74 @@ from dotenv import load_dotenv
 #
 # XAUTUSD + BTCUSD
 #
-# STRATEGY
+# SIMPLE STRATEGY
 #
-# 1. Saturday/Sunday:
-#       NO NEW TRADES.
-#       Any open position is closed.
+# SESSION:
+#   05:30 IST = New session starts
+#   05:45 IST = Trading starts
 #
-# 2. BASE LONG:
-#       NEW running session HIGH -> LONG
+# BASE ENTRY:
+#   Current running session HIGH break -> LONG
+#   Current running session LOW  break -> SHORT
 #
-# 3. BASE SHORT:
-#       NEW running session LOW -> SHORT
+# BASE SL:
+#   LONG  -> previous completed 5M candle LOW
+#   SHORT -> previous completed 5M candle HIGH
 #
-# 4. BASE LONG SL:
-#       Previous completed 5M candle LOW
+# TRAILING:
+#   Every new completed 5M candle:
+#       LONG  -> previous completed 5M LOW
+#       SHORT -> previous completed 5M HIGH
 #
-# 5. BASE SHORT SL:
-#       Previous completed 5M candle HIGH
+# BASE SL:
+#   LONG SL  -> ONE SHORT REVERSAL
+#   SHORT SL -> ONE LONG REVERSAL
 #
-# 6. TRAILING:
-#       Every new completed 5M candle:
-#           LONG  -> previous completed candle LOW
-#           SHORT -> previous completed candle HIGH
+# REVERSAL:
+#   Same 5M trailing SL logic
 #
-# 7. BASE SL:
-#       Base LONG SL  -> ONE SHORT reversal
-#       Base SHORT SL -> ONE LONG reversal
+# REVERSAL SL:
+#   FLAT
+#   NO SECOND REVERSAL
+#   Wait for CURRENT session HIGH / LOW to break again
 #
-# 8. REVERSAL SL:
-#       FLAT
-#       NO SECOND REVERSAL
+# WEEKEND:
+#   Saturday / Sunday = NO TRADING
+#   Existing exchange position is closed
 #
-# 9. OLD BREAKOUT:
-#       Cannot immediately trigger again.
-#       A genuinely NEW running high/low is required.
+# LEVERAGE:
+#   XAUTUSD = 100,90,80,...10
+#   BTCUSD  = 200,190,180,...10
 #
-# 10. EXECUTION SAFETY:
-#       Exchange confirmation required after ENTRY.
-#       Exchange FLAT confirmation required after CLOSE.
+# MARGIN:
+#   10% of available balance
 #
-# 11. DASHBOARD:
-#       READ ONLY.
-#       Dashboard NEVER changes strategy state.
+# EXECUTION SAFETY:
+#   One order at a time
+#   Entry confirmation required
+#   Close confirmation required
+#   Unknown execution blocks further orders
+#   Exchange state is authoritative
 #
-# 12. RESTART:
-#       Exchange position is reconciled before trading.
-#
-# 13. UNKNOWN EXECUTION:
-#       If order status cannot be conclusively determined,
-#       NO NEW ORDER is submitted until exchange state is reconciled.
-#
-# 14. PUBLIC WS:
-#       Public trades websocket is the strategy price feed.
-#       No REST ticker strategy loop.
+# DASHBOARD:
+#   Read-only position display
+#   Dashboard never modifies strategy state
 #
 # =====================================================================
 
 
 load_dotenv()
 
+
+# =====================================================================
+# CONSTANTS
+# =====================================================================
+
 IST = ZoneInfo("Asia/Kolkata")
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
 
 PERSISTENT_DATA_DIR = os.getenv(
     "RAILWAY_VOLUME_MOUNT_PATH",
@@ -101,22 +107,30 @@ WS_URL = os.getenv(
 )
 
 DASHBOARD_PORT = int(
-    os.getenv("DASHBOARD_PORT", "8000")
+    os.getenv(
+        "DASHBOARD_PORT",
+        "8000"
+    )
 )
 
-TRADING_START_TIME = dtime(5, 45)
 SESSION_START_TIME = dtime(5, 30)
+
+TRADING_START_TIME = dtime(5, 45)
 
 RECONNECT_SECONDS = 5
 
 ENTRY_CONFIRM_TIMEOUT = 10.0
+
 CLOSE_CONFIRM_TIMEOUT = 10.0
 
 POSITION_POLL_INTERVAL = 0.25
 
-# If execution remains unknown, the bot will not create another order.
 EXECUTION_UNKNOWN_RECHECK_INTERVAL = 5.0
 
+
+# =====================================================================
+# FILES
+# =====================================================================
 
 STATE_DIR = os.path.join(
     PERSISTENT_DATA_DIR,
@@ -165,6 +179,10 @@ os.makedirs(
     exist_ok=True
 )
 
+
+# =====================================================================
+# LOGGING
+# =====================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -221,46 +239,71 @@ def update_server_ip():
 
 
 def now_ist():
+
     return datetime.now(IST)
 
 
-def is_weekend(symbol=None, dt=None):
+def is_weekend(
+    symbol=None,
+    dt=None
+):
 
     dt = dt or now_ist()
 
-    wday = dt.weekday()
-    t = dt.time()
+    weekday = dt.weekday()
 
-    # Saturday from 05:30 IST.
-    if wday == 5 and t >= SESSION_START_TIME:
+    current_time = dt.time()
+
+
+    # Saturday after 05:30 session boundary
+    if (
+        weekday == 5
+        and current_time >= SESSION_START_TIME
+    ):
+
         return True
 
-    # Entire Sunday.
-    if wday == 6:
+
+    # Entire Sunday
+    if weekday == 6:
+
         return True
 
-    # Monday before 05:30.
-    if wday == 0 and t < SESSION_START_TIME:
+
+    # Monday before 05:30
+    if (
+        weekday == 0
+        and current_time < SESSION_START_TIME
+    ):
+
         return True
+
 
     return False
 
 
-def get_current_session_start(dt=None):
+def get_current_session_start(
+    dt=None
+):
 
     dt = dt or now_ist()
 
-    m530 = dt.replace(
+    session_time = dt.replace(
         hour=5,
         minute=30,
         second=0,
         microsecond=0
     )
 
-    if dt.time() >= SESSION_START_TIME:
-        return m530
 
-    return m530 - timedelta(days=1)
+    if dt.time() >= SESSION_START_TIME:
+
+        return session_time
+
+
+    return session_time - timedelta(
+        days=1
+    )
 
 
 def safe_filename(value):
@@ -269,16 +312,24 @@ def safe_filename(value):
 
     for char in str(value):
 
-        if char.isalnum() or char in ("-", "_"):
+        if char.isalnum() or char in (
+            "-",
+            "_"
+        ):
+
             result += char
 
         else:
+
             result += "_"
+
 
     return result or "account"
 
 
-def account_state_file(unique_id):
+def account_state_file(
+    unique_id
+):
 
     return os.path.join(
         STATE_DIR,
@@ -286,7 +337,9 @@ def account_state_file(unique_id):
     )
 
 
-def account_history_file(unique_id):
+def account_history_file(
+    unique_id
+):
 
     return os.path.join(
         HISTORY_DIR,
@@ -301,6 +354,7 @@ def atomic_write_json(
 
     tmp = filename + ".tmp"
 
+
     with open(
         tmp,
         "w",
@@ -313,6 +367,7 @@ def atomic_write_json(
             indent=2
         )
 
+
     os.replace(
         tmp,
         filename
@@ -324,7 +379,9 @@ def load_clients_config():
     if not os.path.exists(
         CLIENTS_FILE
     ):
+
         return {}
+
 
     try:
 
@@ -336,11 +393,16 @@ def load_clients_config():
 
             data = json.load(f)
 
+
         return (
             data
-            if isinstance(data, dict)
+            if isinstance(
+                data,
+                dict
+            )
             else {}
         )
+
 
     except Exception as e:
 
@@ -351,7 +413,9 @@ def load_clients_config():
         return {}
 
 
-def save_clients_config(cfg):
+def save_clients_config(
+    cfg
+):
 
     atomic_write_json(
         CLIENTS_FILE,
@@ -389,12 +453,22 @@ class DeltaClient:
             symbol or ""
         ).strip().upper()
 
-        self.session = requests.Session()
+
+        self.session = (
+            requests.Session()
+        )
+
 
         self.session.headers.update({
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "MultiBot/98.0",
+
+            "Accept":
+                "application/json",
+
+            "Content-Type":
+                "application/json",
+
+            "User-Agent":
+                "MultiBot/99.0",
         })
 
 
@@ -414,6 +488,7 @@ class DeltaClient:
             int(time.time())
         )
 
+
         message = (
             method.upper()
             + timestamp
@@ -422,17 +497,27 @@ class DeltaClient:
             + body
         )
 
+
         signature = hmac.new(
             self.api_secret.encode(),
             message.encode(),
             hashlib.sha256,
         ).hexdigest()
 
+
         return {
-            "api-key": self.api_key,
-            "signature": signature,
-            "timestamp": timestamp,
-            "User-Agent": "MultiBot/98.0",
+
+            "api-key":
+                self.api_key,
+
+            "signature":
+                signature,
+
+            "timestamp":
+                timestamp,
+
+            "User-Agent":
+                "MultiBot/99.0",
         }
 
 
@@ -451,58 +536,89 @@ class DeltaClient:
 
         params = params or {}
 
+
         body_text = (
+
             json.dumps(
                 body,
-                separators=(",", ":")
+                separators=(
+                    ",",
+                    ":"
+                )
             )
+
             if body is not None
+
             else ""
         )
 
+
         query = (
+
             "?"
             + urlencode(
                 params,
                 doseq=True
             )
+
             if params
+
             else ""
         )
 
+
         headers = (
+
             self.sign(
                 method,
                 path,
                 query,
                 body_text
             )
+
             if auth
+
             else {}
         )
 
+
         response = self.session.request(
+
             method.upper(),
+
             BASE_URL + path,
+
             params=params,
+
             data=(
                 body_text
                 if body is not None
                 else None
             ),
+
             headers=headers,
-            timeout=(3, 8),
+
+            timeout=(
+                3,
+                8
+            ),
         )
+
 
         response.raise_for_status()
 
+
         data = response.json()
 
-        if data.get("success") is False:
+
+        if data.get(
+            "success"
+        ) is False:
 
             raise RuntimeError(
                 f"Delta error: {data}"
             )
+
 
         return data
 
@@ -518,9 +634,11 @@ class DeltaClient:
             f"/v2/products/{self.symbol}"
         )
 
+
         result = data.get(
             "result"
         )
+
 
         if not isinstance(
             result,
@@ -530,6 +648,7 @@ class DeltaClient:
             raise RuntimeError(
                 f"Invalid product response: {data}"
             )
+
 
         return result
 
@@ -553,24 +672,40 @@ class DeltaClient:
                 now_ist().timestamp()
             )
 
+
             if end_ts <= start_ts:
+
                 return None, None
 
+
             data = self.api(
+
                 "GET",
+
                 "/v2/history/candles",
+
                 params={
-                    "resolution": "1m",
-                    "symbol": self.symbol,
-                    "start": start_ts,
-                    "end": end_ts,
+
+                    "resolution":
+                        "1m",
+
+                    "symbol":
+                        self.symbol,
+
+                    "start":
+                        start_ts,
+
+                    "end":
+                        end_ts,
                 },
             )
+
 
             candles = data.get(
                 "result",
                 []
             )
+
 
             if (
                 not isinstance(
@@ -579,87 +714,123 @@ class DeltaClient:
                 )
                 or not candles
             ):
+
                 return None, None
 
+
             highest = None
+
             lowest = None
 
-            for c in candles:
+
+            for candle in candles:
 
                 try:
 
                     if isinstance(
-                        c,
+                        candle,
                         dict
                     ):
 
                         ts_raw = (
-                            c.get("time")
-                            or c.get("timestamp")
-                            or c.get("start")
+                            candle.get("time")
+                            or candle.get("timestamp")
+                            or candle.get("start")
                         )
 
-                        h_raw = c.get("high")
-                        l_raw = c.get("low")
+                        high_raw = (
+                            candle.get("high")
+                        )
+
+                        low_raw = (
+                            candle.get("low")
+                        )
+
 
                     elif (
-                        isinstance(c, list)
-                        and len(c) >= 4
+                        isinstance(
+                            candle,
+                            list
+                        )
+                        and len(candle) >= 4
                     ):
 
-                        ts_raw = c[0]
-                        h_raw = c[2]
-                        l_raw = c[3]
+                        ts_raw = candle[0]
+
+                        high_raw = candle[2]
+
+                        low_raw = candle[3]
+
 
                     else:
 
                         continue
 
+
                     if ts_raw is not None:
 
-                        ts = float(ts_raw)
+                        ts = float(
+                            ts_raw
+                        )
 
-                        if ts > 100000000000:
+
+                        if (
+                            ts
+                            > 100000000000
+                        ):
+
                             ts /= 1000.0
+
 
                         if (
                             ts < start_ts
                             or ts > end_ts
                         ):
+
                             continue
 
-                    h = Decimal(
-                        str(h_raw)
+
+                    high = Decimal(
+                        str(high_raw)
                     )
 
-                    l = Decimal(
-                        str(l_raw)
+                    low = Decimal(
+                        str(low_raw)
                     )
+
 
                     if (
-                        h > 0
+                        high > 0
                         and (
                             highest is None
-                            or h > highest
+                            or high > highest
                         )
                     ):
 
-                        highest = h
+                        highest = high
+
 
                     if (
-                        l > 0
+                        low > 0
                         and (
                             lowest is None
-                            or l < lowest
+                            or low < lowest
                         )
                     ):
 
-                        lowest = l
+                        lowest = low
+
 
                 except Exception:
+
                     continue
 
-            return highest, lowest
+
+            return (
+                highest,
+                lowest
+            )
+
 
         except Exception as e:
 
@@ -681,22 +852,29 @@ class DeltaClient:
     ):
 
         data = self.api(
+
             "GET",
+
             "/v2/positions",
+
             params={
-                "product_id": int(
-                    product_id
-                )
+
+                "product_id":
+                    int(product_id)
             },
+
             auth=True,
         )
+
 
         result = data.get(
             "result",
             {}
         )
 
+
         pos_item = {}
+
 
         if isinstance(
             result,
@@ -704,6 +882,7 @@ class DeltaClient:
         ):
 
             pos_item = result
+
 
         elif isinstance(
             result,
@@ -728,7 +907,9 @@ class DeltaClient:
                 ):
 
                     pos_item = p
+
                     break
+
 
             if (
                 not pos_item
@@ -741,39 +922,80 @@ class DeltaClient:
 
                 pos_item = result[0]
 
+
         if not pos_item:
 
             return {
-                "size": 0,
-                "entry_price": None,
-                "stop_loss": None,
-                "liquidation_price": None,
-                "bankruptcy_price": None,
-                "margin": None,
-                "mark_price": None,
-                "unrealized_pnl": 0,
-                "leverage": None,
+
+                "size":
+                    0,
+
+                "entry_price":
+                    None,
+
+                "stop_loss":
+                    None,
+
+                "liquidation_price":
+                    None,
+
+                "bankruptcy_price":
+                    None,
+
+                "margin":
+                    None,
+
+                "mark_price":
+                    None,
+
+                "unrealized_pnl":
+                    0,
+
+                "leverage":
+                    None,
             }
 
 
         raw_entry = (
-            pos_item.get("entry_price")
-            or pos_item.get("entry")
-            or pos_item.get("avg_price")
-            or pos_item.get("average_price")
-            or pos_item.get("price")
+
+            pos_item.get(
+                "entry_price"
+            )
+
+            or pos_item.get(
+                "entry"
+            )
+
+            or pos_item.get(
+                "avg_price"
+            )
+
+            or pos_item.get(
+                "average_price"
+            )
+
+            or pos_item.get(
+                "price"
+            )
         )
+
 
         try:
 
             entry_val = (
-                float(raw_entry)
+
+                float(
+                    raw_entry
+                )
+
                 if (
                     raw_entry is not None
                     and float(raw_entry) > 0
                 )
+
                 else None
             )
+
 
         except Exception:
 
@@ -781,21 +1003,37 @@ class DeltaClient:
 
 
         lev_val = (
-            pos_item.get("leverage")
-            or pos_item.get("user_leverage")
-            or pos_item.get("effective_leverage")
+
+            pos_item.get(
+                "leverage"
+            )
+
+            or pos_item.get(
+                "user_leverage"
+            )
+
+            or pos_item.get(
+                "effective_leverage"
+            )
         )
 
 
-        def fval(key):
+        def fval(
+            key
+        ):
 
             try:
 
-                value = pos_item.get(key)
+                value = pos_item.get(
+                    key
+                )
 
                 return (
+
                     float(value)
+
                     if value is not None
+
                     else None
                 )
 
@@ -807,12 +1045,14 @@ class DeltaClient:
         try:
 
             raw_size = int(
+
                 pos_item.get(
                     "size",
                     0
                 )
                 or 0
             )
+
 
         except Exception:
 
@@ -822,12 +1062,14 @@ class DeltaClient:
         try:
 
             unrealized = float(
+
                 pos_item.get(
                     "unrealized_pnl",
                     0
                 )
                 or 0
             )
+
 
         except Exception:
 
@@ -837,10 +1079,14 @@ class DeltaClient:
         try:
 
             leverage = (
+
                 int(lev_val)
+
                 if lev_val
+
                 else None
             )
+
 
         except Exception:
 
@@ -890,10 +1136,12 @@ class DeltaClient:
             auth=True
         )
 
+
         result = data.get(
             "result",
             []
         )
+
 
         if isinstance(
             result,
@@ -902,20 +1150,26 @@ class DeltaClient:
 
             result = [result]
 
+
         for wallet in result:
 
             if not isinstance(
                 wallet,
                 dict
             ):
+
                 continue
 
+
             asset = str(
+
                 wallet.get(
                     "asset_symbol",
                     ""
                 )
+
             ).upper()
+
 
             if asset in (
                 "USD",
@@ -923,19 +1177,23 @@ class DeltaClient:
             ):
 
                 value = (
+
                     wallet.get(
                         "available_balance"
                     )
+
                     or wallet.get(
                         "balance"
                     )
                 )
+
 
                 if value is not None:
 
                     return Decimal(
                         str(value)
                     )
+
 
         raise RuntimeError(
             "USD/USDT balance not found."
@@ -953,13 +1211,17 @@ class DeltaClient:
     ):
 
         self.api(
+
             "POST",
+
             f"/v2/products/{product_id}/orders/leverage",
+
             body={
-                "leverage": str(
-                    leverage_val
-                )
+
+                "leverage":
+                    str(leverage_val)
             },
+
             auth=True,
         )
 
@@ -976,87 +1238,119 @@ class DeltaClient:
         balance_fraction
     ):
 
-        bal = self.balance()
+        balance = self.balance()
+
 
         margin = (
-            bal
+            balance
             * balance_fraction
         )
+
 
         notional = (
             margin
             * leverage
         )
 
+
         contract_value = Decimal(
+
             str(
+
                 product_info.get(
                     "contract_value"
                 )
+
                 or product_info.get(
                     "contract_value_usd"
                 )
+
                 or "0.001"
             )
         )
 
+
         if contract_value <= 0:
+
             contract_value = Decimal(
                 "0.001"
             )
 
+
         raw = (
+
             notional
             / price
             / contract_value
         )
 
+
         increment = Decimal(
+
             str(
+
                 product_info.get(
                     "lot_size"
                 )
+
                 or product_info.get(
                     "order_size_increment"
                 )
+
                 or "1"
             )
         )
 
+
         minimum = Decimal(
+
             str(
+
                 product_info.get(
                     "min_order_size"
                 )
+
                 or product_info.get(
                     "minimum_order_size"
                 )
+
                 or increment
             )
         )
 
+
         if increment <= 0:
+
             increment = Decimal("1")
 
+
         size_decimal = (
+
             raw / increment
+
         ).to_integral_value(
+
             rounding=ROUND_DOWN
+
         ) * increment
+
 
         if size_decimal < minimum:
 
             size_decimal = minimum
 
+
         size = int(
             size_decimal
         )
+
 
         if size <= 0:
 
             raise RuntimeError(
                 "Order size calculated as zero."
             )
+
 
         return size
 
@@ -1073,15 +1367,20 @@ class DeltaClient:
         try:
 
             return self.api(
+
                 "DELETE",
+
                 "/v2/orders/all",
+
                 body={
-                    "product_id": int(
-                        product_id
-                    )
+
+                    "product_id":
+                        int(product_id)
                 },
+
                 auth=True,
             )
+
 
         except Exception as e:
 
@@ -1103,9 +1402,11 @@ class DeltaClient:
     ):
 
         return (
+
             f"{prefix}_"
             f"{int(time.time() * 1000)}_"
             f"{uuid.uuid4().hex[:10]}"
+
         )[-32:]
 
 
@@ -1143,10 +1444,15 @@ class DeltaClient:
                 ),
         }
 
+
         return self.api(
+
             "POST",
+
             "/v2/orders",
+
             body=body,
+
             auth=True
         )
 
@@ -1162,17 +1468,24 @@ class DeltaClient:
     ):
 
         if size == 0:
+
             return None
+
 
         self.cancel_all_orders(
             product_id
         )
 
+
         side = (
+
             "sell"
+
             if size > 0
+
             else "buy"
         )
+
 
         body = {
 
@@ -1200,10 +1513,15 @@ class DeltaClient:
                 ),
         }
 
+
         return self.api(
+
             "POST",
+
             "/v2/orders",
+
             body=body,
+
             auth=True
         )
 
@@ -1217,33 +1535,50 @@ class DeltaClient:
         try:
 
             data = self.api(
+
                 "GET",
+
                 f"/v2/tickers/{self.symbol}"
             )
 
-            res = data.get(
+
+            result = data.get(
                 "result"
             )
 
+
             if isinstance(
-                res,
+                result,
                 dict
             ):
 
-                p = (
-                    res.get("close")
-                    or res.get("spot_price")
-                    or res.get("ltp")
-                )
+                price = (
 
-                if p is not None:
-
-                    return Decimal(
-                        str(p)
+                    result.get(
+                        "close"
                     )
 
+                    or result.get(
+                        "spot_price"
+                    )
+
+                    or result.get(
+                        "ltp"
+                    )
+                )
+
+
+                if price is not None:
+
+                    return Decimal(
+                        str(price)
+                    )
+
+
         except Exception:
+
             pass
+
 
         return None
 
@@ -1260,11 +1595,13 @@ def load_trade_history(
         unique_id
     )
 
+
     if not os.path.exists(
         filename
     ):
 
         return []
+
 
     try:
 
@@ -1276,14 +1613,19 @@ def load_trade_history(
 
             data = json.load(f)
 
+
         return (
+
             data
+
             if isinstance(
                 data,
                 list
             )
+
             else []
         )
+
 
     except Exception:
 
@@ -1296,9 +1638,11 @@ def save_trade_history(
 ):
 
     atomic_write_json(
+
         account_history_file(
             unique_id
         ),
+
         history
     )
 
@@ -1325,34 +1669,54 @@ def calculate_trade_pnl(
             str(abs(size))
         )
 
-        cv = Decimal(
+
+        contract_value = Decimal(
+
             str(
+
                 product_info.get(
                     "contract_value"
                 )
+
                 or product_info.get(
                     "contract_value_usd"
                 )
+
                 or "0.001"
             )
         )
 
-        if cv <= 0:
-            cv = Decimal("0.001")
+
+        if contract_value <= 0:
+
+            contract_value = Decimal(
+                "0.001"
+            )
+
 
         if direction == "LONG":
 
             return (
-                (exit_val - entry)
+
+                (
+                    exit_val
+                    - entry
+                )
                 * qty
-                * cv
+                * contract_value
             )
 
+
         return (
-            (entry - exit_val)
+
+            (
+                entry
+                - exit_val
+            )
             * qty
-            * cv
+            * contract_value
         )
+
 
     except Exception:
 
@@ -1371,9 +1735,13 @@ def calculate_statistics(
             trades
         )
 
+
         wins = [
+
             t
+
             for t in trades
+
             if float(
                 t.get(
                     "pnl",
@@ -1383,9 +1751,13 @@ def calculate_statistics(
             ) > 0
         ]
 
+
         losses = [
+
             t
+
             for t in trades
+
             if float(
                 t.get(
                     "pnl",
@@ -1395,7 +1767,9 @@ def calculate_statistics(
             ) < 0
         ]
 
+
         pnl = sum(
+
             Decimal(
                 str(
                     t.get(
@@ -1405,8 +1779,10 @@ def calculate_statistics(
                     or 0
                 )
             )
+
             for t in trades
         )
+
 
         return {
 
@@ -1433,24 +1809,27 @@ def calculate_statistics(
         }
 
 
-    today_str = (
-        now_ist().strftime(
-            "%Y-%m-%d"
-        )
+    today = now_ist().strftime(
+        "%Y-%m-%d"
     )
 
+
     today_trades = [
-        t
-        for t in history
+
+        trade
+
+        for trade in history
+
         if str(
-            t.get(
+            trade.get(
                 "date",
                 ""
             )
         ).startswith(
-            today_str
+            today
         )
     ]
+
 
     return {
 
@@ -1487,32 +1866,41 @@ class BreakoutSARBot:
             account_id
         )
 
+
         self.symbol = (
             symbol
             .strip()
             .upper()
         )
 
+
         self.strategy_key = (
+
             f"breakout_sar_"
             f"{self.symbol.lower()}"
         )
 
+
         self.unique_id = (
+
             f"{account_id}_"
             f"{self.symbol}_"
             f"{self.strategy_key}"
         )
 
+
         self.account_name = (
+
             f"{account_name} "
             f"[{self.symbol}: "
             f"Breakout + Reversal]"
         )
 
+
         self.account_type = (
             account_type
         )
+
 
         self.subscription = (
             subscription or {}
@@ -1520,6 +1908,7 @@ class BreakoutSARBot:
 
 
         self.client = DeltaClient(
+
             api_key,
             api_secret,
             account_name,
@@ -1528,20 +1917,38 @@ class BreakoutSARBot:
 
 
         self.product = None
+
         self.product_id = 0
 
+
+        # =============================================================
+        # SESSION
+        # =============================================================
 
         self.session_start = None
 
         self.day_high = None
+
         self.day_low = None
 
 
+        # =============================================================
+        # MARKET PRICE
+        # =============================================================
+
         self.last_price = None
+
         self.prev_price = None
 
+        self.last_strategy_price = None
+
+
+        # =============================================================
+        # BOT STATE
+        # =============================================================
 
         self.ready = False
+
         self.trading_armed = False
 
         self.bot_enabled = False
@@ -1551,9 +1958,9 @@ class BreakoutSARBot:
         self.manual_squareoff_flag = False
 
 
-        # -------------------------------------------------------------
-        # LOCAL STRATEGY POSITION
-        # -------------------------------------------------------------
+        # =============================================================
+        # POSITION
+        # =============================================================
 
         self.position = None
 
@@ -1563,29 +1970,34 @@ class BreakoutSARBot:
 
         self.size = 0
 
-
-        self.last_checked_candle_time = 0
-
-
         self.is_reversal_position = False
 
+
+        # =============================================================
+        # BREAKOUT STATE
+        #
+        # True  = flat and allowed to wait for HIGH/LOW break
+        # False = already entered a trade
+        # =============================================================
 
         self.base_breakout_ready = True
 
 
-        self.last_strategy_price = None
+        # =============================================================
+        # 5M TRAILING
+        # =============================================================
+
+        self.last_checked_candle_time = 0
 
 
-        # -------------------------------------------------------------
+        # =============================================================
         # EXECUTION SAFETY
-        # -------------------------------------------------------------
+        # =============================================================
 
         self.lock = threading.RLock()
 
         self.order_in_progress = False
 
-        # True when exchange execution cannot yet be conclusively
-        # classified as filled/flat.
         self.execution_uncertain = False
 
         self.execution_unknown_since = None
@@ -1595,11 +2007,21 @@ class BreakoutSARBot:
         self.last_execution_time = 0.0
 
 
+        # =============================================================
+        # DEFAULT SETTINGS
+        # =============================================================
+
         self.leverage = (
+
             Decimal("200")
+
             if "BTC" in self.symbol
+
             else Decimal("100")
         )
+
+
+        # EXACTLY 10% MARGIN
 
         self.balance_fraction = (
             Decimal("0.10")
@@ -1618,27 +2040,34 @@ class BreakoutSARBot:
     def is_expired(self):
 
         if self.account_type == "primary":
+
             return False
 
-        expiry_str = (
-            self.subscription.get(
-                "expiry"
-            )
+
+        expiry = self.subscription.get(
+            "expiry"
         )
 
-        if not expiry_str:
+
+        if not expiry:
+
             return False
+
 
         try:
 
             return (
+
                 now_ist().date()
+
                 >
+
                 datetime.strptime(
-                    expiry_str,
+                    expiry,
                     "%Y-%m-%d"
                 ).date()
             )
+
 
         except Exception:
 
@@ -1655,10 +2084,13 @@ class BreakoutSARBot:
             self.unique_id
         )
 
+
         if not os.path.exists(
             filename
         ):
+
             return
+
 
         try:
 
@@ -1720,7 +2152,7 @@ class BreakoutSARBot:
             self.stop_loss = float(
                 state.get(
                     "stop_loss",
-                    0.0
+                    0
                 )
                 or 0
             )
@@ -1815,8 +2247,9 @@ class BreakoutSARBot:
             )
 
 
-            # Never trust old local FLAT state as proof of exchange FLAT.
-            # Actual exchange reconciliation happens before trading.
+            # ---------------------------------------------------------
+            # Local FLAT is never trusted over exchange.
+            # ---------------------------------------------------------
 
             if (
                 not self.position
@@ -1824,9 +2257,13 @@ class BreakoutSARBot:
             ):
 
                 self.position = None
+
                 self.size = 0
+
                 self.entry_price = None
+
                 self.is_reversal_position = False
+
 
         except Exception as e:
 
@@ -1916,10 +2353,13 @@ class BreakoutSARBot:
                 self.execution_uncertain,
         }
 
+
         atomic_write_json(
+
             account_state_file(
                 self.unique_id
             ),
+
             data
         )
 
@@ -1931,7 +2371,9 @@ class BreakoutSARBot:
     def prepare_product(self):
 
         if self.product_id:
+
             return True
+
 
         try:
 
@@ -1939,11 +2381,14 @@ class BreakoutSARBot:
                 self.client.product()
             )
 
+
             self.product_id = int(
                 self.product["id"]
             )
 
+
             return True
+
 
         except Exception as e:
 
@@ -1970,47 +2415,68 @@ class BreakoutSARBot:
                 now_ist().timestamp()
             )
 
+
             start_ts = (
+
                 end_ts
                 - limit * 5 * 60
             )
 
+
             data = self.client.api(
+
                 "GET",
+
                 "/v2/history/candles",
+
                 params={
-                    "resolution": "5m",
-                    "symbol": self.symbol,
-                    "start": start_ts,
-                    "end": end_ts,
+
+                    "resolution":
+                        "5m",
+
+                    "symbol":
+                        self.symbol,
+
+                    "start":
+                        start_ts,
+
+                    "end":
+                        end_ts,
                 },
             )
+
 
             candles = data.get(
                 "result",
                 []
             )
 
+
             formatted = []
 
-            for c in candles:
+
+            for candle in candles:
 
                 try:
 
                     if isinstance(
-                        c,
+                        candle,
                         dict
                     ):
 
                         ts = float(
-                            c.get("time")
-                            or c.get("timestamp")
-                            or c.get("start")
+
+                            candle.get("time")
+                            or candle.get("timestamp")
+                            or candle.get("start")
                             or 0
                         )
 
+
                         if ts > 100000000000:
+
                             ts /= 1000.0
+
 
                         formatted.append({
 
@@ -2019,32 +2485,46 @@ class BreakoutSARBot:
 
                             "high":
                                 float(
-                                    c.get("high")
+                                    candle.get(
+                                        "high"
+                                    )
                                 ),
 
                             "low":
                                 float(
-                                    c.get("low")
+                                    candle.get(
+                                        "low"
+                                    )
                                 ),
 
                             "close":
                                 float(
-                                    c.get("close")
+                                    candle.get(
+                                        "close"
+                                    )
                                 ),
                         })
 
 
                     elif (
-                        isinstance(c, list)
-                        and len(c) >= 5
+
+                        isinstance(
+                            candle,
+                            list
+                        )
+
+                        and len(candle) >= 5
                     ):
 
                         ts = float(
-                            c[0]
+                            candle[0]
                         )
 
+
                         if ts > 100000000000:
+
                             ts /= 1000.0
+
 
                         formatted.append({
 
@@ -2052,16 +2532,24 @@ class BreakoutSARBot:
                                 ts,
 
                             "high":
-                                float(c[2]),
+                                float(
+                                    candle[2]
+                                ),
 
                             "low":
-                                float(c[3]),
+                                float(
+                                    candle[3]
+                                ),
 
                             "close":
-                                float(c[4]),
+                                float(
+                                    candle[4]
+                                ),
                         })
 
+
                 except Exception:
+
                     continue
 
 
@@ -2069,7 +2557,9 @@ class BreakoutSARBot:
                 key=lambda x: x["time"]
             )
 
+
             return formatted
+
 
         except Exception:
 
@@ -2087,19 +2577,33 @@ class BreakoutSARBot:
         if not self.product_id:
 
             return {
-                "size": 0,
-                "entry_price": None,
-                "stop_loss": self.stop_loss,
-                "unrealized_pnl": 0,
-                "leverage": None,
-                "liquidation_price": None,
+
+                "size":
+                    0,
+
+                "entry_price":
+                    None,
+
+                "stop_loss":
+                    self.stop_loss,
+
+                "unrealized_pnl":
+                    0,
+
+                "leverage":
+                    None,
+
+                "liquidation_price":
+                    None,
             }
+
 
         try:
 
             return self.client.position(
                 self.product_id
             )
+
 
         except Exception as e:
 
@@ -2126,49 +2630,55 @@ class BreakoutSARBot:
             + timeout
         )
 
-        last_pos = None
 
         while time.time() < deadline:
 
             try:
 
-                pos = self.client.position(
-                    self.product_id
+                position = (
+                    self.client.position(
+                        self.product_id
+                    )
                 )
 
-                last_pos = pos
 
-                ex_size = int(
-                    pos.get(
+                exchange_size = int(
+
+                    position.get(
                         "size",
                         0
                     )
                     or 0
                 )
 
-                if ex_size != 0:
+
+                if exchange_size != 0:
 
                     if (
                         expected_direction
                         == "LONG"
-                        and ex_size > 0
+                        and exchange_size > 0
                     ):
 
-                        return pos
+                        return position
 
 
                     if (
                         expected_direction
                         == "SHORT"
-                        and ex_size < 0
+                        and exchange_size < 0
                     ):
 
-                        return pos
+                        return position
 
 
-                    if expected_direction is None:
+                    if (
+                        expected_direction
+                        is None
+                    ):
 
-                        return pos
+                        return position
+
 
             except Exception as e:
 
@@ -2177,9 +2687,11 @@ class BreakoutSARBot:
                     f"Position confirmation error: {e}"
                 )
 
+
             time.sleep(
                 POSITION_POLL_INTERVAL
             )
+
 
         return None
 
@@ -2198,25 +2710,32 @@ class BreakoutSARBot:
             + timeout
         )
 
+
         while time.time() < deadline:
 
             try:
 
-                pos = self.client.position(
-                    self.product_id
+                position = (
+                    self.client.position(
+                        self.product_id
+                    )
                 )
 
-                ex_size = int(
-                    pos.get(
+
+                exchange_size = int(
+
+                    position.get(
                         "size",
                         0
                     )
                     or 0
                 )
 
-                if ex_size == 0:
+
+                if exchange_size == 0:
 
                     return True
+
 
             except Exception as e:
 
@@ -2225,20 +2744,17 @@ class BreakoutSARBot:
                     f"Flat confirmation error: {e}"
                 )
 
+
             time.sleep(
                 POSITION_POLL_INTERVAL
             )
+
 
         return False
 
 
     # -----------------------------------------------------------------
     # RECONCILE EXCHANGE STATE
-    #
-    # THIS IS ONE OF THE MOST IMPORTANT SAFETY FUNCTIONS.
-    #
-    # Local JSON is NOT treated as authority.
-    # Exchange position is authority.
     # -----------------------------------------------------------------
 
     def reconcile_exchange_state(
@@ -2255,9 +2771,12 @@ class BreakoutSARBot:
 
             try:
 
-                pos = self.client.position(
-                    self.product_id
+                position = (
+                    self.client.position(
+                        self.product_id
+                    )
                 )
+
 
             except Exception as e:
 
@@ -2266,19 +2785,24 @@ class BreakoutSARBot:
                     f"RECONCILE FAILED: {e}"
                 )
 
+
                 self.execution_uncertain = True
+
                 self.execution_unknown_since = (
+
                     self.execution_unknown_since
                     or time.time()
                 )
+
 
                 self.save()
 
                 return False
 
 
-            ex_size = int(
-                pos.get(
+            exchange_size = int(
+
+                position.get(
                     "size",
                     0
                 )
@@ -2290,26 +2814,24 @@ class BreakoutSARBot:
             # EXCHANGE HAS POSITION
             # =========================================================
 
-            if ex_size != 0:
+            if exchange_size != 0:
 
                 exchange_direction = (
+
                     "LONG"
-                    if ex_size > 0
+
+                    if exchange_size > 0
+
                     else "SHORT"
                 )
 
+
                 exchange_entry = (
-                    pos.get(
+                    position.get(
                         "entry_price"
                     )
                 )
 
-
-                # -----------------------------------------------------
-                # If local says flat but exchange has position,
-                # NEVER start another trade.
-                # Reconstruct local position.
-                # -----------------------------------------------------
 
                 if (
                     self.position is None
@@ -2317,81 +2839,94 @@ class BreakoutSARBot:
                 ):
 
                     logging.warning(
+
                         f"[{self.symbol}] "
                         f"RECONCILE: LOCAL FLAT BUT "
                         f"EXCHANGE HAS "
                         f"{exchange_direction} "
-                        f"SIZE={abs(ex_size)}. "
+                        f"SIZE={abs(exchange_size)}. "
                         f"ADOPTING EXCHANGE POSITION."
                     )
+
 
                     self.position = (
                         exchange_direction
                     )
 
+
                     self.size = abs(
-                        ex_size
+                        exchange_size
                     )
 
+
                     self.entry_price = (
+
                         float(exchange_entry)
+
                         if exchange_entry
+
                         else self.entry_price
                     )
 
+
                     if self.entry_price is None:
+
                         self.entry_price = (
                             self.last_price
                         )
 
-                    self.base_breakout_ready = (
-                        False
-                    )
+
+                    # Existing exchange position:
+                    # do not create another breakout order.
+
+                    self.base_breakout_ready = False
 
 
                 else:
-
-                    # -------------------------------------------------
-                    # Local and exchange disagree.
-                    # Exchange wins.
-                    # -------------------------------------------------
 
                     if (
                         self.position
                         != exchange_direction
                         or self.size
-                        != abs(ex_size)
+                        != abs(exchange_size)
                     ):
 
                         logging.error(
+
                             f"[{self.symbol}] "
                             f"RECONCILE MISMATCH | "
                             f"LOCAL={self.position}/{self.size} | "
-                            f"EXCHANGE={exchange_direction}/{abs(ex_size)} | "
-                            f"EXCHANGE STATE WINS."
+                            f"EXCHANGE={exchange_direction}/{abs(exchange_size)}"
                         )
+
 
                         self.position = (
                             exchange_direction
                         )
 
+
                         self.size = abs(
-                            ex_size
+                            exchange_size
                         )
+
 
                         if exchange_entry:
 
                             self.entry_price = (
-                                float(exchange_entry)
+                                float(
+                                    exchange_entry
+                                )
                             )
 
 
                 self.execution_uncertain = False
+
                 self.execution_unknown_since = None
 
                 self.last_reconciliation_time = (
                     time.time()
                 )
+
 
                 self.save()
 
@@ -2402,33 +2937,40 @@ class BreakoutSARBot:
             # EXCHANGE FLAT
             # =========================================================
 
-            if self.position and self.size > 0:
+            if (
+                self.position
+                and self.size > 0
+            ):
 
                 logging.warning(
+
                     f"[{self.symbol}] "
                     f"RECONCILE: LOCAL POSITION EXISTS "
                     f"BUT EXCHANGE IS FLAT."
                 )
 
-                # Do NOT fabricate a trade history here.
-                # If this happens after a crash, the exchange has
-                # already confirmed flat, so local state can safely
-                # become flat.
 
                 self.position = None
+
                 self.entry_price = None
+
                 self.size = 0
+
                 self.stop_loss = 0.0
+
                 self.is_reversal_position = False
+
                 self.base_breakout_ready = True
 
 
             self.execution_uncertain = False
+
             self.execution_unknown_since = None
 
             self.last_reconciliation_time = (
                 time.time()
             )
+
 
             self.save()
 
@@ -2453,18 +2995,27 @@ class BreakoutSARBot:
                     str(new_lev)
                 )
 
-                self.balance_fraction = Decimal(
-                    str(new_frac)
+
+                # Strategy uses fixed 10% margin.
+                # Ignore any different dashboard fraction.
+
+                self.balance_fraction = (
+                    Decimal("0.10")
                 )
+
 
                 if self.product_id:
 
                     self.client.set_leverage(
+
                         self.product_id,
+
                         self.leverage
                     )
 
+
                 self.save()
+
 
                 return {
 
@@ -2473,14 +3024,13 @@ class BreakoutSARBot:
 
                     "message":
                         (
-                            f"Saved "
-                            f"{self.symbol} Settings! "
-                            f"Lev: "
+                            f"Saved {self.symbol} Settings! "
+                            f"Default: "
                             f"{int(self.leverage)}x | "
-                            f"Margin: "
-                            f"{float(self.balance_fraction) * 100}%"
+                            f"Margin: 10%"
                         ),
                 }
+
 
             except Exception as e:
 
@@ -2495,7 +3045,7 @@ class BreakoutSARBot:
 
 
     # -----------------------------------------------------------------
-    # START
+    # START BOT
     # -----------------------------------------------------------------
 
     def start_bot(self):
@@ -2515,12 +3065,9 @@ class BreakoutSARBot:
 
 
             self.manual_squareoff_flag = False
+
             self.stop_reason = None
 
-
-            # ---------------------------------------------------------
-            # Product first.
-            # ---------------------------------------------------------
 
             if not self.prepare_product():
 
@@ -2534,11 +3081,7 @@ class BreakoutSARBot:
                 }
 
 
-            # ---------------------------------------------------------
-            # VERY IMPORTANT:
-            #
-            # Before starting, reconcile with exchange.
-            # ---------------------------------------------------------
+            # Exchange is authority.
 
             if not self.reconcile_exchange_state():
 
@@ -2549,6 +3092,7 @@ class BreakoutSARBot:
                 )
 
                 self.save()
+
 
                 return {
 
@@ -2569,6 +3113,7 @@ class BreakoutSARBot:
 
                 self.save()
 
+
                 return {
 
                     "success":
@@ -2585,7 +3130,6 @@ class BreakoutSARBot:
             self.bot_enabled = True
 
 
-            # If exchange is flat, base mode can be armed.
             if (
                 self.position is None
                 or self.size <= 0
@@ -2611,7 +3155,7 @@ class BreakoutSARBot:
 
 
     # -----------------------------------------------------------------
-    # STOP
+    # STOP BOT
     # -----------------------------------------------------------------
 
     def stop_bot(self):
@@ -2641,20 +3185,29 @@ class BreakoutSARBot:
                     self.size
                 )
 
+
                 try:
 
-                    close_sz = (
+                    close_size = (
+
                         old_size
+
                         if old_position == "LONG"
+
                         else -old_size
                     )
 
+
                     self.order_in_progress = True
 
+
                     self.client.close_position(
+
                         self.product_id,
-                        close_sz
+
+                        close_size
                     )
+
 
                     confirmed = (
                         self.wait_until_flat()
@@ -2664,52 +3217,66 @@ class BreakoutSARBot:
                     if confirmed:
 
                         self.finish_trade(
+
                             "MANUAL",
+
                             self.last_price or 0
                         )
 
+
                         self.position = None
+
                         self.entry_price = None
+
                         self.size = 0
+
                         self.stop_loss = 0.0
+
                         self.is_reversal_position = False
+
                         self.base_breakout_ready = True
 
                         self.execution_uncertain = False
+
                         self.execution_unknown_since = None
 
-                    else:
 
-                        # -------------------------------------------------
-                        # DO NOT PRETEND FLAT.
-                        # -------------------------------------------------
+                    else:
 
                         self.execution_uncertain = True
 
                         self.execution_unknown_since = (
+
                             self.execution_unknown_since
                             or time.time()
                         )
 
+
                         logging.error(
+
                             f"[{self.symbol}] "
                             f"MANUAL STOP: "
                             f"EXCHANGE DID NOT CONFIRM FLAT."
                         )
+
 
                 except Exception as e:
 
                     self.execution_uncertain = True
 
                     self.execution_unknown_since = (
+
                         self.execution_unknown_since
                         or time.time()
                     )
 
+
                     logging.error(
+
                         f"[{self.symbol}] "
                         f"Manual close failed: {e}"
                     )
+
 
                 finally:
 
@@ -2718,61 +3285,63 @@ class BreakoutSARBot:
 
             else:
 
-                # -------------------------------------------------------
-                # Before declaring flat, verify exchange if possible.
-                # -------------------------------------------------------
-
                 try:
 
                     if self.product_id:
 
-                        pos = (
+                        position = (
                             self.client.position(
                                 self.product_id
                             )
                         )
 
-                        ex_size = int(
-                            pos.get(
+
+                        exchange_size = int(
+
+                            position.get(
                                 "size",
                                 0
                             )
                             or 0
                         )
 
-                        if ex_size != 0:
+
+                        if exchange_size != 0:
 
                             self.execution_uncertain = True
 
                             self.execution_unknown_since = (
+
                                 self.execution_unknown_since
                                 or time.time()
                             )
 
-                            logging.error(
-                                f"[{self.symbol}] "
-                                f"STOP: LOCAL FLAT BUT "
-                                f"EXCHANGE HAS POSITION "
-                                f"{ex_size}."
-                            )
 
                         else:
 
                             self.position = None
+
                             self.entry_price = None
+
                             self.size = 0
+
                             self.stop_loss = 0.0
+
                             self.is_reversal_position = False
+
                             self.base_breakout_ready = True
+
 
                 except Exception as e:
 
                     self.execution_uncertain = True
 
                     self.execution_unknown_since = (
+
                         self.execution_unknown_since
                         or time.time()
                     )
+
 
                     logging.error(
                         f"[{self.symbol}] "
@@ -2805,23 +3374,24 @@ class BreakoutSARBot:
         now
     ):
 
-        current_sess = (
+        current_session = (
             get_current_session_start(
                 now
             )
         )
 
+
         if (
             self.session_start
-            == current_sess
+            == current_session
         ):
+
             return True
 
 
-        # -------------------------------------------------------------
-        # If old session has an exchange position,
-        # close it and CONFIRM flat before resetting session.
-        # -------------------------------------------------------------
+        # =============================================================
+        # OLD SESSION POSITION MUST BE CLOSED
+        # =============================================================
 
         if self.product_id:
 
@@ -2832,21 +3402,22 @@ class BreakoutSARBot:
                 )
 
             except Exception:
+
                 pass
 
 
-        if self.product_id:
-
             try:
 
-                exchange_pos = (
+                exchange_position = (
                     self.client.position(
                         self.product_id
                     )
                 )
 
-                ex_size = int(
-                    exchange_pos.get(
+
+                exchange_size = int(
+
+                    exchange_position.get(
                         "size",
                         0
                     )
@@ -2854,28 +3425,34 @@ class BreakoutSARBot:
                 )
 
 
-                if ex_size != 0:
+                if exchange_size != 0:
 
                     logging.info(
+
                         f"[{self.symbol}] "
                         f"SESSION CHANGE: closing "
-                        f"existing exchange position "
-                        f"{ex_size}"
+                        f"existing position "
+                        f"{exchange_size}"
                     )
 
 
                     self.order_in_progress = True
 
+
                     try:
 
                         self.client.close_position(
+
                             self.product_id,
-                            ex_size
+
+                            exchange_size
                         )
+
 
                         confirmed = (
                             self.wait_until_flat()
                         )
+
 
                     finally:
 
@@ -2885,18 +3462,21 @@ class BreakoutSARBot:
                     if not confirmed:
 
                         logging.error(
+
                             f"[{self.symbol}] "
                             f"SESSION CHANGE: "
-                            f"POSITION NOT FLAT. "
-                            f"OLD SESSION STATE RETAINED."
+                            f"POSITION NOT FLAT."
                         )
+
 
                         self.execution_uncertain = True
 
                         self.execution_unknown_since = (
+
                             self.execution_unknown_since
                             or time.time()
                         )
+
 
                         self.save()
 
@@ -2904,53 +3484,78 @@ class BreakoutSARBot:
 
 
                     self.finish_trade(
+
                         "SESSION_CHANGE_CLOSE",
+
                         self.last_price or 0
                     )
 
 
-                # Exchange is confirmed flat.
+                # Confirmed flat.
+
                 self.position = None
+
                 self.entry_price = None
+
                 self.size = 0
+
                 self.stop_loss = 0.0
+
                 self.is_reversal_position = False
 
+                self.base_breakout_ready = True
+
                 self.execution_uncertain = False
+
                 self.execution_unknown_since = None
+
 
             except Exception as e:
 
                 logging.error(
+
                     f"[{self.symbol}] "
                     f"Session change error: {e}"
                 )
 
+
                 self.execution_uncertain = True
 
                 self.execution_unknown_since = (
+
                     self.execution_unknown_since
                     or time.time()
                 )
+
 
                 self.save()
 
                 return False
 
 
-        # -------------------------------------------------------------
+        # =============================================================
         # NEW SESSION
-        # -------------------------------------------------------------
+        # =============================================================
 
-        self.session_start = current_sess
+        self.session_start = (
+            current_session
+        )
+
 
         self.day_high = None
+
         self.day_low = None
+
 
         self.prev_price = None
 
+        self.last_strategy_price = None
+
+
         self.position = None
+
         self.entry_price = None
+
         self.size = 0
 
         self.stop_loss = 0.0
@@ -2959,6 +3564,7 @@ class BreakoutSARBot:
 
         self.base_breakout_ready = True
 
+
         self.manual_squareoff_flag = False
 
         self.ready = False
@@ -2966,8 +3572,6 @@ class BreakoutSARBot:
         self.trading_armed = False
 
         self.last_checked_candle_time = 0
-
-        self.last_strategy_price = None
 
 
         if (
@@ -2978,19 +3582,22 @@ class BreakoutSARBot:
             )
         ):
 
-            h, l = (
+            high, low = (
                 self.client.get_session_high_low(
                     self.session_start
                 )
             )
 
+
             if (
-                h is not None
-                and l is not None
+                high is not None
+                and low is not None
             ):
 
-                self.day_high = h
-                self.day_low = l
+                self.day_high = high
+
+                self.day_low = low
+
                 self.ready = True
 
 
@@ -3000,7 +3607,7 @@ class BreakoutSARBot:
 
 
     # -----------------------------------------------------------------
-    # PREPARE
+    # PREPARE SESSION
     # -----------------------------------------------------------------
 
     def prepare(
@@ -3035,19 +3642,23 @@ class BreakoutSARBot:
             or self.day_low is None
         ):
 
-            h, l = (
+            high, low = (
+
                 self.client.get_session_high_low(
+
                     self.session_start
                 )
             )
 
+
             if (
-                h is not None
-                and l is not None
+                high is not None
+                and low is not None
             ):
 
-                self.day_high = h
-                self.day_low = l
+                self.day_high = high
+
+                self.day_low = low
 
                 self.ready = True
 
@@ -3076,6 +3687,7 @@ class BreakoutSARBot:
             str(leverage)
         )
 
+
         if (
             entry <= 0
             or lev <= 0
@@ -3084,21 +3696,28 @@ class BreakoutSARBot:
             return None
 
 
-        m_raw = (
+        maintenance_raw = (
+
             self.product.get(
                 "maintenance_margin",
                 0
             )
+
             if self.product
+
             else 0
         )
 
-        t_raw = (
+
+        taker_raw = (
+
             self.product.get(
                 "taker_commission_rate",
                 0
             )
+
             if self.product
+
             else 0
         )
 
@@ -3106,11 +3725,13 @@ class BreakoutSARBot:
         try:
 
             maintenance = (
+
                 Decimal(
-                    str(m_raw)
+                    str(maintenance_raw)
                 )
                 / Decimal("100")
             )
+
 
         except Exception:
 
@@ -3120,8 +3741,9 @@ class BreakoutSARBot:
         try:
 
             taker_fee = Decimal(
-                str(t_raw)
+                str(taker_raw)
             )
+
 
         except Exception:
 
@@ -3129,6 +3751,7 @@ class BreakoutSARBot:
 
 
         effective_mm = (
+
             maintenance
             + taker_fee
             + Decimal("0.0010")
@@ -3137,17 +3760,51 @@ class BreakoutSARBot:
 
         if direction == "LONG":
 
-            return entry * (
-                Decimal("1")
-                - Decimal("1") / lev
-                + effective_mm
+            return (
+
+                entry
+                * (
+                    Decimal("1")
+                    - Decimal("1") / lev
+                    + effective_mm
+                )
             )
 
 
-        return entry * (
-            Decimal("1")
-            + Decimal("1") / lev
-            - effective_mm
+        return (
+
+            entry
+            * (
+                Decimal("1")
+                + Decimal("1") / lev
+                - effective_mm
+            )
+        )
+
+
+    # -----------------------------------------------------------------
+    # LEVERAGE LADDER
+    # -----------------------------------------------------------------
+
+    def get_leverage_ladder(self):
+
+        if "BTC" in self.symbol:
+
+            return list(
+                range(
+                    200,
+                    9,
+                    -10
+                )
+            )
+
+
+        return list(
+            range(
+                100,
+                9,
+                -10
+            )
         )
 
 
@@ -3164,9 +3821,13 @@ class BreakoutSARBot:
     ):
 
         if (
+
             self.is_expired()
+
             or self.manual_squareoff_flag
+
             or not self.bot_enabled
+
             or is_weekend(self.symbol)
         ):
 
@@ -3176,9 +3837,9 @@ class BreakoutSARBot:
         if self.execution_uncertain:
 
             logging.error(
+
                 f"[{self.symbol}] "
-                f"ENTRY BLOCKED: "
-                f"execution state is uncertain."
+                f"ENTRY BLOCKED: execution uncertain."
             )
 
             return False
@@ -3187,9 +3848,9 @@ class BreakoutSARBot:
         if self.order_in_progress:
 
             logging.warning(
+
                 f"[{self.symbol}] "
-                f"ENTRY BLOCKED: "
-                f"another execution is active."
+                f"ENTRY BLOCKED: another order active."
             )
 
             return False
@@ -3200,102 +3861,95 @@ class BreakoutSARBot:
 
         try:
 
-            # ---------------------------------------------------------
-            # Exchange MUST be flat.
-            # ---------------------------------------------------------
+            # =========================================================
+            # EXCHANGE MUST BE FLAT
+            # =========================================================
 
-            current_pos = (
+            current_position = (
                 self.client.position(
                     self.product_id
                 )
             )
 
+
             current_size = int(
-                current_pos.get(
+
+                current_position.get(
                     "size",
                     0
                 )
                 or 0
             )
 
+
             if current_size != 0:
 
                 logging.warning(
+
                     f"[{self.symbol}] "
                     f"ENTRY BLOCKED: exchange already has "
                     f"position {current_size}"
                 )
+
 
                 self.reconcile_exchange_state()
 
                 return False
 
 
-            # ---------------------------------------------------------
-            # Leverage ladder.
-            # ---------------------------------------------------------
+            # =========================================================
+            # EXACT LEVERAGE LADDER
+            # =========================================================
 
-            lev_ladder = (
-
-                list(
-                    range(
-                        200,
-                        9,
-                        -10
-                    )
-                )
-
-                if "BTC" in self.symbol
-
-                else [
-
-                    100,
-                    90,
-                    80,
-                    70,
-                    60,
-                    50,
-                    40,
-                    30,
-                    20,
-                    10,
-                ]
+            leverage_ladder = (
+                self.get_leverage_ladder()
             )
 
 
-            chosen_lev = (
-                self.leverage
-            )
+            confirmed_position = None
 
-            confirmed_pos = None
+            chosen_leverage = None
 
-            order_done = False
+            order_completed = False
 
 
-            for lev in lev_ladder:
+            # =========================================================
+            # TRY LEVERAGES FROM HIGH TO LOW
+            # =========================================================
 
-                lev_decimal = Decimal(
-                    str(lev)
+            for leverage_value in leverage_ladder:
+
+                leverage_decimal = Decimal(
+                    str(leverage_value)
                 )
 
 
-                candidate_liq = (
+                candidate_liquidation = (
+
                     self.estimate_liquidation_price(
+
                         price,
-                        lev_decimal,
+
+                        leverage_decimal,
+
                         direction
                     )
                 )
 
 
-                if candidate_liq is None:
+                if candidate_liquidation is None:
 
                     continue
 
 
+                # -----------------------------------------------------
+                # LONG:
+                # liquidation must remain below SL
+                # -----------------------------------------------------
+
                 if (
                     direction == "LONG"
-                    and candidate_liq
+                    and candidate_liquidation
                     >= Decimal(
                         str(initial_sl)
                     )
@@ -3304,9 +3958,14 @@ class BreakoutSARBot:
                     continue
 
 
+                # -----------------------------------------------------
+                # SHORT:
+                # liquidation must remain above SL
+                # -----------------------------------------------------
+
                 if (
                     direction == "SHORT"
-                    and candidate_liq
+                    and candidate_liquidation
                     <= Decimal(
                         str(initial_sl)
                     )
@@ -3317,77 +3976,100 @@ class BreakoutSARBot:
 
                 try:
 
+                    # -------------------------------------------------
+                    # Set leverage BEFORE order
+                    # -------------------------------------------------
+
                     self.client.set_leverage(
+
                         self.product_id,
-                        lev_decimal
+
+                        leverage_decimal
                     )
 
 
+                    # -------------------------------------------------
+                    # Calculate size using exactly 10% margin
+                    # -------------------------------------------------
+
                     size = (
+
                         self.client.order_size(
+
                             self.product,
+
                             Decimal(
                                 str(price)
                             ),
-                            lev_decimal,
-                            self.balance_fraction,
+
+                            leverage_decimal,
+
+                            Decimal("0.10")
                         )
                     )
 
 
                     side = (
+
                         "buy"
+
                         if direction == "LONG"
+
                         else "sell"
                     )
 
 
-                    # -------------------------------------------------
-                    # ONE order only.
-                    # -------------------------------------------------
+                    # =================================================
+                    # ONE AND ONLY ONE ORDER
+                    # =================================================
 
-                    order_response = (
+                    response = (
+
                         self.client.market_entry_pure(
+
                             self.product_id,
+
                             side,
+
                             size
                         )
                     )
 
 
                     logging.info(
+
                         f"[{self.symbol}] "
                         f"ENTRY ORDER SENT | "
                         f"{direction} | "
                         f"Size={size} | "
-                        f"Lev={lev_decimal} | "
-                        f"Response={order_response}"
+                        f"Lev={leverage_decimal} | "
+                        f"Response={response}"
                     )
 
 
-                    # -------------------------------------------------
-                    # Confirm actual exchange position.
-                    # -------------------------------------------------
+                    # =================================================
+                    # CONFIRM EXCHANGE POSITION
+                    # =================================================
 
-                    confirmed_pos = (
+                    confirmed_position = (
+
                         self.wait_for_position(
-                            expected_direction=direction,
-                            timeout=ENTRY_CONFIRM_TIMEOUT
+
+                            expected_direction=
+                                direction,
+
+                            timeout=
+                                ENTRY_CONFIRM_TIMEOUT
                         )
                     )
 
 
-                    if confirmed_pos is None:
+                    if confirmed_position is None:
 
-                        # -------------------------------------------------
-                        # CRITICAL:
+                        # IMPORTANT:
                         #
-                        # DO NOT TRY NEXT LEVERAGE.
-                        # DO NOT SEND SECOND ORDER.
-                        #
-                        # The first order may have been accepted but
-                        # position update may be delayed.
-                        # -------------------------------------------------
+                        # Never try another leverage.
+                        # The order may have been accepted.
 
                         self.execution_uncertain = True
 
@@ -3395,19 +4077,24 @@ class BreakoutSARBot:
                             time.time()
                         )
 
+
                         self.save()
 
+
                         logging.error(
+
                             f"[{self.symbol}] "
                             f"ENTRY EXECUTION UNKNOWN. "
-                            f"NO SECOND ORDER WILL BE SENT."
+                            f"NO SECOND ORDER."
                         )
+
 
                         return False
 
 
                     confirmed_size = int(
-                        confirmed_pos.get(
+
+                        confirmed_position.get(
                             "size",
                             0
                         )
@@ -3447,11 +4134,12 @@ class BreakoutSARBot:
                         return False
 
 
-                    chosen_lev = (
-                        lev_decimal
+                    chosen_leverage = (
+                        leverage_decimal
                     )
 
-                    order_done = True
+
+                    order_completed = True
 
                     break
 
@@ -3459,78 +4147,87 @@ class BreakoutSARBot:
                 except Exception as e:
 
                     logging.warning(
+
                         f"[{self.symbol}] "
-                        f"Entry attempt "
-                        f"{lev}x failed: {e}"
+                        f"Entry attempt {leverage_value}x failed: {e}"
                     )
 
+
                     # -------------------------------------------------
-                    # IMPORTANT:
-                    #
-                    # Before trying another leverage, check whether
-                    # exchange actually got a position.
+                    # Before trying next leverage, check exchange.
                     # -------------------------------------------------
 
                     try:
 
-                        check_pos = (
+                        check_position = (
                             self.client.position(
                                 self.product_id
                             )
                         )
 
+
                         check_size = int(
-                            check_pos.get(
+
+                            check_position.get(
                                 "size",
                                 0
                             )
                             or 0
                         )
 
+
                         if check_size != 0:
 
                             exchange_direction = (
+
                                 "LONG"
+
                                 if check_size > 0
+
                                 else "SHORT"
                             )
+
 
                             if (
                                 exchange_direction
                                 == direction
                             ):
 
-                                confirmed_pos = (
-                                    check_pos
+                                confirmed_position = (
+                                    check_position
                                 )
 
-                                chosen_lev = (
-                                    lev_decimal
+                                chosen_leverage = (
+                                    leverage_decimal
                                 )
 
-                                order_done = True
+                                order_completed = True
 
                                 break
 
-                            else:
 
-                                self.execution_uncertain = True
+                            # Opposite position means unknown state.
 
-                                self.execution_unknown_since = (
-                                    time.time()
-                                )
+                            self.execution_uncertain = True
 
-                                self.save()
+                            self.execution_unknown_since = (
+                                time.time()
+                            )
 
-                                logging.error(
-                                    f"[{self.symbol}] "
-                                    f"ENTRY ERROR BUT EXCHANGE "
-                                    f"HAS OPPOSITE POSITION "
-                                    f"{check_size}. "
-                                    f"NO MORE ORDERS."
-                                )
+                            self.save()
 
-                                return False
+
+                            logging.error(
+
+                                f"[{self.symbol}] "
+                                f"ENTRY ERROR BUT OPPOSITE "
+                                f"POSITION EXISTS. "
+                                f"NO MORE ORDERS."
+                            )
+
+
+                            return False
+
 
                     except Exception:
 
@@ -3545,27 +4242,30 @@ class BreakoutSARBot:
                         return False
 
 
-            if not order_done:
+            if not order_completed:
 
                 return False
 
 
-            # ---------------------------------------------------------
-            # Exchange confirmation succeeded.
-            # Only now modify local strategy state.
-            # ---------------------------------------------------------
+            # =========================================================
+            # EXCHANGE CONFIRMED
+            # =========================================================
 
             exchange_size = abs(
+
                 int(
-                    confirmed_pos.get(
+
+                    confirmed_position.get(
                         "size",
                         0
                     )
                 )
             )
 
+
             exchange_entry = (
-                confirmed_pos.get(
+
+                confirmed_position.get(
                     "entry_price"
                 )
             )
@@ -3605,7 +4305,7 @@ class BreakoutSARBot:
 
 
             self.leverage = (
-                chosen_lev
+                chosen_leverage
             )
 
 
@@ -3618,6 +4318,8 @@ class BreakoutSARBot:
                 bool(is_reversal)
             )
 
+
+            # Once in a position, no base breakout allowed.
 
             self.base_breakout_ready = (
                 False
@@ -3637,13 +4339,14 @@ class BreakoutSARBot:
 
 
             logging.info(
+
                 f"[{self.symbol}] "
                 f"CONFIRMED ENTER | "
                 f"{direction} | "
                 f"{'REVERSAL' if is_reversal else 'BASE'} | "
                 f"Entry={self.entry_price} | "
                 f"Size={self.size} | "
-                f"Lev={int(chosen_lev)}x | "
+                f"Lev={int(chosen_leverage)}x | "
                 f"SL={self.stop_loss}"
             )
 
@@ -3654,6 +4357,7 @@ class BreakoutSARBot:
         except Exception as e:
 
             logging.error(
+
                 f"[{self.symbol}] "
                 f"Entry error: {e}"
             )
@@ -3676,29 +4380,39 @@ class BreakoutSARBot:
         exit_price
     ):
 
+        # -------------------------------------------------------------
+        # Local state says flat.
+        # Verify exchange.
+        # -------------------------------------------------------------
+
         if (
             not self.position
             or self.size <= 0
         ):
 
-            # Verify exchange instead of assuming flat.
             try:
 
-                pos = (
+                exchange_position = (
                     self.client.position(
                         self.product_id
                     )
                 )
 
-                if int(
-                    pos.get(
+
+                exchange_size = int(
+
+                    exchange_position.get(
                         "size",
                         0
                     )
                     or 0
-                ) == 0:
+                )
+
+
+                if exchange_size == 0:
 
                     return True
+
 
                 self.execution_uncertain = True
 
@@ -3709,6 +4423,7 @@ class BreakoutSARBot:
                 self.save()
 
                 return False
+
 
             except Exception:
 
@@ -3726,9 +4441,9 @@ class BreakoutSARBot:
         if self.order_in_progress:
 
             logging.warning(
+
                 f"[{self.symbol}] "
-                f"CLOSE BLOCKED: "
-                f"another execution active."
+                f"CLOSE BLOCKED: execution active."
             )
 
             return False
@@ -3737,37 +4452,18 @@ class BreakoutSARBot:
         self.order_in_progress = True
 
 
-        old_position = (
-            self.position
-        )
-
-        old_size = (
-            self.size
-        )
-
-        old_entry_price = (
-            self.entry_price
-        )
-
-        old_reversal_state = (
-            self.is_reversal_position
-        )
-
-
         try:
 
-            # ---------------------------------------------------------
-            # Re-read exchange position before close.
-            # ---------------------------------------------------------
-
-            exchange_pos = (
+            exchange_position = (
                 self.client.position(
                     self.product_id
                 )
             )
 
+
             exchange_size = int(
-                exchange_pos.get(
+
+                exchange_position.get(
                     "size",
                     0
                 )
@@ -3775,26 +4471,39 @@ class BreakoutSARBot:
             )
 
 
+            # ---------------------------------------------------------
+            # Exchange already flat
+            # ---------------------------------------------------------
+
             if exchange_size == 0:
 
                 logging.warning(
+
                     f"[{self.symbol}] "
                     f"{reason}: exchange already flat."
                 )
+
 
                 self.finish_trade(
                     reason,
                     exit_price
                 )
 
+
                 self.position = None
+
                 self.entry_price = None
+
                 self.size = 0
+
                 self.stop_loss = 0.0
+
                 self.is_reversal_position = False
+
                 self.base_breakout_ready = True
 
                 self.execution_uncertain = False
+
                 self.execution_unknown_since = None
 
                 self.save()
@@ -3802,13 +4511,15 @@ class BreakoutSARBot:
                 return True
 
 
-            # Exchange is authoritative.
-            close_sz = exchange_size
-
+            # ---------------------------------------------------------
+            # Close using exchange position size.
+            # ---------------------------------------------------------
 
             self.client.close_position(
+
                 self.product_id,
-                close_sz
+
+                exchange_size
             )
 
 
@@ -3819,13 +4530,10 @@ class BreakoutSARBot:
 
             if not confirmed:
 
-                # -----------------------------------------------------
                 # CRITICAL:
-                #
-                # Do NOT clear local state.
-                # Do NOT create reversal.
-                # Do NOT start another trade.
-                # -----------------------------------------------------
+                # Keep local position.
+                # No reversal.
+                # No new order.
 
                 self.execution_uncertain = True
 
@@ -3833,44 +4541,49 @@ class BreakoutSARBot:
                     time.time()
                 )
 
+
                 logging.error(
+
                     f"[{self.symbol}] "
                     f"{reason}: "
-                    f"EXCHANGE DID NOT CONFIRM FLAT. "
-                    f"NEW TRADES BLOCKED."
+                    f"EXCHANGE DID NOT CONFIRM FLAT."
                 )
+
 
                 self.save()
 
                 return False
 
 
-            # ---------------------------------------------------------
-            # Exchange is confirmed flat.
-            # Only NOW finish history and clear local state.
-            # ---------------------------------------------------------
-
-            actual_exit = (
-                exit_price
-            )
+            # =========================================================
+            # FLAT CONFIRMED
+            # =========================================================
 
             self.finish_trade(
+
                 reason,
-                actual_exit
+
+                exit_price
             )
 
 
             self.position = None
+
             self.entry_price = None
+
             self.size = 0
+
             self.stop_loss = 0.0
+
             self.is_reversal_position = False
 
 
+            # Flat means breakout mode can be armed.
             self.base_breakout_ready = True
 
 
             self.execution_uncertain = False
+
             self.execution_unknown_since = None
 
 
@@ -3878,6 +4591,7 @@ class BreakoutSARBot:
 
 
             logging.info(
+
                 f"[{self.symbol}] "
                 f"CLOSE CONFIRMED | "
                 f"Reason={reason}"
@@ -3890,16 +4604,20 @@ class BreakoutSARBot:
         except Exception as e:
 
             logging.error(
+
                 f"[{self.symbol}] "
                 f"Close error: {e}"
             )
 
+
             self.execution_uncertain = True
 
             self.execution_unknown_since = (
+
                 self.execution_unknown_since
                 or time.time()
             )
+
 
             self.save()
 
@@ -3912,7 +4630,7 @@ class BreakoutSARBot:
 
 
     # -----------------------------------------------------------------
-    # REVERSAL
+    # REVERSAL FROM SL
     # -----------------------------------------------------------------
 
     def reverse_from_sl(
@@ -3938,6 +4656,7 @@ class BreakoutSARBot:
             self.position
         )
 
+
         old_is_reversal = (
             self.is_reversal_position
         )
@@ -3946,22 +4665,26 @@ class BreakoutSARBot:
         # =============================================================
         # REVERSAL POSITION SL
         #
-        # NO SECOND REVERSAL.
+        # NO SECOND REVERSAL
         # =============================================================
 
         if old_is_reversal:
 
             logging.info(
+
                 f"[{self.symbol}] "
-                f"REVERSAL {old_direction} "
-                f"SL HIT | FLAT | "
-                f"NO SECOND REVERSAL"
+                f"REVERSAL {old_direction} SL HIT "
+                f"-> FLAT "
+                f"-> NO SECOND REVERSAL"
             )
 
 
             closed = (
+
                 self.close_current_position(
+
                     "REVERSAL_SL_HIT",
+
                     price
                 )
             )
@@ -3973,22 +4696,31 @@ class BreakoutSARBot:
 
 
             # ---------------------------------------------------------
-            # Consume current price if it creates a new extreme.
-            # Next base breakout must be beyond it.
+            # IMPORTANT:
+            #
+            # Do NOT reset day_high/day_low.
+            #
+            # If SL-hit price itself made a new extreme,
+            # consume that extreme.
+            #
+            # Next entry must break the CURRENT extreme.
             # ---------------------------------------------------------
 
             changed = False
 
 
+            price_decimal = Decimal(
+                str(price)
+            )
+
+
             if (
                 self.day_high is None
-                or price > float(
-                    self.day_high
-                )
+                or price_decimal > self.day_high
             ):
 
-                self.day_high = Decimal(
-                    str(price)
+                self.day_high = (
+                    price_decimal
                 )
 
                 changed = True
@@ -3996,20 +4728,46 @@ class BreakoutSARBot:
 
             if (
                 self.day_low is None
-                or price < float(
-                    self.day_low
-                )
+                or price_decimal < self.day_low
             ):
 
-                self.day_low = Decimal(
-                    str(price)
+                self.day_low = (
+                    price_decimal
                 )
 
                 changed = True
 
 
+            # ---------------------------------------------------------
+            # Explicitly re-arm base breakout.
+            # No trade is entered on this same tick.
+            # ---------------------------------------------------------
+
+            self.base_breakout_ready = True
+
+            self.last_strategy_price = float(
+                price
+            )
+
+
             if changed:
+
                 self.save()
+
+            else:
+
+                self.save()
+
+
+            logging.info(
+
+                f"[{self.symbol}] "
+                f"REVERSAL COMPLETE -> FLAT | "
+                f"WAITING FOR NEW CURRENT "
+                f"HIGH/LOW BREAK | "
+                f"High={self.day_high} | "
+                f"Low={self.day_low}"
+            )
 
 
             return True
@@ -4027,6 +4785,7 @@ class BreakoutSARBot:
 
 
             logging.info(
+
                 f"[{self.symbol}] "
                 f"BASE LONG SL HIT "
                 f"-> ONE SHORT REVERSAL | "
@@ -4036,12 +4795,14 @@ class BreakoutSARBot:
 
             # ---------------------------------------------------------
             # First close LONG.
-            # close_current_position() waits for actual FLAT.
             # ---------------------------------------------------------
 
             closed = (
+
                 self.close_current_position(
+
                     "SL_HIT_REVERSAL",
+
                     price
                 )
             )
@@ -4050,6 +4811,7 @@ class BreakoutSARBot:
             if not closed:
 
                 logging.error(
+
                     f"[{self.symbol}] "
                     f"LONG close not confirmed. "
                     f"SHORT reversal BLOCKED."
@@ -4059,7 +4821,7 @@ class BreakoutSARBot:
 
 
             # ---------------------------------------------------------
-            # Do NOT allow base breakout between close and reversal.
+            # Prevent base breakout while reversal is being opened.
             # ---------------------------------------------------------
 
             self.base_breakout_ready = False
@@ -4068,13 +4830,17 @@ class BreakoutSARBot:
 
 
             # ---------------------------------------------------------
-            # Now and ONLY now enter SHORT.
+            # ONE SHORT REVERSAL ONLY
             # ---------------------------------------------------------
 
             success = self.enter(
+
                 "SHORT",
+
                 price,
+
                 reversal_sl,
+
                 is_reversal=True
             )
 
@@ -4082,6 +4848,7 @@ class BreakoutSARBot:
             if success:
 
                 logging.info(
+
                     f"[{self.symbol}] "
                     f"ONE SHORT REVERSAL CONFIRMED."
                 )
@@ -4090,42 +4857,49 @@ class BreakoutSARBot:
 
 
             # ---------------------------------------------------------
-            # Reversal entry failed.
-            #
-            # Exchange must still be confirmed flat before allowing
-            # future trading.
+            # Reversal failed.
+            # Check exchange.
             # ---------------------------------------------------------
 
             try:
 
-                pos = (
+                position = (
                     self.client.position(
                         self.product_id
                     )
                 )
 
-                ex_size = int(
-                    pos.get(
+
+                exchange_size = int(
+
+                    position.get(
                         "size",
                         0
                     )
                     or 0
                 )
 
-                if ex_size == 0:
+
+                if exchange_size == 0:
 
                     self.position = None
+
                     self.entry_price = None
+
                     self.size = 0
+
                     self.stop_loss = 0.0
+
                     self.is_reversal_position = False
 
                     self.base_breakout_ready = True
 
                     self.execution_uncertain = False
+
                     self.execution_unknown_since = None
 
                     self.save()
+
 
                 else:
 
@@ -4136,6 +4910,7 @@ class BreakoutSARBot:
                     )
 
                     self.save()
+
 
             except Exception:
 
@@ -4163,6 +4938,7 @@ class BreakoutSARBot:
 
 
             logging.info(
+
                 f"[{self.symbol}] "
                 f"BASE SHORT SL HIT "
                 f"-> ONE LONG REVERSAL | "
@@ -4170,9 +4946,16 @@ class BreakoutSARBot:
             )
 
 
+            # ---------------------------------------------------------
+            # Close SHORT first.
+            # ---------------------------------------------------------
+
             closed = (
+
                 self.close_current_position(
+
                     "SL_HIT_REVERSAL",
+
                     price
                 )
             )
@@ -4181,6 +4964,7 @@ class BreakoutSARBot:
             if not closed:
 
                 logging.error(
+
                     f"[{self.symbol}] "
                     f"SHORT close not confirmed. "
                     f"LONG reversal BLOCKED."
@@ -4194,10 +4978,18 @@ class BreakoutSARBot:
             self.save()
 
 
+            # ---------------------------------------------------------
+            # ONE LONG REVERSAL
+            # ---------------------------------------------------------
+
             success = self.enter(
+
                 "LONG",
+
                 price,
+
                 reversal_sl,
+
                 is_reversal=True
             )
 
@@ -4205,6 +4997,7 @@ class BreakoutSARBot:
             if success:
 
                 logging.info(
+
                     f"[{self.symbol}] "
                     f"ONE LONG REVERSAL CONFIRMED."
                 )
@@ -4212,36 +5005,49 @@ class BreakoutSARBot:
                 return True
 
 
+            # ---------------------------------------------------------
+            # Reversal failed.
+            # ---------------------------------------------------------
+
             try:
 
-                pos = (
+                position = (
                     self.client.position(
                         self.product_id
                     )
                 )
 
-                ex_size = int(
-                    pos.get(
+
+                exchange_size = int(
+
+                    position.get(
                         "size",
                         0
                     )
                     or 0
                 )
 
-                if ex_size == 0:
+
+                if exchange_size == 0:
 
                     self.position = None
+
                     self.entry_price = None
+
                     self.size = 0
+
                     self.stop_loss = 0.0
+
                     self.is_reversal_position = False
 
                     self.base_breakout_ready = True
 
                     self.execution_uncertain = False
+
                     self.execution_unknown_since = None
 
                     self.save()
+
 
                 else:
 
@@ -4252,6 +5058,7 @@ class BreakoutSARBot:
                     )
 
                     self.save()
+
 
             except Exception:
 
@@ -4279,19 +5086,22 @@ class BreakoutSARBot:
         with self.lock:
 
             if not self.product_id:
+
                 return
 
 
             try:
 
-                exchange_pos = (
+                exchange_position = (
                     self.client.position(
                         self.product_id
                     )
                 )
 
-                ex_size = int(
-                    exchange_pos.get(
+
+                exchange_size = int(
+
+                    exchange_position.get(
                         "size",
                         0
                     )
@@ -4299,7 +5109,7 @@ class BreakoutSARBot:
                 )
 
 
-                if ex_size != 0:
+                if exchange_size != 0:
 
                     if self.order_in_progress:
 
@@ -4308,16 +5118,21 @@ class BreakoutSARBot:
 
                     self.order_in_progress = True
 
+
                     try:
 
                         self.client.close_position(
+
                             self.product_id,
-                            ex_size
+
+                            exchange_size
                         )
+
 
                         confirmed = (
                             self.wait_until_flat()
                         )
+
 
                     finally:
 
@@ -4326,77 +5141,106 @@ class BreakoutSARBot:
 
                     if confirmed:
 
-                        # If local position exists, record trade.
                         if (
                             self.position
                             and self.size > 0
                         ):
 
                             self.finish_trade(
+
                                 "WEEKEND_CLOSE",
+
                                 self.last_price or 0
                             )
 
+
                         self.position = None
+
                         self.entry_price = None
+
                         self.size = 0
+
                         self.stop_loss = 0.0
+
                         self.is_reversal_position = False
+
                         self.base_breakout_ready = True
 
                         self.execution_uncertain = False
+
                         self.execution_unknown_since = None
 
                         self.save()
 
+
                         logging.info(
+
                             f"[{self.symbol}] "
                             f"WEEKEND POSITION CLOSED."
                         )
+
 
                     else:
 
                         self.execution_uncertain = True
 
                         self.execution_unknown_since = (
-                            time.time()
+
+                            self.execution_unknown_since
+                            or time.time()
                         )
 
+
                         logging.error(
+
                             f"[{self.symbol}] "
                             f"WEEKEND CLOSE NOT CONFIRMED."
                         )
 
+
                         self.save()
+
 
                 else:
 
                     # Exchange confirms flat.
+
                     self.position = None
+
                     self.entry_price = None
+
                     self.size = 0
+
                     self.stop_loss = 0.0
+
                     self.is_reversal_position = False
+
                     self.base_breakout_ready = True
 
                     self.execution_uncertain = False
+
                     self.execution_unknown_since = None
 
                     self.save()
+
 
             except Exception as e:
 
                 self.execution_uncertain = True
 
                 self.execution_unknown_since = (
+
                     self.execution_unknown_since
                     or time.time()
                 )
 
+
                 logging.error(
+
                     f"[{self.symbol}] "
                     f"Weekend close error: {e}"
                 )
+
 
                 self.save()
 
@@ -4411,6 +5255,10 @@ class BreakoutSARBot:
     ):
 
         with self.lock:
+
+            # =========================================================
+            # BOT OFF
+            # =========================================================
 
             if (
                 not self.bot_enabled
@@ -4440,24 +5288,31 @@ class BreakoutSARBot:
 
 
             # =========================================================
-            # EXECUTION UNCERTAIN
+            # UNKNOWN EXECUTION
             #
-            # NEVER TRADE WHILE UNKNOWN.
+            # NO NEW ORDER
             # =========================================================
 
             if self.execution_uncertain:
 
-                # Occasionally reconcile.
                 if (
+
                     time.time()
                     - self.last_reconciliation_time
-                    >= EXECUTION_UNKNOWN_RECHECK_INTERVAL
+
+                    >=
+                    EXECUTION_UNKNOWN_RECHECK_INTERVAL
                 ):
 
                     self.reconcile_exchange_state()
 
+
                 return
 
+
+            # =========================================================
+            # PRICE
+            # =========================================================
 
             if price is None:
 
@@ -4465,13 +5320,16 @@ class BreakoutSARBot:
                     self.client.last_traded_price()
                 )
 
+
                 if price is None:
+
                     return
 
 
             new_price = float(
                 price
             )
+
 
             self.last_price = (
                 new_price
@@ -4483,8 +5341,10 @@ class BreakoutSARBot:
             # =========================================================
 
             if (
+
                 self.last_strategy_price
                 is not None
+
                 and new_price
                 == self.last_strategy_price
             ):
@@ -4497,22 +5357,8 @@ class BreakoutSARBot:
             )
 
 
-            if self.prev_price is None:
-
-                self.prev_price = (
-                    new_price
-                )
-
-                return
-
-
-            self.prev_price = (
-                new_price
-            )
-
-
             # =========================================================
-            # SESSION
+            # SESSION CHANGE
             # =========================================================
 
             if not self.check_session_change(
@@ -4522,18 +5368,33 @@ class BreakoutSARBot:
                 return
 
 
-            if (
-                not self.prepare(
-                    now
-                )
-                or not self.ready
+            # =========================================================
+            # PREPARE SESSION HIGH/LOW
+            # =========================================================
+
+            if not self.prepare(
+                now
             ):
 
                 return
 
 
+            if (
+                self.day_high is None
+                or self.day_low is None
+            ):
+
+                return
+
+
+            self.ready = True
+
+
             # =========================================================
-            # 05:45 ARM
+            # BEFORE 05:45
+            #
+            # Session high/low are already being built.
+            # No trade before 05:45.
             # =========================================================
 
             if now.time() < TRADING_START_TIME:
@@ -4542,6 +5403,12 @@ class BreakoutSARBot:
 
                 return
 
+
+            # =========================================================
+            # FIRST TICK AFTER 05:45
+            #
+            # Arm trading but DO NOT fire on stale state.
+            # =========================================================
 
             if not self.trading_armed:
 
@@ -4553,30 +5420,35 @@ class BreakoutSARBot:
 
 
             # =========================================================
-            # 5M CANDLES
+            # GET 5M CANDLES
             # =========================================================
 
             candles = (
                 self.get_5m_candles(
-                    limit=4
+                    limit=5
                 )
             )
+
 
             if len(candles) < 2:
 
                 return
 
 
+            # Last candle = current/incomplete.
+            # Previous candle = completed candle.
+
             prev_candle = (
                 candles[-2]
             )
 
-            curr_candle = (
+            current_candle = (
                 candles[-1]
             )
 
-            curr_time = (
-                curr_candle["time"]
+
+            current_candle_time = (
+                current_candle["time"]
             )
 
 
@@ -4585,21 +5457,26 @@ class BreakoutSARBot:
             # =========================================================
 
             if (
+
                 self.position == "LONG"
+
                 and self.size > 0
             ):
 
                 # -----------------------------------------------------
-                # CURRENT SL
+                # CURRENT STOP FIRST
                 # -----------------------------------------------------
 
                 if (
+
                     self.stop_loss > 0
+
                     and new_price
                     <= self.stop_loss
                 ):
 
                     logging.info(
+
                         f"[{self.symbol}] "
                         f"LONG SL HIT | "
                         f"Price={new_price} | "
@@ -4609,9 +5486,12 @@ class BreakoutSARBot:
 
 
                     self.reverse_from_sl(
+
                         new_price,
+
                         prev_candle
                     )
+
 
                     return
 
@@ -4621,38 +5501,52 @@ class BreakoutSARBot:
                 # -----------------------------------------------------
 
                 if (
-                    curr_time
-                    != self.last_checked_candle_time
+
+                    current_candle_time
+
+                    !=
+
+                    self.last_checked_candle_time
                 ):
 
                     new_sl = float(
                         prev_candle["low"]
                     )
 
+
                     self.stop_loss = (
                         new_sl
                     )
 
+
                     self.last_checked_candle_time = (
-                        curr_time
+                        current_candle_time
                     )
+
 
                     self.save()
 
 
                     logging.info(
+
                         f"[{self.symbol}] "
                         f"LONG TRAILING SL UPDATED | "
-                        f"New SL={new_sl}"
+                        f"SL={new_sl}"
                     )
 
 
+                    # -------------------------------------------------
+                    # Check immediately after trailing.
+                    # -------------------------------------------------
+
                     if (
+
                         new_price
                         <= self.stop_loss
                     ):
 
                         logging.info(
+
                             f"[{self.symbol}] "
                             f"NEW TRAILING LONG SL HIT | "
                             f"Price={new_price} | "
@@ -4661,33 +5555,49 @@ class BreakoutSARBot:
 
 
                         self.reverse_from_sl(
+
                             new_price,
+
                             prev_candle
                         )
 
+
                         return
+
+
+                # -----------------------------------------------------
+                # Position is active.
+                # Never execute base breakout.
+                # -----------------------------------------------------
+
+                return
 
 
             # =========================================================
             # ACTIVE SHORT
             # =========================================================
 
-            elif (
+            if (
+
                 self.position == "SHORT"
+
                 and self.size > 0
             ):
 
                 # -----------------------------------------------------
-                # CURRENT SL
+                # CURRENT STOP FIRST
                 # -----------------------------------------------------
 
                 if (
+
                     self.stop_loss > 0
+
                     and new_price
                     >= self.stop_loss
                 ):
 
                     logging.info(
+
                         f"[{self.symbol}] "
                         f"SHORT SL HIT | "
                         f"Price={new_price} | "
@@ -4697,9 +5607,12 @@ class BreakoutSARBot:
 
 
                     self.reverse_from_sl(
+
                         new_price,
+
                         prev_candle
                     )
+
 
                     return
 
@@ -4709,38 +5622,48 @@ class BreakoutSARBot:
                 # -----------------------------------------------------
 
                 if (
-                    curr_time
-                    != self.last_checked_candle_time
+
+                    current_candle_time
+
+                    !=
+
+                    self.last_checked_candle_time
                 ):
 
                     new_sl = float(
                         prev_candle["high"]
                     )
 
+
                     self.stop_loss = (
                         new_sl
                     )
 
+
                     self.last_checked_candle_time = (
-                        curr_time
+                        current_candle_time
                     )
+
 
                     self.save()
 
 
                     logging.info(
+
                         f"[{self.symbol}] "
                         f"SHORT TRAILING SL UPDATED | "
-                        f"New SL={new_sl}"
+                        f"SL={new_sl}"
                     )
 
 
                     if (
+
                         new_price
                         >= self.stop_loss
                     ):
 
                         logging.info(
+
                             f"[{self.symbol}] "
                             f"NEW TRAILING SHORT SL HIT | "
                             f"Price={new_price} | "
@@ -4749,140 +5672,189 @@ class BreakoutSARBot:
 
 
                         self.reverse_from_sl(
+
                             new_price,
+
                             prev_candle
                         )
+
 
                         return
 
 
+                # -----------------------------------------------------
+                # Position active.
+                # Never execute base breakout.
+                # -----------------------------------------------------
+
+                return
+
+
             # =========================================================
-            # BASE BREAKOUT
+            # FLAT BASE BREAKOUT
             # =========================================================
 
-            if (
+            if not (
+
                 self.position is None
+
                 and self.size == 0
+
                 and self.base_breakout_ready
+
                 and not self.manual_squareoff_flag
+
                 and not self.execution_uncertain
+
                 and not self.order_in_progress
+
                 and self.day_high is not None
+
                 and self.day_low is not None
             ):
 
-                current_high = float(
-                    self.day_high
-                )
-
-                current_low = float(
-                    self.day_low
-                )
+                return
 
 
-                # =====================================================
-                # NEW HIGH -> LONG
-                # =====================================================
+            current_high = float(
+                self.day_high
+            )
 
-                if new_price > current_high:
-
-                    initial_sl = float(
-                        prev_candle["low"]
-                    )
-
-
-                    # Consume breakout level BEFORE execution.
-                    self.day_high = Decimal(
-                        str(new_price)
-                    )
-
-                    self.save()
-
-
-                    logging.info(
-                        f"[{self.symbol}] "
-                        f"NEW HIGH BREAK | "
-                        f"OldHigh={current_high} | "
-                        f"NewHigh={new_price} | "
-                        f"BASE LONG | "
-                        f"Initial SL={initial_sl}"
-                    )
-
-
-                    success = self.enter(
-                        "LONG",
-                        new_price,
-                        initial_sl,
-                        is_reversal=False
-                    )
-
-
-                    if success:
-
-                        self.is_reversal_position = False
-                        self.base_breakout_ready = False
-                        self.save()
-
-                    return
-
-
-                # =====================================================
-                # NEW LOW -> SHORT
-                # =====================================================
-
-                if new_price < current_low:
-
-                    initial_sl = float(
-                        prev_candle["high"]
-                    )
-
-
-                    self.day_low = Decimal(
-                        str(new_price)
-                    )
-
-                    self.save()
-
-
-                    logging.info(
-                        f"[{self.symbol}] "
-                        f"NEW LOW BREAK | "
-                        f"OldLow={current_low} | "
-                        f"NewLow={new_price} | "
-                        f"BASE SHORT | "
-                        f"Initial SL={initial_sl}"
-                    )
-
-
-                    success = self.enter(
-                        "SHORT",
-                        new_price,
-                        initial_sl,
-                        is_reversal=False
-                    )
-
-
-                    if success:
-
-                        self.is_reversal_position = False
-                        self.base_breakout_ready = False
-                        self.save()
-
-                    return
+            current_low = float(
+                self.day_low
+            )
 
 
             # =========================================================
-            # UPDATE RUNNING SESSION EXTREMES
+            # CURRENT HIGH BREAK -> LONG
+            # =========================================================
+
+            if new_price > current_high:
+
+                initial_sl = float(
+                    prev_candle["low"]
+                )
+
+
+                # -----------------------------------------------------
+                # Consume the breakout level immediately.
+                # -----------------------------------------------------
+
+                self.day_high = Decimal(
+                    str(new_price)
+                )
+
+
+                self.save()
+
+
+                logging.info(
+
+                    f"[{self.symbol}] "
+                    f"CURRENT HIGH BREAK | "
+                    f"OldHigh={current_high} | "
+                    f"BreakPrice={new_price} | "
+                    f"BASE LONG | "
+                    f"SL={initial_sl}"
+                )
+
+
+                success = self.enter(
+
+                    "LONG",
+
+                    new_price,
+
+                    initial_sl,
+
+                    is_reversal=False
+                )
+
+
+                if success:
+
+                    self.base_breakout_ready = False
+
+                    self.is_reversal_position = False
+
+                    self.save()
+
+
+                return
+
+
+            # =========================================================
+            # CURRENT LOW BREAK -> SHORT
+            # =========================================================
+
+            if new_price < current_low:
+
+                initial_sl = float(
+                    prev_candle["high"]
+                )
+
+
+                # -----------------------------------------------------
+                # Consume the breakout level immediately.
+                # -----------------------------------------------------
+
+                self.day_low = Decimal(
+                    str(new_price)
+                )
+
+
+                self.save()
+
+
+                logging.info(
+
+                    f"[{self.symbol}] "
+                    f"CURRENT LOW BREAK | "
+                    f"OldLow={current_low} | "
+                    f"BreakPrice={new_price} | "
+                    f"BASE SHORT | "
+                    f"SL={initial_sl}"
+                )
+
+
+                success = self.enter(
+
+                    "SHORT",
+
+                    new_price,
+
+                    initial_sl,
+
+                    is_reversal=False
+                )
+
+
+                if success:
+
+                    self.base_breakout_ready = False
+
+                    self.is_reversal_position = False
+
+                    self.save()
+
+
+                return
+
+
+            # =========================================================
+            # NO BREAKOUT
             #
-            # EXTREME UPDATE ONLY.
-            # NO ORDER BY THIS BLOCK.
+            # Update current running session extremes only.
+            # No order is triggered by this block.
             # =========================================================
 
             changed = False
 
 
             if (
+
                 self.day_high is None
+
                 or new_price
                 > float(self.day_high)
             ):
@@ -4895,7 +5867,9 @@ class BreakoutSARBot:
 
 
             if (
+
                 self.day_low is None
+
                 or new_price
                 < float(self.day_low)
             ):
@@ -4923,7 +5897,9 @@ class BreakoutSARBot:
     ):
 
         if (
+
             not self.position
+
             or not self.entry_price
         ):
 
@@ -4931,10 +5907,15 @@ class BreakoutSARBot:
 
 
         pnl = calculate_trade_pnl(
+
             self.position,
+
             self.entry_price,
+
             exit_price,
+
             self.size,
+
             self.product
             or {
                 "contract_value":
@@ -4975,7 +5956,9 @@ class BreakoutSARBot:
                 ),
 
             "exit_price":
-                float(exit_price),
+                float(
+                    exit_price
+                ),
 
             "size":
                 self.size,
@@ -4989,7 +5972,9 @@ class BreakoutSARBot:
             "trade_type":
                 (
                     "REVERSAL"
+
                     if self.is_reversal_position
+
                     else "BREAKOUT"
                 ),
         }
@@ -4999,12 +5984,16 @@ class BreakoutSARBot:
             self.unique_id
         )
 
+
         history.append(
             trade
         )
 
+
         save_trade_history(
+
             self.unique_id,
+
             history
         )
 
@@ -5025,6 +6014,10 @@ def create_all_accounts():
     new_accounts = {}
 
 
+    # ================================================================
+    # PRIMARY
+    # ================================================================
+
     if (
         PRIMARY_API_KEY
         and PRIMARY_API_SECRET
@@ -5036,59 +6029,79 @@ def create_all_accounts():
         ):
 
             bot = BreakoutSARBot(
+
                 PRIMARY_ACCOUNT_ID,
+
                 PRIMARY_ACCOUNT_NAME,
+
                 "primary",
+
                 PRIMARY_API_KEY,
+
                 PRIMARY_API_SECRET,
+
                 symbol,
             )
+
 
             new_accounts[
                 bot.unique_id
             ] = bot
 
 
+    # ================================================================
+    # CLIENTS
+    # ================================================================
+
     clients_cfg = (
         load_clients_config()
     )
 
 
-    for cid, cdata in clients_cfg.items():
+    for client_id, client_data in clients_cfg.items():
 
-        sub_dict = {
+        subscription = {
 
             "start":
-                cdata.get(
+                client_data.get(
                     "subscription_start"
                 ),
 
             "expiry":
-                cdata.get(
+                client_data.get(
                     "subscription_expiry"
                 ),
         }
 
 
         api_key = (
-            cdata.get(
+
+            client_data.get(
                 "api_key"
             )
+
             or ""
         ).strip()
+
 
         api_secret = (
-            cdata.get(
+
+            client_data.get(
                 "api_secret"
             )
+
             or ""
         ).strip()
 
 
-        if not api_key or not api_secret:
+        if (
+            not api_key
+            or not api_secret
+        ):
 
             logging.warning(
-                f"Skipping client {cid}: "
+
+                f"Skipping client {client_id}: "
                 f"API credentials missing."
             )
 
@@ -5101,17 +6114,25 @@ def create_all_accounts():
         ):
 
             bot = BreakoutSARBot(
-                cid,
-                cdata.get(
+
+                client_id,
+
+                client_data.get(
                     "name",
                     "Client"
                 ),
+
                 "client",
+
                 api_key,
+
                 api_secret,
+
                 symbol,
-                sub_dict,
+
+                subscription,
             )
+
 
             new_accounts[
                 bot.unique_id
@@ -5127,6 +6148,7 @@ def load_all_accounts(
 
     global BOT_ACCOUNTS
 
+
     new_accounts = (
         create_all_accounts()
     )
@@ -5138,14 +6160,6 @@ def load_all_accounts(
             BOT_ACCOUNTS
         )
 
-
-        # -------------------------------------------------------------
-        # IMPORTANT:
-        #
-        # We do NOT stop all old bots.
-        # Rebuilding dashboard/account config must NOT close
-        # live trading positions.
-        # -------------------------------------------------------------
 
         for key, new_bot in new_accounts.items():
 
@@ -5161,19 +6175,16 @@ def load_all_accounts(
                 and preserve_running
             ):
 
-                # Keep existing live bot object.
-                # This preserves lock/state/order status.
                 new_accounts[key] = old_bot
 
 
-        # -------------------------------------------------------------
-        # New account objects only.
-        # -------------------------------------------------------------
-
-        BOT_ACCOUNTS = new_accounts
+        BOT_ACCOUNTS = (
+            new_accounts
+        )
 
 
     logging.info(
+
         f"ACCOUNTS LOADED | "
         f"Total bots={len(BOT_ACCOUNTS)}"
     )
@@ -5200,18 +6211,28 @@ class DashboardHandler(
         )
 
 
+    # -----------------------------------------------------------------
+    # GET
+    # -----------------------------------------------------------------
+
     def do_GET(self):
 
         parsed = urlparse(
             self.path
         )
 
+
         path = parsed.path
+
 
         query = parse_qs(
             parsed.query
         )
 
+
+        # =============================================================
+        # HEALTH
+        # =============================================================
 
         if path == "/api/health":
 
@@ -5227,9 +6248,14 @@ class DashboardHandler(
             return
 
 
+        # =============================================================
+        # DASHBOARD API
+        # =============================================================
+
         if path == "/api/dashboard":
 
             client_token = (
+
                 query.get(
                     "token",
                     [None]
@@ -5244,2388 +6270,24 @@ class DashboardHandler(
                 )
 
 
+            # ---------------------------------------------------------
+            # Client token filtering
+            # ---------------------------------------------------------
+
             if client_token:
 
                 clients_cfg = (
                     load_clients_config()
                 )
 
-                target_cid = None
+
+                target_client_id = None
 
 
-                for cid, cdata in clients_cfg.items():
+                for client_id, client_data in clients_cfg.items():
 
                     if (
-                        cdata.get(
-                            "token"
-                        )
-                        == client_token
-                    ):
 
-                        target_cid = cid
+                        client_data.get(
 
-                        break
-
-
-                if not target_cid:
-
-                    self.send_json(
-                        {
-                            "success":
-                                False,
-
-                            "message":
-                                "Unauthorized client token"
-                        },
-                        status=403
-                    )
-
-                    return
-
-
-                bots = [
-
-                    b
-
-                    for b in bots
-
-                    if b.base_account_id
-                    == target_cid
-                ]
-
-
-            accounts_data = []
-
-            clients_cfg = (
-                load_clients_config()
-            )
-
-
-            for b in bots:
-
-                try:
-
-                    price = float(
-                        b.client.last_traded_price()
-                        or 0
-                    )
-
-                    b.last_price = price
-
-
-                    # -------------------------------------------------
-                    # READ ONLY POSITION.
-                    #
-                    # NO STRATEGY STATE MUTATION.
-                    # -------------------------------------------------
-
-                    if b.product_id:
-
-                        pos = (
-                            b.read_exchange_position()
-                        )
-
-                    else:
-
-                        pos = {
-
-                            "size":
-                                0,
-
-                            "entry_price":
-                                None,
-
-                            "stop_loss":
-                                b.stop_loss,
-
-                            "unrealized_pnl":
-                                0,
-
-                            "leverage":
-                                None,
-
-                            "liquidation_price":
-                                None,
-                        }
-
-
-                    if pos is None:
-
-                        pos = {
-
-                            "size":
-                                0,
-
-                            "entry_price":
-                                None,
-
-                            "stop_loss":
-                                b.stop_loss,
-
-                            "unrealized_pnl":
-                                0,
-
-                            "leverage":
-                                None,
-
-                            "liquidation_price":
-                                None,
-                        }
-
-
-                    balance = float(
-                        b.client.balance()
-                    )
-
-
-                except Exception as e:
-
-                    logging.warning(
-                        f"[{b.symbol}] "
-                        f"Dashboard read error: {e}"
-                    )
-
-                    pos = {
-
-                        "size":
-                            0,
-
-                        "entry_price":
-                            None,
-
-                        "stop_loss":
-                            b.stop_loss,
-
-                        "unrealized_pnl":
-                            0,
-
-                        "leverage":
-                            None,
-
-                        "liquidation_price":
-                            None,
-                    }
-
-                    balance = 0
-
-                    price = 0
-
-
-                direction = "FLAT"
-
-
-                if (
-                    pos.get(
-                        "size",
-                        0
-                    ) != 0
-                ):
-
-                    direction = (
-                        "LONG"
-                        if pos["size"] > 0
-                        else "SHORT"
-                    )
-
-
-                history = (
-                    load_trade_history(
-                        b.unique_id
-                    )
-                )
-
-
-                stats = (
-                    calculate_statistics(
-                        history
-                    )
-                )
-
-
-                token = (
-
-                    clients_cfg.get(
-                        b.base_account_id,
-                        {}
-                    ).get(
-                        "token",
-                        ""
-                    )
-
-                    if b.account_type
-                    == "client"
-
-                    else ""
-                )
-
-
-                accounts_data.append({
-
-                    "account_id":
-                        b.unique_id,
-
-                    "account_name":
-                        b.account_name,
-
-                    "account_type":
-                        b.account_type,
-
-                    "symbol":
-                        b.symbol,
-
-                    "token":
-                        token,
-
-                    "server_ip":
-                        CACHED_SERVER_IP,
-
-                    "balance":
-                        balance,
-
-                    "current_price":
-                        price,
-
-                    "bot_enabled":
-                        (
-                            b.bot_enabled
-                            and not b.is_expired()
-                        ),
-
-                    "is_expired":
-                        b.is_expired(),
-
-                    "execution_uncertain":
-                        b.execution_uncertain,
-
-                    "leverage":
-                        (
-                            pos.get(
-                                "leverage"
-                            )
-                            or int(
-                                b.leverage
-                            )
-                        ),
-
-                    "balance_fraction":
-                        float(
-                            b.balance_fraction
-                        ),
-
-                    "base_breakout_ready":
-                        b.base_breakout_ready,
-
-                    "day_high":
-                        (
-                            float(
-                                b.day_high
-                            )
-                            if b.day_high
-                            is not None
-                            else None
-                        ),
-
-                    "day_low":
-                        (
-                            float(
-                                b.day_low
-                            )
-                            if b.day_low
-                            is not None
-                            else None
-                        ),
-
-                    "position": {
-
-                        "size":
-                            pos.get(
-                                "size",
-                                0
-                            ),
-
-                        "direction":
-                            direction,
-
-                        "entry_price":
-                            pos.get(
-                                "entry_price"
-                            ),
-
-                        "stop_loss":
-                            (
-                                b.stop_loss
-                                if b.bot_enabled
-                                else None
-                            ),
-
-                        "liquidation_price":
-                            pos.get(
-                                "liquidation_price"
-                            ),
-
-                        "unrealized_pnl":
-                            pos.get(
-                                "unrealized_pnl",
-                                0
-                            ),
-
-                        "is_reversal":
-                            (
-                                b.is_reversal_position
-                                if direction != "FLAT"
-                                else False
-                            ),
-                    },
-
-                    "statistics":
-                        stats,
-
-                    "trade_history":
-                        history,
-
-                    "subscription":
-                        b.subscription,
-                })
-
-
-            self.send_json({
-
-                "success":
-                    True,
-
-                "server_online":
-                    True,
-
-                "server_ip":
-                    CACHED_SERVER_IP,
-
-                "accounts":
-                    accounts_data,
-            })
-
-            return
-
-
-        if path in (
-            "/",
-            ""
-        ):
-
-            self.send_html_dashboard()
-
-            return
-
-
-        return super().do_GET()
-
-
-    # -----------------------------------------------------------------
-    # POST
-    # -----------------------------------------------------------------
-
-    def do_POST(self):
-
-        parsed = (
-            urlparse(
-                self.path
-            ).path
-        )
-
-
-        try:
-
-            length = int(
-                self.headers.get(
-                    "Content-Length",
-                    0
-                )
-            )
-
-            body = (
-
-                json.loads(
-                    self.rfile.read(
-                        length
-                    ).decode(
-                        "utf-8"
-                    )
-                )
-
-                if length > 0
-
-                else {}
-            )
-
-        except Exception:
-
-            self.send_json(
-                {
-                    "success":
-                        False,
-
-                    "message":
-                        "Invalid JSON"
-                },
-                400
-            )
-
-            return
-
-
-        clients_cfg = (
-            load_clients_config()
-        )
-
-
-        # =============================================================
-        # START
-        # =============================================================
-
-        if parsed == "/api/bot/start":
-
-            bot = BOT_ACCOUNTS.get(
-                body.get(
-                    "account_id"
-                )
-            )
-
-            if bot:
-
-                self.send_json(
-                    bot.start_bot()
-                )
-
-                return
-
-
-            self.send_json(
-                {
-                    "success":
-                        False,
-
-                    "message":
-                        "Not found"
-                },
-                404
-            )
-
-            return
-
-
-        # =============================================================
-        # STOP
-        # =============================================================
-
-        if parsed == "/api/bot/stop":
-
-            bot = BOT_ACCOUNTS.get(
-                body.get(
-                    "account_id"
-                )
-            )
-
-            if bot:
-
-                self.send_json(
-                    bot.stop_bot()
-                )
-
-                return
-
-
-            self.send_json(
-                {
-                    "success":
-                        False,
-
-                    "message":
-                        "Not found"
-                },
-                404
-            )
-
-            return
-
-
-        # =============================================================
-        # SETTINGS
-        # =============================================================
-
-        if parsed == "/api/bot/settings":
-
-            bot = BOT_ACCOUNTS.get(
-                body.get(
-                    "account_id"
-                )
-            )
-
-            if bot:
-
-                self.send_json(
-                    bot.update_settings(
-                        body.get(
-                            "leverage"
-                        ),
-                        body.get(
-                            "balance_fraction",
-                            0.10
-                        ),
-                    )
-                )
-
-                return
-
-
-            self.send_json(
-                {
-                    "success":
-                        False,
-
-                    "message":
-                        "Not found"
-                },
-                404
-            )
-
-            return
-
-
-        # =============================================================
-        # ADD CLIENT
-        # =============================================================
-
-        if parsed == "/api/client/add":
-
-            name = body.get(
-                "name"
-            )
-
-            key = body.get(
-                "api_key"
-            )
-
-            secret = body.get(
-                "api_secret"
-            )
-
-            expiry = body.get(
-                "subscription_expiry"
-            )
-
-
-            if (
-                not name
-                or not key
-                or not secret
-            ):
-
-                self.send_json(
-                    {
-                        "success":
-                            False,
-
-                        "message":
-                            "Missing fields"
-                    },
-                    400
-                )
-
-                return
-
-
-            cid = (
-                f"client_"
-                f"{int(time.time())}_"
-                f"{uuid.uuid4().hex[:6]}"
-            )
-
-
-            token = hashlib.sha256(
-                f"{cid}_{time.time()}".encode()
-            ).hexdigest()[:16]
-
-
-            clients_cfg[cid] = {
-
-                "name":
-                    name,
-
-                "api_key":
-                    key,
-
-                "api_secret":
-                    secret,
-
-                "token":
-                    token,
-
-                "subscription_start":
-                    now_ist().strftime(
-                        "%Y-%m-%d"
-                    ),
-
-                "subscription_expiry":
-                    expiry
-                    or "2099-12-31",
-
-                "subscription_fee":
-                    0,
-            }
-
-
-            save_clients_config(
-                clients_cfg
-            )
-
-
-            # ---------------------------------------------------------
-            # Do NOT stop existing bots.
-            # ---------------------------------------------------------
-
-            load_all_accounts(
-                preserve_running=True
-            )
-
-
-            self.send_json({
-
-                "success":
-                    True,
-
-                "message":
-                    "Client added successfully!",
-            })
-
-            return
-
-
-        # =============================================================
-        # DELETE CLIENT
-        # =============================================================
-
-        if parsed == "/api/client/delete":
-
-            acc_id = body.get(
-                "account_id",
-                ""
-            )
-
-
-            # Account IDs are:
-            # client_xxx_XAUTUSD_breakout_sar_xautusd
-            #
-            # The safest way is to match configured client IDs
-            # directly instead of assuming only two underscore parts.
-
-            base_cid = None
-
-            for cid in clients_cfg.keys():
-
-                if acc_id.startswith(
-                    cid + "_"
-                ):
-
-                    base_cid = cid
-                    break
-
-
-            if base_cid in clients_cfg:
-
-                # -----------------------------------------------------
-                # Stop only this client's bots.
-                # -----------------------------------------------------
-
-                with ACCOUNTS_LOCK:
-
-                    target_bots = [
-
-                        b
-
-                        for b in BOT_ACCOUNTS.values()
-
-                        if b.base_account_id
-                        == base_cid
-                    ]
-
-
-                for bot in target_bots:
-
-                    try:
-
-                        bot.stop_bot()
-
-                    except Exception as e:
-
-                        logging.error(
-                            f"Client delete stop error: {e}"
-                        )
-
-                        self.send_json({
-
-                            "success":
-                                False,
-
-                            "message":
-                                (
-                                    "Client has an active/uncertain "
-                                    "execution and could not be safely removed."
-                                )
-                        })
-
-                        return
-
-
-                del clients_cfg[
-                    base_cid
-                ]
-
-                save_clients_config(
-                    clients_cfg
-                )
-
-
-                with ACCOUNTS_LOCK:
-
-                    keys_to_del = [
-
-                        k
-
-                        for k in BOT_ACCOUNTS
-
-                        if BOT_ACCOUNTS[
-                            k
-                        ].base_account_id
-                        == base_cid
-                    ]
-
-
-                    for k in keys_to_del:
-
-                        del BOT_ACCOUNTS[
-                            k
-                        ]
-
-
-                self.send_json({
-
-                    "success":
-                        True,
-
-                    "message":
-                        "Client removed",
-                })
-
-                return
-
-
-            self.send_json({
-
-                "success":
-                    False,
-
-                "message":
-                    "Client not found",
-
-            }, 404)
-
-            return
-
-
-        self.send_json(
-            {
-                "success":
-                    False,
-
-                "message":
-                    "Not found"
-            },
-            404
-        )
-
-
-    # -----------------------------------------------------------------
-    # DASHBOARD HTML
-    # -----------------------------------------------------------------
-
-    def send_html_dashboard(self):
-
-        html = r"""<!DOCTYPE html>
-<html lang="en">
-
-<head>
-
-<meta charset="UTF-8">
-
-<meta
-name="viewport"
-content="width=device-width, initial-scale=1.0">
-
-<title>Delta Pro AutoTrader</title>
-
-<script src="https://cdn.tailwindcss.com"></script>
-
-</head>
-
-
-<body
-class="bg-slate-900 text-slate-100 min-h-screen p-4">
-
-
-<div
-class="max-w-md mx-auto space-y-6">
-
-
-<header class="text-center">
-
-<h1
-class="text-2xl font-bold text-amber-400">
-
-Delta Pro AutoTrader
-
-</h1>
-
-<p
-id="server-ip"
-class="text-xs text-slate-400 mt-1">
-
-IP: Loading...
-
-</p>
-
-</header>
-
-
-<div
-id="add-client-section"
-class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
-
-
-<h3
-class="font-bold text-sm text-amber-400 uppercase">
-
-Add New Client Account
-
-</h3>
-
-
-<input
-id="c-name"
-placeholder="Client Name"
-class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
-
-
-<input
-id="c-key"
-placeholder="Delta API Key"
-class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
-
-
-<input
-id="c-secret"
-type="password"
-placeholder="Delta API Secret"
-class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
-
-
-<input
-id="c-expiry"
-type="date"
-class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
-
-
-<button
-onclick="addClient()"
-class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg">
-
-Add Client & Generate Link
-
-</button>
-
-
-</div>
-
-
-<div
-id="accounts-container"
-class="space-y-6">
-
-
-<div
-class="text-center text-slate-400">
-
-Loading Dashboard...
-
-</div>
-
-
-</div>
-
-
-</div>
-
-
-<script>
-
-
-let isEditingSettings = false;
-
-
-async function fetchDashboard() {
-
-    if (isEditingSettings) return;
-
-    try {
-
-        const token =
-            new URLSearchParams(
-                window.location.search
-            ).get("token");
-
-
-        const url = token
-            ? `/api/dashboard?token=${encodeURIComponent(token)}&_t=${Date.now()}`
-            : `/api/dashboard?_t=${Date.now()}`;
-
-
-        const res =
-            await fetch(url);
-
-
-        const data =
-            await res.json();
-
-
-        if (!data.success) return;
-
-
-        document.getElementById(
-            "server-ip"
-        ).innerText =
-            "Server IP: "
-            + data.server_ip;
-
-
-        if (token) {
-
-            document.getElementById(
-                "add-client-section"
-            ).style.display =
-                "none";
-
-        }
-
-
-        const container =
-            document.getElementById(
-                "accounts-container"
-            );
-
-
-        container.innerHTML = "";
-
-
-        data.accounts.forEach(acc => {
-
-            const pos =
-                acc.position;
-
-
-            const stats =
-                acc.statistics;
-
-
-            const expiry =
-                acc.subscription &&
-                acc.subscription.expiry
-                    ? acc.subscription.expiry
-                    : "N/A";
-
-
-            const clientLink =
-                acc.token
-                    ? `${window.location.origin}/?token=${acc.token}`
-                    : "";
-
-
-            const tradeType =
-                pos.is_reversal
-                    ? "REVERSAL"
-                    : "BREAKOUT";
-
-
-            const html = `
-
-<div
-class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
-
-
-<div
-class="flex justify-between items-center border-b border-slate-700 pb-3">
-
-
-<div>
-
-<h2
-class="font-bold text-base text-amber-300">
-
-${acc.account_name}
-
-</h2>
-
-
-<p
-class="text-xs text-slate-400">
-
-Balance: $${Number(acc.balance).toFixed(2)}
-
-|
-
-Price: ${acc.current_price || "N/A"}
-
-</p>
-
-
-${acc.account_type === "client"
-
-? `<p
-class="text-[10px] text-amber-400 mt-0.5">
-
-Expiry:
-${expiry}
-
-${acc.is_expired ? " (EXPIRED)" : ""}
-
-</p>`
-
-: ""}
-
-
-</div>
-
-
-<span
-class="px-3 py-1 rounded-full text-xs font-semibold
-${acc.execution_uncertain
-    ? "bg-orange-500/20 text-orange-400"
-    : acc.bot_enabled
-        ? "bg-emerald-500/20 text-emerald-400"
-        : "bg-rose-500/20 text-rose-400"}">
-
-${acc.execution_uncertain
-    ? "EXECUTION UNKNOWN"
-    : acc.bot_enabled
-        ? "RUNNING"
-        : "STOPPED"}
-
-</span>
-
-
-</div>
-
-
-${clientLink
-? `<div
-class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs">
-
-<span
-class="text-slate-400 text-[10px] block">
-
-Client Unique Link:
-
-</span>
-
-
-<input
-readonly
-value="${clientLink}"
-class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all">
-
-</div>`
-
-: ""}
-
-
-<div
-class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
-
-
-<div
-class="text-xs font-semibold text-amber-400 uppercase">
-
-Risk Settings
-
-</div>
-
-
-<div
-class="grid grid-cols-2 gap-2">
-
-
-<div>
-
-<label
-class="block text-[10px] text-slate-400 mb-1">
-
-Max/Default Leverage
-
-</label>
-
-
-<select
-id="lev-${acc.account_id}"
-onfocus="isEditingSettings=true"
-onblur="isEditingSettings=false"
-class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs">
-
-
-${acc.symbol.includes("BTC")
-
-? `
-
-<option value="200"
-${acc.leverage==200?"selected":""}>
-200x
-</option>
-
-<option value="150"
-${acc.leverage==150?"selected":""}>
-150x
-</option>
-
-<option value="100"
-${acc.leverage==100?"selected":""}>
-100x
-</option>
-
-<option value="50"
-${acc.leverage==50?"selected":""}>
-50x
-</option>
-
-`
-
-: `
-
-<option value="100"
-${acc.leverage==100?"selected":""}>
-100x
-</option>
-
-<option value="50"
-${acc.leverage==50?"selected":""}>
-50x
-</option>
-
-<option value="25"
-${acc.leverage==25?"selected":""}>
-25x
-</option>
-
-<option value="10"
-${acc.leverage==10?"selected":""}>
-10x
-</option>
-
-`}
-
-
-</select>
-
-
-</div>
-
-
-<div>
-
-<label
-class="block text-[10px] text-slate-400 mb-1">
-
-Margin Fraction
-
-</label>
-
-
-<select
-class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs">
-
-<option selected>
-10%
-</option>
-
-</select>
-
-
-</div>
-
-
-</div>
-
-
-<button
-onclick="updateSettings('${acc.account_id}')"
-class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg">
-
-Save Settings
-
-</button>
-
-
-</div>
-
-
-<div
-class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Session High:
-
-</span>
-
-<span
-class="font-semibold text-emerald-300">
-
-${acc.day_high ?? "N/A"}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Session Low:
-
-</span>
-
-<span
-class="font-semibold text-rose-300">
-
-${acc.day_low ?? "N/A"}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Direction:
-
-</span>
-
-<span
-class="font-bold
-${pos.direction=="LONG"
-    ?"text-emerald-400"
-    :pos.direction=="SHORT"
-        ?"text-rose-400"
-        :"text-slate-300"}">
-
-${pos.direction}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Trade Type:
-
-</span>
-
-<span
-class="font-semibold
-${pos.is_reversal
-    ?"text-purple-400"
-    :"text-amber-400"}">
-
-${pos.direction=="FLAT"
-    ?"—"
-    :tradeType}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Size:
-
-</span>
-
-<span>
-
-${pos.size}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Entry Price:
-
-</span>
-
-<span
-class="font-semibold text-amber-300">
-
-${pos.entry_price ?? "N/A"}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Trade Leverage:
-
-</span>
-
-<span
-class="font-semibold text-amber-400">
-
-${acc.leverage}x
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Trailing SL:
-
-</span>
-
-<span
-class="font-semibold text-rose-400">
-
-${pos.stop_loss ?? "N/A"}
-
-</span>
-
-</div>
-
-
-<div
-class="flex justify-between">
-
-<span
-class="text-slate-400">
-
-Unrealized P&L:
-
-</span>
-
-<span
-class="font-semibold
-${pos.unrealized_pnl>=0
-    ?"text-emerald-400"
-    :"text-rose-400"}">
-
-$${Number(
-    pos.unrealized_pnl
-).toFixed(2)}
-
-</span>
-
-</div>
-
-
-</div>
-
-
-<div
-class="space-y-2">
-
-
-<div
-class="text-xs font-bold text-slate-400 uppercase">
-
-Trading Performance
-
-</div>
-
-
-<div
-class="grid grid-cols-2 gap-2 text-xs">
-
-
-<div
-class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60">
-
-
-<div
-class="font-semibold text-amber-400">
-
-TODAY
-
-</div>
-
-
-<div
-class="text-slate-400">
-
-Trades:
-${stats.today.total_trades}
-
-</div>
-
-
-<div
-class="text-slate-400">
-
-Win Rate:
-${stats.today.win_rate.toFixed(1)}%
-
-</div>
-
-
-<div
-class="font-bold
-${stats.today.pnl>=0
-    ?"text-emerald-400"
-    :"text-rose-400"}">
-
-P&L:
-$${stats.today.pnl.toFixed(2)}
-
-</div>
-
-
-</div>
-
-
-<div
-class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60">
-
-
-<div
-class="font-semibold text-amber-400">
-
-ALL TIME
-
-</div>
-
-
-<div
-class="text-slate-400">
-
-Trades:
-${stats.all_time.total_trades}
-
-</div>
-
-
-<div
-class="text-slate-400">
-
-Win Rate:
-${stats.all_time.win_rate.toFixed(1)}%
-
-</div>
-
-
-<div
-class="font-bold
-${stats.all_time.pnl>=0
-    ?"text-emerald-400"
-    :"text-rose-400"}">
-
-P&L:
-$${stats.all_time.pnl.toFixed(2)}
-
-</div>
-
-
-</div>
-
-
-</div>
-
-
-</div>
-
-
-<div
-class="flex gap-2">
-
-
-<button
-onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})"
-class="flex-1 py-2.5 rounded-xl font-semibold text-sm
-${acc.bot_enabled
-    ?"bg-rose-600"
-    :"bg-emerald-600"}">
-
-${acc.bot_enabled
-    ?"STOP BOT"
-    :"START BOT"}
-
-</button>
-
-
-${acc.account_type=="client" && !token
-? `<button
-onclick="deleteClient('${acc.account_id}')"
-class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold">
-
-Remove
-
-</button>`
-: ""}
-
-
-</div>
-
-
-<div
-class="space-y-2 pt-2 border-t border-slate-700">
-
-
-<div
-class="text-xs font-bold text-slate-400 uppercase">
-
-Trade History
-(${acc.trade_history.length})
-
-</div>
-
-
-<div
-class="max-h-40 overflow-y-auto space-y-1.5 text-xs">
-
-
-${acc.trade_history.length===0
-? '<div class="text-slate-500 text-center py-2">No closed trades yet.</div>'
-: ""}
-
-
-${acc.trade_history
-.slice()
-.reverse()
-.map(t => `
-
-<div
-class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between">
-
-
-<div>
-
-<span
-class="font-bold
-${t.direction=="LONG"
-    ?"text-emerald-400"
-    :"text-rose-400"}">
-
-${t.direction}
-
-</span>
-
-
-<span
-class="text-slate-400 ml-1">
-
-(${t.date})
-
-</span>
-
-
-<div
-class="text-[10px] text-slate-500">
-
-Entry:
-${t.entry_price}
-
-→
-
-Exit:
-${t.exit_price}
-
-</div>
-
-
-<div
-class="text-[10px]
-${t.trade_type=="REVERSAL"
-    ?"text-purple-400"
-    :"text-amber-400"}">
-
-${t.trade_type || "BREAKOUT"}
-
-</div>
-
-
-</div>
-
-
-<div
-class="text-right font-bold
-${t.pnl>=0
-    ?"text-emerald-400"
-    :"text-rose-400"}">
-
-$${Number(
-    t.pnl
-).toFixed(2)}
-
-</div>
-
-
-</div>
-
-`)
-.join("")}
-
-
-</div>
-
-
-</div>
-
-
-</div>
-
-`;
-
-
-            container.innerHTML += html;
-
-        });
-
-
-    } catch (e) {
-
-        console.error(e);
-
-    }
-
-}
-
-
-async function addClient() {
-
-    const name =
-        document.getElementById(
-            "c-name"
-        ).value;
-
-
-    const key =
-        document.getElementById(
-            "c-key"
-        ).value;
-
-
-    const secret =
-        document.getElementById(
-            "c-secret"
-        ).value;
-
-
-    const expiry =
-        document.getElementById(
-            "c-expiry"
-        ).value;
-
-
-    if (
-        !name
-        || !key
-        || !secret
-        || !expiry
-    ) {
-
-        alert(
-            "Please fill all fields!"
-        );
-
-        return;
-    }
-
-
-    const res =
-        await fetch(
-            "/api/client/add",
-            {
-
-                method:
-                    "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify({
-
-                        name,
-
-                        api_key:
-                            key,
-
-                        api_secret:
-                            secret,
-
-                        subscription_expiry:
-                            expiry
-                    })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    alert(
-        data.message
-    );
-
-
-    document.getElementById(
-        "c-name"
-    ).value = "";
-
-
-    document.getElementById(
-        "c-key"
-    ).value = "";
-
-
-    document.getElementById(
-        "c-secret"
-    ).value = "";
-
-
-    document.getElementById(
-        "c-expiry"
-    ).value = "";
-
-
-    fetchDashboard();
-
-}
-
-
-async function deleteClient(
-    accId
-) {
-
-    if (
-        !confirm(
-            "Are you sure you want to remove this client?"
-        )
-    ) return;
-
-
-    const res =
-        await fetch(
-            "/api/client/delete",
-            {
-
-                method:
-                    "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify({
-
-                        account_id:
-                            accId
-
-                    })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    alert(
-        data.message
-    );
-
-
-    fetchDashboard();
-
-}
-
-
-async function toggleBot(
-    accId,
-    state
-) {
-
-    const endpoint =
-        state
-            ? "/api/bot/stop"
-            : "/api/bot/start";
-
-
-    const res =
-        await fetch(
-            endpoint,
-            {
-
-                method:
-                    "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify({
-
-                        account_id:
-                            accId
-
-                    })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    alert(
-        data.message
-    );
-
-
-    fetchDashboard();
-
-}
-
-
-async function updateSettings(
-    accId
-) {
-
-    const lev =
-        document.getElementById(
-            "lev-" + accId
-        ).value;
-
-
-    isEditingSettings = true;
-
-
-    const res =
-        await fetch(
-            "/api/bot/settings",
-            {
-
-                method:
-                    "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify({
-
-                        account_id:
-                            accId,
-
-                        leverage:
-                            lev,
-
-                        balance_fraction:
-                            0.10
-
-                    })
-            }
-        );
-
-
-    const data =
-        await res.json();
-
-
-    alert(
-        data.message
-    );
-
-
-    isEditingSettings = false;
-
-
-    fetchDashboard();
-
-}
-
-
-setInterval(
-    fetchDashboard,
-    3000
-);
-
-
-fetchDashboard();
-
-
-</script>
-
-</body>
-</html>
-"""
-
-
-        self.send_response(
-            200
-        )
-
-        self.send_header(
-            "Content-Type",
-            "text/html; charset=utf-8"
-        )
-
-        self.end_headers()
-
-        self.wfile.write(
-            html.encode(
-                "utf-8"
-            )
-        )
-
-
-    # -----------------------------------------------------------------
-    # JSON
-    # -----------------------------------------------------------------
-
-    def send_json(
-        self,
-        data,
-        status=200
-    ):
-
-        raw = json.dumps(
-            data
-        ).encode(
-            "utf-8"
-        )
-
-
-        self.send_response(
-            status
-        )
-
-        self.send_header(
-            "Content-Type",
-            "application/json"
-        )
-
-        self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
-
-        self.end_headers()
-
-        self.wfile.write(
-            raw
-        )
-
-
-    def log_message(
-        self,
-        format,
-        *args
-    ):
-
-        pass
-
-
-# =====================================================================
-# WEBSOCKET
-# =====================================================================
-
-def run_websocket():
-
-    while True:
-
-        try:
-
-            def on_open(ws):
-
-                logging.info(
-                    "PUBLIC WEBSOCKET CONNECTED"
-                )
-
-
-                ws.send(
-                    json.dumps({
-
-                        "type":
-                            "subscribe",
-
-                        "payload": {
-
-                            "channels": [{
-
-                                "name":
-                                    "trades",
-
-                                "symbols": [
-                                    "XAUTUSD",
-                                    "BTCUSD"
-                                ],
-
-                            }]
-
-                        }
-
-                    })
-                )
-
-
-                logging.info(
-                    "PUBLIC TRADES CHANNEL SUBSCRIBED"
-                )
-
-
-            def on_message(
-                ws,
-                message
-            ):
-
-                try:
-
-                    parsed = json.loads(
-                        message
-                    )
-
-
-                    if parsed.get(
-                        "type"
-                    ) != "trades":
-
-                        return
-
-
-                    payload = parsed.get(
-                        "data",
-                        parsed
-                    )
-
-
-                    if not isinstance(
-                        payload,
-                        dict
-                    ):
-
-                        payload = parsed
-
-
-                    p_val = (
-
-                        payload.get("p")
-
-                        or payload.get("price")
-
-                        or parsed.get("p")
-
-                        or parsed.get("price")
-                    )
-
-
-                    sym = (
-
-                        payload.get("sy")
-
-                        or payload.get("symbol")
-
-                        or parsed.get("sy")
-
-                        or parsed.get("symbol")
-                    )
-
-
-                    if p_val is None:
-                        return
-
-
-                    price = Decimal(
-                        str(p_val)
-                    )
-
-
-                    with ACCOUNTS_LOCK:
-
-                        bots = list(
-                            BOT_ACCOUNTS.values()
-                        )
-
-
-                    for b in bots:
-
-                        if (
-                            sym
-                            and b.symbol.upper()
-                            != str(sym).upper()
-                        ):
-
-                            continue
-
-
-                        b.evaluate(
-                            price
-                        )
-
-
-                except Exception as e:
-
-                    logging.warning(
-                        f"WEBSOCKET MESSAGE ERROR | {e}"
-                    )
-
-
-            def on_error(
-                ws,
-                error
-            ):
-
-                logging.warning(
-                    f"WEBSOCKET ERROR | {error}"
-                )
-
-
-            def on_close(
-                ws,
-                close_status_code,
-                close_msg
-            ):
-
-                logging.warning(
-                    f"WEBSOCKET CLOSED | "
-                    f"code={close_status_code} | "
-                    f"msg={close_msg}"
-                )
-
-
-            ws = websocket.WebSocketApp(
-
-                WS_URL,
-
-                on_open=
-                    on_open,
-
-                on_message=
-                    on_message,
-
-                on_error=
-                    on_error,
-
-                on_close=
-                    on_close,
-            )
-
-
-            ws.run_forever(
-
-                ping_interval=
-                    30,
-
-                ping_timeout=
-                    10,
-            )
-
-
-        except Exception as e:
-
-            logging.warning(
-                f"WEBSOCKET LOOP ERROR | {e}"
-            )
-
-
-        time.sleep(
-            RECONNECT_SECONDS
-        )
-
-
-# =====================================================================
-# MAIN
-# =====================================================================
-
-if __name__ == "__main__":
-
-    logging.warning(
-        "=================================================="
-    )
-
-    logging.warning(
-        "DELTA DUAL ASSET AUTOTRADER STARTING"
-    )
-
-    logging.warning(
-        "BTCUSD + XAUTUSD"
-    )
-
-    logging.warning(
-        "WEEKEND LOCK"
-    )
-
-    logging.warning(
-        "NEW SESSION EXTREMES"
-    )
-
-    logging.warning(
-        "TRAILING 5M SL"
-    )
-
-    logging.warning(
-        "ONE REVERSAL ONLY"
-    )
-
-    logging.warning(
-        "ENTRY CONFIRMATION"
-    )
-
-    logging.warning(
-        "CLOSE CONFIRMATION"
-    )
-
-    logging.warning(
-        "STARTUP EXCHANGE RECONCILIATION"
-    )
-
-    logging.warning(
-        "DASHBOARD READ-ONLY"
-    )
-
-    logging.warning(
-        "DUPLICATE ORDER PROTECTION"
-    )
-
-    logging.warning(
-        "=================================================="
-    )
-
-
-    update_server_ip()
-
-
-    load_all_accounts(
-        preserve_running=False
-    )
-
-
-    # ---------------------------------------------------------------
-    # Startup reconciliation.
-    #
-    # Existing exchange positions are adopted into local state.
-    # No new trade is submitted here.
-    # ---------------------------------------------------------------
-
-    with ACCOUNTS_LOCK:
-
-        startup_bots = list(
-            BOT_ACCOUNTS.values()
-        )
-
-
-    for bot in startup_bots:
-
-        try:
-
-            bot.prepare_product()
-
-            bot.reconcile_exchange_state()
-
-        except Exception as e:
-
-            logging.error(
-                f"[{bot.symbol}] "
-                f"STARTUP RECONCILIATION ERROR | {e}"
-            )
-
-
-    threading.Thread(
-        target=run_websocket,
-        daemon=True,
-    ).start()
-
-
-    start_dashboard = None
-
-
-    # ================================================================
-    # WEB SERVER
-    # ================================================================
-
-    def dashboard_server():
-
-        port = int(
-            os.getenv(
-                "PORT",
-                DASHBOARD_PORT
-            )
-        )
-
-        server = ThreadingHTTPServer(
-            (
-                "0.0.0.0",
-                port
-            ),
-            DashboardHandler
-        )
-
-        logging.warning(
-            f"WEB SERVER STARTED ON PORT {port}"
-        )
-
-        server.serve_forever()
-
-
-    dashboard_server()
+                      
