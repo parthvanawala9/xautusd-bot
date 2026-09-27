@@ -14,7 +14,9 @@ from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 import requests
 import websocket
 from dotenv import load_dotenv
+
 load_dotenv()
+
 IST = ZoneInfo("Asia/Kolkata")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PERSISTENT_DATA_DIR = os.getenv(
@@ -29,7 +31,8 @@ WS_URL = os.getenv(
     "DELTA_PUBLIC_WS_URL",
     "wss://public-socket.india.delta.exchange"
 )
-DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
+DASHBOARD_PORT = int(os.getenv("PORT") or os.getenv("DASHBOARD_PORT") or "8000")
+
 SESSION_START_TIME = dtime(5, 30)
 TRADING_START_TIME = dtime(5, 45)
 RECONNECT_SECONDS = 5
@@ -37,23 +40,32 @@ ENTRY_CONFIRM_TIMEOUT = 10.0
 CLOSE_CONFIRM_TIMEOUT = 10.0
 POSITION_POLL_INTERVAL = 0.25
 EXECUTION_UNKNOWN_RECHECK_INTERVAL = 5.0
+
 STATE_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_states")
 HISTORY_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_history")
 CLIENTS_FILE = os.path.join(PERSISTENT_DATA_DIR, "clients_config.json")
+
 PRIMARY_ACCOUNT_ID = os.getenv("ACCOUNT_ID", "primary").strip()
 PRIMARY_ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "Primary Account").strip()
 PRIMARY_API_KEY = os.getenv("DELTA_API_KEY", "").strip()
 PRIMARY_API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
+
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     force=True,
 )
+
 CACHED_SERVER_IP = "Detecting..."
+
+
 def now_ist():
     return datetime.now(IST)
+
+
 def update_server_ip():
     global CACHED_SERVER_IP
     try:
@@ -67,6 +79,8 @@ def update_server_ip():
             logging.warning("==================================================")
     except Exception as e:
         logging.warning("IP FETCH ERROR | %s", e)
+
+
 def is_weekend(symbol=None, dt=None):
     dt = dt or now_ist()
     weekday = dt.weekday()
@@ -78,6 +92,8 @@ def is_weekend(symbol=None, dt=None):
     if weekday == 0 and current_time < SESSION_START_TIME:
         return True
     return False
+
+
 def get_current_session_start(dt=None):
     dt = dt or now_ist()
     session_time = dt.replace(
@@ -89,20 +105,30 @@ def get_current_session_start(dt=None):
     if dt.time() >= SESSION_START_TIME:
         return session_time
     return session_time - timedelta(days=1)
+
+
 def safe_filename(value):
     result = ""
     for char in str(value):
         result += char if char.isalnum() or char in "-_" else "_"
     return result or "account"
+
+
 def account_state_file(unique_id):
     return os.path.join(STATE_DIR, safe_filename(unique_id) + ".json")
+
+
 def account_history_file(unique_id):
     return os.path.join(HISTORY_DIR, safe_filename(unique_id) + ".json")
+
+
 def atomic_write_json(filename, data):
     tmp = filename + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, default=str)
     os.replace(tmp, filename)
+
+
 def load_clients_config():
     if not os.path.exists(CLIENTS_FILE):
         return {}
@@ -113,18 +139,26 @@ def load_clients_config():
     except Exception as e:
         logging.warning("Client config read error: %s", e)
         return {}
+
+
 def save_clients_config(cfg):
     atomic_write_json(CLIENTS_FILE, cfg)
+
+
 def as_float(value, default=None):
     try:
         return float(value)
     except Exception:
         return default
+
+
 def as_int(value, default=0):
     try:
         return int(value)
     except Exception:
         return default
+
+
 class DeltaClient:
     def __init__(self, api_key, api_secret, account_name, symbol):
         self.api_key = (api_key or "").strip()
@@ -137,6 +171,7 @@ class DeltaClient:
             "Content-Type": "application/json",
             "User-Agent": "MultiBot/99.0",
         })
+
     def sign(self, method, path, query="", body=""):
         timestamp = str(int(time.time()))
         message = (
@@ -157,6 +192,7 @@ class DeltaClient:
             "timestamp": timestamp,
             "User-Agent": "MultiBot/99.0",
         }
+
     def api(self, method, path, params=None, body=None, auth=False):
         params = params or {}
         body_text = (
@@ -187,12 +223,14 @@ class DeltaClient:
         if data.get("success") is False:
             raise RuntimeError(f"Delta error: {data}")
         return data
+
     def product(self):
         data = self.api("GET", f"/v2/products/{self.symbol}")
         result = data.get("result")
         if not isinstance(result, dict):
             raise RuntimeError(f"Invalid product response: {data}")
         return result
+
     def get_session_high_low(self, session_start_dt):
         try:
             start_ts = int(session_start_dt.timestamp())
@@ -252,6 +290,7 @@ class DeltaClient:
                 e,
             )
             return None, None
+
     def position(self, product_id):
         data = self.api(
             "GET",
@@ -331,6 +370,7 @@ class DeltaClient:
             "unrealized_pnl": unrealized,
             "leverage": leverage,
         }
+
     def balance(self):
         data = self.api(
             "GET",
@@ -354,6 +394,7 @@ class DeltaClient:
                 if value is not None:
                     return Decimal(str(value))
         raise RuntimeError("USD/USDT balance not found.")
+
     def set_leverage(self, product_id, leverage_val):
         self.api(
             "POST",
@@ -361,6 +402,7 @@ class DeltaClient:
             body={"leverage": str(leverage_val)},
             auth=True,
         )
+
     def order_size(self, product_info, price, leverage, balance_fraction):
         balance = self.balance()
         margin = balance * balance_fraction
@@ -402,6 +444,7 @@ class DeltaClient:
         if size <= 0:
             raise RuntimeError("Order size calculated as zero.")
         return size
+
     def cancel_all_orders(self, product_id):
         try:
             return self.api(
@@ -417,11 +460,13 @@ class DeltaClient:
                 e,
             )
             return None
+
     def make_client_order_id(self, prefix):
         return (
             f"{prefix}_{int(time.time() * 1000)}_"
             f"{uuid.uuid4().hex[:10]}"
         )[-32:]
+
     def market_entry_pure(self, product_id, side, size):
         body = {
             "product_id": int(product_id),
@@ -437,6 +482,7 @@ class DeltaClient:
             body=body,
             auth=True,
         )
+
     def close_position(self, product_id, size):
         if size == 0:
             return None
@@ -457,6 +503,7 @@ class DeltaClient:
             body=body,
             auth=True,
         )
+
     def last_traded_price(self):
         try:
             data = self.api(
@@ -475,6 +522,8 @@ class DeltaClient:
         except Exception:
             pass
         return None
+
+
 def load_trade_history(unique_id):
     filename = account_history_file(unique_id)
     if not os.path.exists(filename):
@@ -485,11 +534,15 @@ def load_trade_history(unique_id):
         return data if isinstance(data, list) else []
     except Exception:
         return []
+
+
 def save_trade_history(unique_id, history):
     atomic_write_json(
         account_history_file(unique_id),
         history,
     )
+
+
 def calculate_trade_pnl(
     direction,
     entry_price,
@@ -523,6 +576,8 @@ def calculate_trade_pnl(
         )
     except Exception:
         return Decimal("0")
+
+
 def calculate_statistics(history):
     def compute_stats(trades):
         total = len(trades)
@@ -562,6 +617,8 @@ def calculate_statistics(history):
         "today": compute_stats(today_trades),
         "all_time": compute_stats(history),
     }
+
+
 class BreakoutSARBot:
     def __init__(
         self,
@@ -627,6 +684,7 @@ class BreakoutSARBot:
         self.balance_fraction = Decimal("0.10")
         self.load_state()
         self.save()
+
     def is_expired(self):
         if self.account_type == "primary":
             return False
@@ -643,6 +701,7 @@ class BreakoutSARBot:
             )
         except Exception:
             return False
+
     def load_state(self):
         filename = account_state_file(self.unique_id)
         if not os.path.exists(filename):
@@ -702,6 +761,7 @@ class BreakoutSARBot:
                 self.symbol,
                 e,
             )
+
     def save(self):
         data = {
             "account_id": self.unique_id,
@@ -740,6 +800,7 @@ class BreakoutSARBot:
             account_state_file(self.unique_id),
             data,
         )
+
     def prepare_product(self):
         if self.product_id:
             return True
@@ -754,6 +815,7 @@ class BreakoutSARBot:
                 e,
             )
             return False
+
     def get_5m_candles(self, limit=5):
         try:
             end_ts = int(now_ist().timestamp())
@@ -803,6 +865,7 @@ class BreakoutSARBot:
             return formatted
         except Exception:
             return []
+
     def read_exchange_position(self):
         if not self.product_id:
             return {
@@ -822,6 +885,7 @@ class BreakoutSARBot:
                 e,
             )
             return None
+
     def wait_for_position(
         self,
         expected_direction=None,
@@ -853,6 +917,7 @@ class BreakoutSARBot:
                 )
             time.sleep(POSITION_POLL_INTERVAL)
         return None
+
     def wait_until_flat(self, timeout=CLOSE_CONFIRM_TIMEOUT):
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -869,6 +934,7 @@ class BreakoutSARBot:
                 )
             time.sleep(POSITION_POLL_INTERVAL)
         return False
+
     def reconcile_exchange_state(self, allow_local_updates=True):
         with self.lock:
             if not self.prepare_product():
@@ -951,6 +1017,7 @@ class BreakoutSARBot:
             self.last_reconciliation_time = time.time()
             self.save()
             return True
+
     def update_settings(self, new_lev, new_frac=None):
         with self.lock:
             try:
@@ -974,6 +1041,7 @@ class BreakoutSARBot:
                     "success": False,
                     "message": str(e),
                 }
+
     def start_bot(self):
         with self.lock:
             if self.is_expired():
@@ -1018,6 +1086,7 @@ class BreakoutSARBot:
                 "bot_enabled": True,
                 "message": f"Bot for {self.symbol} Started.",
             }
+
     def stop_bot(self):
         with self.lock:
             self.bot_enabled = False
@@ -1113,6 +1182,7 @@ class BreakoutSARBot:
                 "bot_enabled": False,
                 "message": f"Bot for {self.symbol} Stopped.",
             }
+
     def check_session_change(self, now):
         current_session = get_current_session_start(now)
         if self.session_start == current_session:
@@ -1210,6 +1280,7 @@ class BreakoutSARBot:
                 self.ready = True
         self.save()
         return True
+
     def prepare(self, now):
         if not self.prepare_product():
             return False
@@ -1227,6 +1298,7 @@ class BreakoutSARBot:
                 self.ready = True
                 self.save()
         return True
+
     def estimate_liquidation_price(
         self,
         entry_price,
@@ -1280,10 +1352,12 @@ class BreakoutSARBot:
                 - effective_mm
             )
         )
+
     def get_leverage_ladder(self):
         if "BTC" in self.symbol:
             return list(range(200, 9, -10))
         return list(range(100, 9, -10))
+
     def enter(
         self,
         direction,
@@ -1503,6 +1577,7 @@ class BreakoutSARBot:
             return False
         finally:
             self.order_in_progress = False
+
     def close_current_position(self, reason, exit_price):
         if not self.position or self.size <= 0:
             try:
@@ -1601,6 +1676,7 @@ class BreakoutSARBot:
             return False
         finally:
             self.order_in_progress = False
+
     def reverse_from_sl(self, price, prev_candle):
         if not self.position or self.size <= 0:
             return False
@@ -1715,6 +1791,7 @@ class BreakoutSARBot:
             self._handle_failed_reversal()
             return False
         return False
+
     def _handle_failed_reversal(self):
         try:
             position = self.client.position(self.product_id)
@@ -1739,6 +1816,7 @@ class BreakoutSARBot:
                 self.execution_unknown_since or time.time()
             )
         self.save()
+
     def force_weekend_flat(self):
         with self.lock:
             if not self.product_id:
@@ -1813,6 +1891,7 @@ class BreakoutSARBot:
                     e,
                 )
                 self.save()
+
     def evaluate(self, price=None):
         with self.lock:
             if not self.bot_enabled or self.is_expired():
@@ -2025,6 +2104,7 @@ class BreakoutSARBot:
                 changed = True
             if changed:
                 self.save()
+
     def finish_trade(self, reason, exit_price):
         if not self.position or not self.entry_price:
             return
@@ -2060,8 +2140,12 @@ class BreakoutSARBot:
         history = load_trade_history(self.unique_id)
         history.append(trade)
         save_trade_history(self.unique_id, history)
+
+
 BOT_ACCOUNTS = {}
 ACCOUNTS_LOCK = threading.RLock()
+
+
 def create_all_accounts():
     new_accounts = {}
     if PRIMARY_API_KEY and PRIMARY_API_SECRET:
@@ -2107,6 +2191,8 @@ def create_all_accounts():
             )
             new_accounts[bot.unique_id] = bot
     return new_accounts
+
+
 def load_all_accounts(preserve_running=True):
     global BOT_ACCOUNTS
     new_accounts = create_all_accounts()
@@ -2121,9 +2207,13 @@ def load_all_accounts(preserve_running=True):
         "ACCOUNTS LOADED | Total bots=%s",
         len(BOT_ACCOUNTS),
     )
+
+
 def get_bot(unique_id):
     with ACCOUNTS_LOCK:
         return BOT_ACCOUNTS.get(unique_id)
+
+
 def serialize_bot(bot):
     position = bot.read_exchange_position()
     if position is None:
@@ -2197,6 +2287,8 @@ def serialize_bot(bot):
         "history": history[-50:],
         "server_ip": CACHED_SERVER_IP,
     }
+
+
 class DashboardHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(
@@ -2204,8 +2296,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             directory=BASE_DIR,
             **kwargs,
         )
+
     def log_message(self, format, *args):
         logging.info("HTTP | " + format, *args)
+
     def send_json(self, payload, status=200):
         raw = json.dumps(
             payload,
@@ -2226,6 +2320,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         )
         self.end_headers()
         self.wfile.write(raw)
+
     def read_json_body(self):
         try:
             length = int(
@@ -2242,6 +2337,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             )
         except Exception:
             return {}
+
     def find_bot_from_query(self, query):
         bot_id = query.get("id", [None])[0]
         if bot_id:
@@ -2260,10 +2356,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ):
                     return bot
         return None
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
         if path == "/api/health":
             self.send_json({
                 "success": True,
@@ -2272,6 +2370,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "server_ip": CACHED_SERVER_IP,
             })
             return
+
         if path == "/api/dashboard":
             client_token = query.get(
                 "token",
@@ -2312,6 +2411,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ],
             })
             return
+
         if path == "/api/accounts":
             with ACCOUNTS_LOCK:
                 bots = list(BOT_ACCOUNTS.values())
@@ -2330,6 +2430,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 ],
             })
             return
+
         if path == "/api/history":
             bot = self.find_bot_from_query(query)
             if bot is None:
@@ -2345,6 +2446,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "stats": calculate_statistics(history),
             })
             return
+
         if path == "/api/state":
             bot = self.find_bot_from_query(query)
             if bot is None:
@@ -2358,11 +2460,14 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "bot": serialize_bot(bot),
             })
             return
+
         super().do_GET()
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
         body = self.read_json_body()
+
         if path == "/api/start":
             bot_id = body.get("id") or body.get("unique_id")
             bot = get_bot(bot_id)
@@ -2375,6 +2480,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             result = bot.start_bot()
             self.send_json(result)
             return
+
         if path == "/api/stop":
             bot_id = body.get("id") or body.get("unique_id")
             bot = get_bot(bot_id)
@@ -2387,6 +2493,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             result = bot.stop_bot()
             self.send_json(result)
             return
+
         if path == "/api/settings":
             bot_id = body.get("id") or body.get("unique_id")
             bot = get_bot(bot_id)
@@ -2407,6 +2514,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             )
             self.send_json(result)
             return
+
         if path == "/api/reconcile":
             bot_id = body.get("id") or body.get("unique_id")
             bot = get_bot(bot_id)
@@ -2422,6 +2530,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "bot": serialize_bot(bot),
             })
             return
+
         if path == "/api/reload":
             load_all_accounts(preserve_running=True)
             self.send_json({
@@ -2429,6 +2538,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "message": "Accounts reloaded.",
             })
             return
+
         if path == "/api/client/add":
             client_id = str(
                 body.get("client_id")
@@ -2475,6 +2585,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "message": f"Client {client_id} added.",
             })
             return
+
         if path == "/api/client/delete":
             client_id = str(
                 body.get("client_id")
@@ -2517,10 +2628,12 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "message": f"Client {client_id} deleted.",
             })
             return
+
         self.send_json({
             "success": False,
             "message": "Unknown API endpoint.",
         }, 404)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -2533,7 +2646,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             "Content-Type",
         )
         self.end_headers()
+
+
 WS_BOTS_LOCK = threading.RLock()
+
+
 def websocket_on_open(ws):
     symbols = ["XAUTUSD", "BTCUSD"]
     payload = {
@@ -2552,6 +2669,8 @@ def websocket_on_open(ws):
         "PUBLIC WEBSOCKET SUBSCRIBED | %s",
         ",".join(symbols),
     )
+
+
 def extract_trade(message):
     try:
         data = json.loads(message)
@@ -2589,6 +2708,8 @@ def extract_trade(message):
     except Exception:
         return None, None
     return symbol, price
+
+
 def websocket_on_message(ws, message):
     symbol, price = extract_trade(message)
     if symbol not in ("XAUTUSD", "BTCUSD"):
@@ -2607,17 +2728,23 @@ def websocket_on_message(ws, message):
                 "[%s] Evaluation error.",
                 bot.symbol,
             )
+
+
 def websocket_on_error(ws, error):
     logging.error(
         "PUBLIC WEBSOCKET ERROR | %s",
         error,
     )
+
+
 def websocket_on_close(ws, close_status_code, close_msg):
     logging.warning(
         "PUBLIC WEBSOCKET CLOSED | code=%s | msg=%s",
         close_status_code,
         close_msg,
     )
+
+
 def run_websocket_forever():
     while True:
         try:
@@ -2646,6 +2773,8 @@ def run_websocket_forever():
             RECONNECT_SECONDS,
         )
         time.sleep(RECONNECT_SECONDS)
+
+
 def startup_reconcile():
     with ACCOUNTS_LOCK:
         bots = list(BOT_ACCOUNTS.values())
@@ -2658,6 +2787,8 @@ def startup_reconcile():
                 "[%s] Startup reconciliation error.",
                 bot.symbol,
             )
+
+
 def main():
     logging.info("==================================================")
     logging.info(" DELTA PRO AUTOTRADER STARTING")
@@ -2691,5 +2822,7 @@ def main():
         logging.info("Shutdown requested.")
     finally:
         server.server_close()
+
+
 if __name__ == "__main__":
     main()
