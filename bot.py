@@ -15,141 +15,51 @@ import requests
 import websocket
 from dotenv import load_dotenv
 
-
 # =====================================================================
 # DELTA PRO AUTOTRADER - DUAL ASSET
-# XAUTUSD & BTCUSD
 #
-# BASE BREAKOUT:
-#   DAY HIGH BREAK -> LONG
-#   DAY LOW BREAK  -> SHORT
+# XAUTUSD + BTCUSD
 #
-# NORMAL TRADE SL:
-#   LONG  -> previous completed 5M candle LOW
-#   SHORT -> previous completed 5M candle HIGH
-#
-# REVERSAL:
-#   NORMAL LONG SL  -> ONE SHORT reversal
-#   NORMAL SHORT SL -> ONE LONG reversal
-#
-# REVERSAL SL:
-#   REVERSAL SHORT -> FLAT
-#   REVERSAL LONG  -> FLAT
-#
-# IMPORTANT:
-#   Each BASE BREAKOUT gets ONLY ONE reversal.
-#
-#   BASE LONG
-#       ->
-#   LONG SL
-#       ->
-#   ONE SHORT REVERSAL
-#       ->
-#   SHORT REVERSAL SL
-#       ->
-#   FLAT
-#       ->
-#   WAIT FOR NEW BASE BREAKOUT
-#
-#   BASE SHORT
-#       ->
-#   SHORT SL
-#       ->
-#   ONE LONG REVERSAL
-#       ->
-#   LONG REVERSAL SL
-#       ->
-#   FLAT
-#       ->
-#   WAIT FOR NEW BASE BREAKOUT
-#
-# IMPORTANT FIX:
-#
-#   REVERSAL SL MUST NEVER DISABLE THE ORIGINAL BASE BREAKOUT LOGIC.
-#
-#   After a reversal SL:
-#
-#       position = FLAT
-#       is_reversal_position = FALSE
-#       base_breakout_ready = TRUE
-#
-#   Then the SAME evaluate() call continues into BASE BREAKOUT
-#   evaluation.
-#
-#   Therefore if the current price movement also creates a valid
-#   Day High / Day Low breakout, the NEW BASE TRADE IS NOT MISSED.
-#
-#   A new BASE breakout starts a completely new one-reversal cycle.
+# STRATEGY
+#   1. Saturday/Sunday: NO NEW TRADES. Positions are closed on weekend.
+#   2. Base LONG only when price breaks the CURRENT/RUNNING SESSION HIGH.
+#   3. Base SHORT only when price breaks the CURRENT/RUNNING SESSION LOW.
+#   4. Base LONG SL = previous completed 5M candle LOW.
+#   5. Base SHORT SL = previous completed 5M candle HIGH.
+#   6. Every new completed 5M candle trails the active SL:
+#        LONG  -> previous completed candle LOW
+#        SHORT -> previous completed candle HIGH
+#   7. Base SL can create exactly ONE reversal:
+#        BASE LONG SL  -> ONE SHORT REVERSAL
+#        BASE SHORT SL -> ONE LONG REVERSAL
+#   8. Reversal SL -> FLAT. NEVER a second reversal.
+#   9. After reversal SL, the old breakout level cannot immediately
+#      trigger again. A NEW running session high/low must be created.
+#  10. One signal can submit only one order. No REST ticker loop is used
+#      for strategy evaluation; the public trades websocket is the
+#      strategy price feed.
 # =====================================================================
-
 
 load_dotenv()
 
 IST = ZoneInfo("Asia/Kolkata")
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-PERSISTENT_DATA_DIR = os.getenv(
-    "RAILWAY_VOLUME_MOUNT_PATH",
-    BASE_DIR
-)
-
-BASE_URL = os.getenv(
-    "DELTA_BASE_URL",
-    "https://api.india.delta.exchange"
-).rstrip("/")
-
-WS_URL = os.getenv(
-    "DELTA_PUBLIC_WS_URL",
-    "wss://public-socket.india.delta.exchange"
-)
-
-DASHBOARD_PORT = int(
-    os.getenv("DASHBOARD_PORT", "8000")
-)
-
+PERSISTENT_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR)
+BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
+WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.exchange")
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8000"))
 TRADING_START_TIME = dtime(5, 45)
-
+SESSION_START_TIME = dtime(5, 30)
 RECONNECT_SECONDS = 3
 
-POSITION_CACHE_SECONDS = float(
-    os.getenv("POSITION_CACHE_SECONDS", "0.5")
-)
+STATE_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_states")
+HISTORY_DIR = os.path.join(PERSISTENT_DATA_DIR, "account_history")
+CLIENTS_FILE = os.path.join(PERSISTENT_DATA_DIR, "clients_config.json")
 
-STATE_DIR = os.path.join(
-    PERSISTENT_DATA_DIR,
-    "account_states"
-)
-
-HISTORY_DIR = os.path.join(
-    PERSISTENT_DATA_DIR,
-    "account_history"
-)
-
-CLIENTS_FILE = os.path.join(
-    PERSISTENT_DATA_DIR,
-    "clients_config.json"
-)
-
-PRIMARY_ACCOUNT_ID = os.getenv(
-    "ACCOUNT_ID",
-    "primary"
-).strip()
-
-PRIMARY_ACCOUNT_NAME = os.getenv(
-    "ACCOUNT_NAME",
-    "Primary Account"
-).strip()
-
-PRIMARY_API_KEY = os.getenv(
-    "DELTA_API_KEY",
-    ""
-).strip()
-
-PRIMARY_API_SECRET = os.getenv(
-    "DELTA_API_SECRET",
-    ""
-).strip()
+PRIMARY_ACCOUNT_ID = os.getenv("ACCOUNT_ID", "primary").strip()
+PRIMARY_ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "Primary Account").strip()
+PRIMARY_API_KEY = os.getenv("DELTA_API_KEY", "").strip()
+PRIMARY_API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
 
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
@@ -157,7 +67,7 @@ os.makedirs(HISTORY_DIR, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
-    force=True
+    force=True,
 )
 
 CACHED_SERVER_IP = "Detecting..."
@@ -169,53 +79,39 @@ CACHED_SERVER_IP = "Detecting..."
 
 def update_server_ip():
     global CACHED_SERVER_IP
-
     try:
-        res = requests.get(
-            "https://api.ipify.org?format=json",
-            timeout=5
-        )
-
+        res = requests.get("https://api.ipify.org?format=json", timeout=5)
         ip = res.json().get("ip")
-
         if ip:
             CACHED_SERVER_IP = ip
-
             logging.warning("==================================================")
-            logging.warning(
-                f" RAILWAY OUTBOUND IP --> {ip}"
-            )
-            logging.warning(
-                " WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS"
-            )
+            logging.warning(f" RAILWAY OUTBOUND IP --> {ip}")
+            logging.warning(" WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
             logging.warning("==================================================")
-
     except Exception as e:
-        logging.warning(
-            f"IP FETCH ERROR | {e}"
-        )
+        logging.warning(f"IP FETCH ERROR | {e}")
 
 
 def now_ist():
     return datetime.now(IST)
 
 
-def is_weekend(symbol, dt=None):
+def is_weekend(symbol=None, dt=None):
+    """Both BTCUSD and XAUTUSD are blocked Saturday/Sunday."""
     dt = dt or now_ist()
-
     wday = dt.weekday()
     t = dt.time()
 
-    if "BTC" in symbol.upper():
-        return False
+    # Saturday from 05:30 IST onward.
+    if wday == 5 and t >= SESSION_START_TIME:
+        return True
 
-    if wday == 5:
-        return t >= dtime(5, 30)
-
+    # Entire Sunday.
     if wday == 6:
         return True
 
-    if wday == 0 and t < dtime(5, 30):
+    # Monday before the new 05:30 IST session.
+    if wday == 0 and t < SESSION_START_TIME:
         return True
 
     return False
@@ -223,82 +119,47 @@ def is_weekend(symbol, dt=None):
 
 def get_current_session_start(dt=None):
     dt = dt or now_ist()
-
-    t = dt.time()
-
-    m530 = dt.replace(
-        hour=5,
-        minute=30,
-        second=0,
-        microsecond=0
-    )
-
-    if t >= dtime(5, 30):
+    m530 = dt.replace(hour=5, minute=30, second=0, microsecond=0)
+    if dt.time() >= SESSION_START_TIME:
         return m530
-
     return m530 - timedelta(days=1)
 
 
 def safe_filename(value):
     result = ""
-
     for char in str(value):
-        if char.isalnum() or char in ("-", "_"):
-            result += char
-        else:
-            result += "_"
-
+        result += char if char.isalnum() or char in ("-", "_") else "_"
     return result or "account"
 
 
 def account_state_file(unique_id):
-    return os.path.join(
-        STATE_DIR,
-        safe_filename(unique_id) + ".json"
-    )
+    return os.path.join(STATE_DIR, safe_filename(unique_id) + ".json")
 
 
 def account_history_file(unique_id):
-    return os.path.join(
-        HISTORY_DIR,
-        safe_filename(unique_id) + ".json"
-    )
+    return os.path.join(HISTORY_DIR, safe_filename(unique_id) + ".json")
 
 
 def atomic_write_json(filename, data):
     tmp = filename + ".tmp"
-
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(
-            data,
-            f,
-            indent=2
-        )
-
+        json.dump(data, f, indent=2)
     os.replace(tmp, filename)
 
 
 def load_clients_config():
     if not os.path.exists(CLIENTS_FILE):
         return {}
-
     try:
-        with open(
-            CLIENTS_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-            return json.load(f)
-
+        with open(CLIENTS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def save_clients_config(cfg):
-    atomic_write_json(
-        CLIENTS_FILE,
-        cfg
-    )
+    atomic_write_json(CLIENTS_FILE, cfg)
 
 
 # =====================================================================
@@ -306,171 +167,83 @@ def save_clients_config(cfg):
 # =====================================================================
 
 class DeltaClient:
-
-    def __init__(
-        self,
-        api_key,
-        api_secret,
-        account_name,
-        symbol
-    ):
+    def __init__(self, api_key, api_secret, account_name, symbol):
         self.api_key = (api_key or "").strip()
         self.api_secret = (api_secret or "").strip()
-        self.account_name = (
-            account_name or "Account"
-        ).strip()
-
+        self.account_name = (account_name or "Account").strip()
         self.symbol = symbol.strip().upper()
-
         self.session = requests.Session()
-
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/95.0"
+            "User-Agent": "MultiBot/96.0",
         })
 
-    def sign(
-        self,
-        method,
-        path,
-        query="",
-        body=""
-    ):
+    def sign(self, method, path, query="", body=""):
         timestamp = str(int(time.time()))
-
-        message = (
-            method.upper()
-            + timestamp
-            + path
-            + query
-            + body
-        )
-
+        message = method.upper() + timestamp + path + query + body
         signature = hmac.new(
             self.api_secret.encode(),
             message.encode(),
-            hashlib.sha256
+            hashlib.sha256,
         ).hexdigest()
-
         return {
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/95.0"
+            "User-Agent": "MultiBot/96.0",
         }
 
-    def api(
-        self,
-        method,
-        path,
-        params=None,
-        body=None,
-        auth=False
-    ):
+    def api(self, method, path, params=None, body=None, auth=False):
         params = params or {}
-
         body_text = (
-            json.dumps(
-                body,
-                separators=(",", ":")
-            )
-            if body is not None
-            else ""
+            json.dumps(body, separators=(",", ":"))
+            if body is not None else ""
         )
-
-        query = (
-            "?" + urlencode(params, doseq=True)
-            if params
-            else ""
-        )
-
-        headers = (
-            self.sign(
-                method,
-                path,
-                query,
-                body_text
-            )
-            if auth
-            else {}
-        )
+        query = "?" + urlencode(params, doseq=True) if params else ""
+        headers = self.sign(method, path, query, body_text) if auth else {}
 
         response = self.session.request(
             method.upper(),
             BASE_URL + path,
             params=params,
-            data=(
-                body_text
-                if body is not None
-                else None
-            ),
+            data=body_text if body is not None else None,
             headers=headers,
-            timeout=(3, 8)
+            timeout=(3, 8),
         )
-
         response.raise_for_status()
-
         data = response.json()
 
         if data.get("success") is False:
-            raise RuntimeError(
-                f"Delta error: {data}"
-            )
-
+            raise RuntimeError(f"Delta error: {data}")
         return data
 
     def product(self):
-        data = self.api(
-            "GET",
-            f"/v2/products/{self.symbol}"
-        )
-
+        data = self.api("GET", f"/v2/products/{self.symbol}")
         result = data.get("result")
-
         if not isinstance(result, dict):
-            raise RuntimeError(
-                f"Invalid product response: {data}"
-            )
-
+            raise RuntimeError(f"Invalid product response: {data}")
         return result
 
-    def get_session_high_low(
-        self,
-        product_id,
-        session_start_dt
-    ):
+    def get_session_high_low(self, session_start_dt):
         try:
-            start_ts = int(
-                session_start_dt.timestamp()
-            )
-
-            end_ts = int(
-                now_ist().timestamp()
-            )
-
+            start_ts = int(session_start_dt.timestamp())
+            end_ts = int(now_ist().timestamp())
             if end_ts <= start_ts:
                 return None, None
-
-            params = {
-                "resolution": "1m",
-                "symbol": self.symbol,
-                "start": start_ts,
-                "end": end_ts
-            }
 
             data = self.api(
                 "GET",
                 "/v2/history/candles",
-                params=params
+                params={
+                    "resolution": "1m",
+                    "symbol": self.symbol,
+                    "start": start_ts,
+                    "end": end_ts,
+                },
             )
-
             candles = data.get("result", [])
-
-            if (
-                not isinstance(candles, list)
-                or not candles
-            ):
+            if not isinstance(candles, list) or not candles:
                 return None, None
 
             highest = None
@@ -479,115 +252,55 @@ class DeltaClient:
             for c in candles:
                 try:
                     if isinstance(c, dict):
-                        ts_raw = (
-                            c.get("time")
-                            or c.get("timestamp")
-                            or c.get("start")
-                        )
-
+                        ts_raw = c.get("time") or c.get("timestamp") or c.get("start")
                         h_raw = c.get("high")
                         l_raw = c.get("low")
-
-                    elif (
-                        isinstance(c, list)
-                        and len(c) >= 4
-                    ):
-                        ts_raw = c[0]
-                        h_raw = c[2]
-                        l_raw = c[3]
-
+                    elif isinstance(c, list) and len(c) >= 4:
+                        ts_raw, h_raw, l_raw = c[0], c[2], c[3]
                     else:
                         continue
 
                     if ts_raw is not None:
                         ts = float(ts_raw)
-
                         if ts > 100000000000:
                             ts /= 1000.0
-
-                        if (
-                            ts < start_ts
-                            or ts > end_ts
-                        ):
+                        if ts < start_ts or ts > end_ts:
                             continue
 
                     h = Decimal(str(h_raw))
                     l = Decimal(str(l_raw))
-
-                    if h > 0:
-                        if (
-                            highest is None
-                            or h > highest
-                        ):
-                            highest = h
-
-                    if l > 0:
-                        if (
-                            lowest is None
-                            or l < lowest
-                        ):
-                            lowest = l
-
+                    if h > 0 and (highest is None or h > highest):
+                        highest = h
+                    if l > 0 and (lowest is None or l < lowest):
+                        lowest = l
                 except Exception:
                     continue
 
-            if (
-                highest is not None
-                and lowest is not None
-            ):
-                return highest, lowest
-
+            return highest, lowest
         except Exception as e:
-            logging.warning(
-                f"[{self.symbol}] "
-                f"Session high/low fetch error: {e}"
-            )
-
-        return None, None
+            logging.warning(f"[{self.symbol}] Session high/low fetch error: {e}")
+            return None, None
 
     def position(self, product_id):
-        try:
-            data = self.api(
-                "GET",
-                "/v2/positions",
-                params={
-                    "product_id": int(product_id)
-                },
-                auth=True
-            )
-
-        except Exception:
-            data = {}
-
-        result = data.get("result", [])
-
+        data = self.api(
+            "GET",
+            "/v2/positions",
+            params={"product_id": int(product_id)},
+            auth=True,
+        )
+        result = data.get("result", {})
         pos_item = {}
 
-        if isinstance(result, list):
-
+        # Delta's current /v2/positions response is normally a dict.
+        if isinstance(result, dict):
+            pos_item = result
+        elif isinstance(result, list):
             for p in result:
-
-                if (
-                    isinstance(p, dict)
-                    and int(
-                        p.get("product_id", 0)
-                    ) == int(product_id)
-                ):
+                if isinstance(p, dict) and int(p.get("product_id", 0) or 0) == int(product_id):
                     pos_item = p
                     break
-
-            if not pos_item and result:
-                pos_item = (
-                    result[0]
-                    if isinstance(
-                        result[0],
-                        dict
-                    )
-                    else {}
-                )
-
-        elif isinstance(result, dict):
-            pos_item = result
+            if not pos_item and result and isinstance(result[0], dict):
+                pos_item = result[0]
 
         if not pos_item:
             return {
@@ -599,7 +312,7 @@ class DeltaClient:
                 "margin": None,
                 "mark_price": None,
                 "unrealized_pnl": 0,
-                "leverage": None
+                "leverage": None,
             }
 
         raw_entry = (
@@ -610,14 +323,10 @@ class DeltaClient:
             or pos_item.get("price")
         )
 
-        entry_val = (
-            float(raw_entry)
-            if (
-                raw_entry is not None
-                and float(raw_entry) > 0
-            )
-            else None
-        )
+        try:
+            entry_val = float(raw_entry) if raw_entry is not None and float(raw_entry) > 0 else None
+        except Exception:
+            entry_val = None
 
         lev_val = (
             pos_item.get("leverage")
@@ -625,210 +334,89 @@ class DeltaClient:
             or pos_item.get("effective_leverage")
         )
 
+        def fval(key):
+            try:
+                value = pos_item.get(key)
+                return float(value) if value is not None else None
+            except Exception:
+                return None
+
         return {
-            "size": int(
-                pos_item.get("size", 0)
-                or 0
-            ),
-
+            "size": int(pos_item.get("size", 0) or 0),
             "entry_price": entry_val,
-
-            "stop_loss": (
-                float(pos_item.get("stop_loss"))
-                if pos_item.get("stop_loss")
-                else None
-            ),
-
-            "liquidation_price": (
-                float(
-                    pos_item.get(
-                        "liquidation_price"
-                    )
-                )
-                if pos_item.get(
-                    "liquidation_price"
-                )
-                else None
-            ),
-
-            "bankruptcy_price": (
-                float(
-                    pos_item.get(
-                        "bankruptcy_price"
-                    )
-                )
-                if pos_item.get(
-                    "bankruptcy_price"
-                )
-                else None
-            ),
-
-            "margin": (
-                float(pos_item.get("margin"))
-                if pos_item.get("margin")
-                else None
-            ),
-
-            "mark_price": (
-                float(
-                    pos_item.get("mark_price")
-                )
-                if pos_item.get("mark_price")
-                else None
-            ),
-
-            "unrealized_pnl": float(
-                pos_item.get(
-                    "unrealized_pnl",
-                    0
-                )
-                or 0
-            ),
-
-            "leverage": (
-                int(lev_val)
-                if lev_val
-                else None
-            )
+            "stop_loss": fval("stop_loss"),
+            "liquidation_price": fval("liquidation_price"),
+            "bankruptcy_price": fval("bankruptcy_price"),
+            "margin": fval("margin"),
+            "mark_price": fval("mark_price"),
+            "unrealized_pnl": float(pos_item.get("unrealized_pnl", 0) or 0),
+            "leverage": int(lev_val) if lev_val else None,
         }
 
     def balance(self):
-        data = self.api(
-            "GET",
-            "/v2/wallet/balances",
-            auth=True
-        )
-
+        data = self.api("GET", "/v2/wallet/balances", auth=True)
         result = data.get("result", [])
-
         if isinstance(result, dict):
             result = [result]
 
         for wallet in result:
-
             if not isinstance(wallet, dict):
                 continue
-
-            asset = str(
-                wallet.get(
-                    "asset_symbol",
-                    ""
-                )
-            ).upper()
-
+            asset = str(wallet.get("asset_symbol", "")).upper()
             if asset in ("USD", "USDT"):
-
-                value = (
-                    wallet.get(
-                        "available_balance"
-                    )
-                    or wallet.get("balance")
-                )
-
+                value = wallet.get("available_balance") or wallet.get("balance")
                 if value is not None:
-                    return Decimal(
-                        str(value)
-                    )
+                    return Decimal(str(value))
 
-        raise RuntimeError(
-            "USD/USDT balance not found."
-        )
+        raise RuntimeError("USD/USDT balance not found.")
 
-    def set_leverage(
-        self,
-        product_id,
-        leverage_val
-    ):
+    def set_leverage(self, product_id, leverage_val):
         self.api(
             "POST",
             f"/v2/products/{product_id}/orders/leverage",
-            body={
-                "leverage": str(leverage_val)
-            },
-            auth=True
+            body={"leverage": str(leverage_val)},
+            auth=True,
         )
 
-    def order_size(
-        self,
-        product_info,
-        price,
-        leverage,
-        balance_fraction
-    ):
+    def order_size(self, product_info, price, leverage, balance_fraction):
         bal = self.balance()
+        margin = bal * balance_fraction
+        notional = margin * leverage
 
-        margin = (
-            bal * balance_fraction
-        )
-
-        notional = (
-            margin * leverage
-        )
-
-        contract_value = Decimal(
-            str(
-                product_info.get(
-                    "contract_value"
-                )
-                or product_info.get(
-                    "contract_value_usd"
-                )
-                or "0.001"
-            )
-        )
-
+        contract_value = Decimal(str(
+            product_info.get("contract_value")
+            or product_info.get("contract_value_usd")
+            or "0.001"
+        ))
         if contract_value <= 0:
             contract_value = Decimal("0.001")
 
-        raw = (
-            notional
-            / price
-            / contract_value
-        )
+        raw = notional / price / contract_value
 
-        increment = Decimal(
-            str(
-                product_info.get(
-                    "lot_size"
-                )
-                or product_info.get(
-                    "order_size_increment"
-                )
-                or "1"
-            )
-        )
-
-        minimum = Decimal(
-            str(
-                product_info.get(
-                    "min_order_size"
-                )
-                or product_info.get(
-                    "minimum_order_size"
-                )
-                or increment
-            )
-        )
+        increment = Decimal(str(
+            product_info.get("lot_size")
+            or product_info.get("order_size_increment")
+            or "1"
+        ))
+        minimum = Decimal(str(
+            product_info.get("min_order_size")
+            or product_info.get("minimum_order_size")
+            or increment
+        ))
 
         if increment <= 0:
             increment = Decimal("1")
 
         size_decimal = (
             raw / increment
-        ).to_integral_value(
-            rounding=ROUND_DOWN
-        ) * increment
+        ).to_integral_value(rounding=ROUND_DOWN) * increment
 
         if size_decimal < minimum:
             size_decimal = minimum
 
         size = int(size_decimal)
-
         if size <= 0:
-            raise RuntimeError(
-                "Order size calculated as zero."
-            )
-
+            raise RuntimeError("Order size calculated as zero.")
         return size
 
     def cancel_all_orders(self, product_id):
@@ -836,57 +424,30 @@ class DeltaClient:
             self.api(
                 "DELETE",
                 "/v2/orders/all",
-                body={
-                    "product_id": int(product_id)
-                },
-                auth=True
+                body={"product_id": int(product_id)},
+                auth=True,
             )
-
         except Exception:
             pass
 
-    def market_entry_pure(
-        self,
-        product_id,
-        side,
-        size
-    ):
+    def market_entry_pure(self, product_id, side, size):
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
             "size": int(abs(size)),
             "side": side,
             "order_type": "market_order",
-            "client_order_id": (
-                f"entry_{int(time.time() * 1000)}"
-            )[-32:]
+            "client_order_id": f"entry_{int(time.time() * 1000)}"[-32:],
         }
+        return self.api("POST", "/v2/orders", body=body, auth=True)
 
-        return self.api(
-            "POST",
-            "/v2/orders",
-            body=body,
-            auth=True
-        )
-
-    def close_position(
-        self,
-        product_id,
-        size
-    ):
+    def close_position(self, product_id, size):
         if size == 0:
             return
 
-        self.cancel_all_orders(
-            product_id
-        )
+        self.cancel_all_orders(product_id)
 
-        side = (
-            "sell"
-            if size > 0
-            else "buy"
-        )
-
+        side = "sell" if size > 0 else "buy"
         body = {
             "product_id": int(product_id),
             "product_symbol": self.symbol,
@@ -894,201 +455,84 @@ class DeltaClient:
             "side": side,
             "order_type": "market_order",
             "reduce_only": True,
-            "client_order_id": (
-                f"close_{int(time.time() * 1000)}"
-            )[-32:]
+            "client_order_id": f"close_{int(time.time() * 1000)}"[-32:],
         }
-
-        return self.api(
-            "POST",
-            "/v2/orders",
-            body=body,
-            auth=True
-        )
+        return self.api("POST", "/v2/orders", body=body, auth=True)
 
     def last_traded_price(self):
         try:
-            data = self.api(
-                "GET",
-                f"/v2/tickers/{self.symbol}"
-            )
-
+            data = self.api("GET", f"/v2/tickers/{self.symbol}")
             res = data.get("result")
-
             if isinstance(res, dict):
-
-                p = (
-                    res.get("close")
-                    or res.get("spot_price")
-                    or res.get("ltp")
-                )
-
+                p = res.get("close") or res.get("spot_price") or res.get("ltp")
                 if p is not None:
                     return Decimal(str(p))
-
         except Exception:
             pass
-
         return None
 
 
 # =====================================================================
-# TRADE HISTORY & STATS
+# HISTORY / STATS
 # =====================================================================
 
 def load_trade_history(unique_id):
-    filename = account_history_file(
-        unique_id
-    )
-
+    filename = account_history_file(unique_id)
     if not os.path.exists(filename):
         return []
-
     try:
-        with open(
-            filename,
-            "r",
-            encoding="utf-8"
-        ) as f:
+        with open(filename, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-        if isinstance(data, list):
-            return data
-
+        return data if isinstance(data, list) else []
     except Exception:
-        pass
-
-    return []
+        return []
 
 
-def save_trade_history(
-    unique_id,
-    history
-):
-    atomic_write_json(
-        account_history_file(unique_id),
-        history
-    )
+def save_trade_history(unique_id, history):
+    atomic_write_json(account_history_file(unique_id), history)
 
 
-def calculate_trade_pnl(
-    direction,
-    entry_price,
-    exit_price,
-    size,
-    product_info
-):
+def calculate_trade_pnl(direction, entry_price, exit_price, size, product_info):
     try:
-        entry = Decimal(
-            str(entry_price)
-        )
-
-        exit_val = Decimal(
-            str(exit_price)
-        )
-
-        qty = Decimal(
-            str(abs(size))
-        )
-
-        cv = Decimal(
-            str(
-                product_info.get(
-                    "contract_value"
-                )
-                or product_info.get(
-                    "contract_value_usd"
-                )
-                or "0.001"
-            )
-        )
-
+        entry = Decimal(str(entry_price))
+        exit_val = Decimal(str(exit_price))
+        qty = Decimal(str(abs(size)))
+        cv = Decimal(str(
+            product_info.get("contract_value")
+            or product_info.get("contract_value_usd")
+            or "0.001"
+        ))
         if cv <= 0:
             cv = Decimal("0.001")
-
         if direction == "LONG":
-            return (
-                (exit_val - entry)
-                * qty
-                * cv
-            )
-
-        return (
-            (entry - exit_val)
-            * qty
-            * cv
-        )
-
+            return (exit_val - entry) * qty * cv
+        return (entry - exit_val) * qty * cv
     except Exception:
         return Decimal("0")
 
 
 def calculate_statistics(history):
-
     def compute_stats(trades):
-
         total = len(trades)
-
-        wins = [
-            t
-            for t in trades
-            if t.get("pnl", 0) > 0
-        ]
-
-        losses = [
-            t
-            for t in trades
-            if t.get("pnl", 0) < 0
-        ]
-
-        pnl = sum(
-            Decimal(
-                str(
-                    t.get(
-                        "pnl",
-                        0
-                    )
-                )
-            )
-            for t in trades
-        )
-
-        win_rate = (
-            len(wins)
-            / total
-            * 100
-            if total > 0
-            else 0.0
-        )
-
+        wins = [t for t in trades if float(t.get("pnl", 0) or 0) > 0]
+        losses = [t for t in trades if float(t.get("pnl", 0) or 0) < 0]
+        pnl = sum(Decimal(str(t.get("pnl", 0) or 0)) for t in trades)
         return {
             "total_trades": total,
             "winning_trades": len(wins),
             "losing_trades": len(losses),
-            "win_rate": float(win_rate),
-            "pnl": float(pnl)
+            "win_rate": (len(wins) / total * 100) if total else 0.0,
+            "pnl": float(pnl),
         }
 
-    today_str = now_ist().strftime(
-        "%Y-%m-%d"
-    )
-
+    today_str = now_ist().strftime("%Y-%m-%d")
     today_trades = [
-        t
-        for t in history
-        if str(
-            t.get("date", "")
-        ).startswith(today_str)
+        t for t in history
+        if str(t.get("date", "")).startswith(today_str)
     ]
-
     return {
-        "today": compute_stats(
-            today_trades
-        ),
-
-        "all_time": compute_stats(
-            history
-        )
+        "today": compute_stats(today_trades),
+        "all_time": compute_stats(history),
     }
 
 
@@ -1097,7 +541,6 @@ def calculate_statistics(history):
 # =====================================================================
 
 class BreakoutSARBot:
-
     def __init__(
         self,
         account_id,
@@ -1106,46 +549,24 @@ class BreakoutSARBot:
         api_key,
         api_secret,
         symbol="XAUTUSD",
-        subscription=None
+        subscription=None,
     ):
         self.base_account_id = account_id
-
-        self.symbol = (
-            symbol.strip().upper()
-        )
-
-        self.strategy_key = (
-            f"breakout_sar_{self.symbol.lower()}"
-        )
-
-        self.unique_id = (
-            f"{account_id}_{self.symbol}_"
-            f"{self.strategy_key}"
-        )
-
-        self.account_name = (
-            f"{account_name} "
-            f"[{self.symbol}: Breakout + Reversal]"
-        )
-
+        self.symbol = symbol.strip().upper()
+        self.strategy_key = f"breakout_sar_{self.symbol.lower()}"
+        self.unique_id = f"{account_id}_{self.symbol}_{self.strategy_key}"
+        self.account_name = f"{account_name} [{self.symbol}: Breakout + Reversal]"
         self.account_type = account_type
-
-        self.subscription = (
-            subscription or {}
-        )
+        self.subscription = subscription or {}
 
         self.client = DeltaClient(
-            api_key,
-            api_secret,
-            account_name,
-            self.symbol
+            api_key, api_secret, account_name, self.symbol
         )
 
         self.product = None
         self.product_id = 0
 
         self.session_start = None
-
         self.day_high = None
         self.day_low = None
 
@@ -1155,616 +576,303 @@ class BreakoutSARBot:
         self.ready = False
         self.trading_armed = False
         self.bot_enabled = False
-
         self.stop_reason = None
         self.manual_squareoff_flag = False
 
         self.position = None
-
         self.stop_loss = 0.0
         self.entry_price = None
         self.size = 0
 
+        # Timestamp of the last completed 5M candle used to trail SL.
         self.last_checked_candle_time = 0
 
-        # TRUE = current position is the ONE reversal.
-        # FALSE = current position is a BASE breakout.
+        # Current position is the single reversal if True.
         self.is_reversal_position = False
 
-        # TRUE = when flat, base breakout is allowed.
+        # Base breakout allowed while flat.
         self.base_breakout_ready = True
 
-        self.leverage = (
-            Decimal("200")
-            if "BTC" in self.symbol
-            else Decimal("100")
-        )
+        # Prevent the same price tick / websocket message from submitting
+        # the same strategy action more than once.
+        self.last_strategy_price = None
 
-        self.balance_fraction = Decimal(
-            "0.10"
-        )
+        self.leverage = Decimal("200") if "BTC" in self.symbol else Decimal("100")
+        self.balance_fraction = Decimal("0.10")
 
         self.lock = threading.RLock()
-
         self.load_state()
-
         self.save()
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # SUBSCRIPTION
-    # =================================================================
+    # -----------------------------------------------------------------
 
     def is_expired(self):
-
         if self.account_type == "primary":
             return False
-
-        expiry_str = self.subscription.get(
-            "expiry"
-        )
-
+        expiry_str = self.subscription.get("expiry")
         if not expiry_str:
             return False
-
         try:
-            return (
-                now_ist().date()
-                > datetime.strptime(
-                    expiry_str,
-                    "%Y-%m-%d"
-                ).date()
-            )
-
+            return now_ist().date() > datetime.strptime(
+                expiry_str, "%Y-%m-%d"
+            ).date()
         except Exception:
             return False
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # STATE
-    # =================================================================
+    # -----------------------------------------------------------------
 
     def load_state(self):
-
-        filename = account_state_file(
-            self.unique_id
-        )
-
+        filename = account_state_file(self.unique_id)
         if not os.path.exists(filename):
             return
 
         try:
-
-            with open(
-                filename,
-                "r",
-                encoding="utf-8"
-            ) as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 state = json.load(f)
 
-            if state.get(
-                "session_start"
-            ):
-                self.session_start = (
-                    datetime.fromisoformat(
-                        state[
-                            "session_start"
-                        ]
-                    )
+            if state.get("session_start"):
+                self.session_start = datetime.fromisoformat(
+                    state["session_start"]
                 )
 
             if state.get("day_high") is not None:
-                self.day_high = Decimal(
-                    str(
-                        state["day_high"]
-                    )
-                )
-
+                self.day_high = Decimal(str(state["day_high"]))
             if state.get("day_low") is not None:
-                self.day_low = Decimal(
-                    str(
-                        state["day_low"]
-                    )
-                )
+                self.day_low = Decimal(str(state["day_low"]))
 
-            self.position = state.get(
-                "position"
-            )
-
-            self.stop_loss = float(
-                state.get(
-                    "stop_loss",
-                    0.0
-                )
-            )
-
-            self.entry_price = state.get(
-                "entry_price"
-            )
-
-            self.size = state.get(
-                "size",
-                0
-            )
+            self.position = state.get("position")
+            self.stop_loss = float(state.get("stop_loss", 0.0) or 0)
+            self.entry_price = state.get("entry_price")
+            self.size = int(state.get("size", 0) or 0)
 
             if state.get("leverage") is not None:
-                self.leverage = Decimal(
-                    str(
-                        state["leverage"]
-                    )
-                )
+                self.leverage = Decimal(str(state["leverage"]))
+            if state.get("balance_fraction") is not None:
+                self.balance_fraction = Decimal(str(state["balance_fraction"]))
 
-            if state.get(
-                "balance_fraction"
-            ) is not None:
-                self.balance_fraction = Decimal(
-                    str(
-                        state[
-                            "balance_fraction"
-                        ]
-                    )
-                )
-
-            self.bot_enabled = state.get(
-                "bot_enabled",
-                False
+            self.bot_enabled = bool(state.get("bot_enabled", False))
+            self.stop_reason = state.get("stop_reason")
+            self.ready = bool(state.get("ready", False))
+            self.trading_armed = bool(state.get("trading_armed", False))
+            self.is_reversal_position = bool(
+                state.get("is_reversal_position", False)
+            )
+            self.base_breakout_ready = bool(
+                state.get("base_breakout_ready", True)
             )
 
-            self.stop_reason = state.get(
-                "stop_reason"
-            )
-
-            self.ready = state.get(
-                "ready",
-                False
-            )
-
-            self.trading_armed = state.get(
-                "trading_armed",
-                False
-            )
-
-            self.is_reversal_position = state.get(
-                "is_reversal_position",
-                False
-            )
-
-            self.base_breakout_ready = state.get(
-                "base_breakout_ready",
-                True
-            )
-
+            # Safety recovery: flat always means base mode can re-arm,
+            # but only at a genuinely NEW session high/low.
             if not self.position or self.size <= 0:
+                self.position = None
+                self.size = 0
+                self.entry_price = None
                 self.base_breakout_ready = True
 
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"[{self.symbol}] State load error: {e}")
 
     def save(self):
-
         data = {
             "account_id": self.unique_id,
-
             "account_name": self.account_name,
-
             "symbol": self.symbol,
-
-            "session_start": (
-                self.session_start.isoformat()
-                if self.session_start
-                else None
-            ),
-
-            "day_high": (
-                str(self.day_high)
-                if self.day_high is not None
-                else None
-            ),
-
-            "day_low": (
-                str(self.day_low)
-                if self.day_low is not None
-                else None
-            ),
-
+            "session_start": self.session_start.isoformat() if self.session_start else None,
+            "day_high": str(self.day_high) if self.day_high is not None else None,
+            "day_low": str(self.day_low) if self.day_low is not None else None,
             "position": self.position,
-
             "stop_loss": self.stop_loss,
-
             "entry_price": self.entry_price,
-
             "size": self.size,
-
-            "leverage": int(
-                self.leverage
-            ),
-
-            "balance_fraction": float(
-                self.balance_fraction
-            ),
-
+            "leverage": int(self.leverage),
+            "balance_fraction": float(self.balance_fraction),
             "bot_enabled": self.bot_enabled,
-
             "stop_reason": self.stop_reason,
-
             "ready": self.ready,
-
             "trading_armed": self.trading_armed,
-
-            "is_reversal_position": (
-                self.is_reversal_position
-            ),
-
-            "base_breakout_ready": (
-                self.base_breakout_ready
-            )
+            "is_reversal_position": self.is_reversal_position,
+            "base_breakout_ready": self.base_breakout_ready,
         }
+        atomic_write_json(account_state_file(self.unique_id), data)
 
-        atomic_write_json(
-            account_state_file(
-                self.unique_id
-            ),
-            data
-        )
+    # -----------------------------------------------------------------
+    # 5M CANDLES
+    # -----------------------------------------------------------------
 
-    # =================================================================
-    # 5 MIN CANDLES
-    # =================================================================
-
-    def get_5m_candles(
-        self,
-        limit=5
-    ):
+    def get_5m_candles(self, limit=5):
         try:
-
-            end_ts = int(
-                now_ist().timestamp()
-            )
-
-            start_ts = (
-                end_ts
-                - (
-                    limit
-                    * 5
-                    * 60
-                )
-            )
-
-            params = {
-                "resolution": "5m",
-                "symbol": self.symbol,
-                "start": start_ts,
-                "end": end_ts
-            }
+            end_ts = int(now_ist().timestamp())
+            start_ts = end_ts - limit * 5 * 60
 
             data = self.client.api(
                 "GET",
                 "/v2/history/candles",
-                params=params
+                params={
+                    "resolution": "5m",
+                    "symbol": self.symbol,
+                    "start": start_ts,
+                    "end": end_ts,
+                },
             )
 
-            candles = data.get(
-                "result",
-                []
-            )
-
+            candles = data.get("result", [])
             formatted = []
 
             for c in candles:
-
                 try:
-
-                    if isinstance(
-                        c,
-                        dict
-                    ):
-
+                    if isinstance(c, dict):
+                        ts = float(c.get("time") or c.get("timestamp") or c.get("start") or 0)
+                        if ts > 100000000000:
+                            ts /= 1000.0
                         formatted.append({
-                            "time": float(
-                                c.get(
-                                    "time"
-                                )
-                                or c.get(
-                                    "timestamp"
-                                )
-                                or 0
-                            ),
-
-                            "high": float(
-                                c.get(
-                                    "high"
-                                )
-                            ),
-
-                            "low": float(
-                                c.get(
-                                    "low"
-                                )
-                            ),
-
-                            "close": float(
-                                c.get(
-                                    "close"
-                                )
-                            )
+                            "time": ts,
+                            "high": float(c.get("high")),
+                            "low": float(c.get("low")),
+                            "close": float(c.get("close")),
                         })
-
-                    elif (
-                        isinstance(c, list)
-                        and len(c) >= 5
-                    ):
-
+                    elif isinstance(c, list) and len(c) >= 5:
+                        ts = float(c[0])
+                        if ts > 100000000000:
+                            ts /= 1000.0
                         formatted.append({
-                            "time": float(
-                                c[0]
-                            ),
-
-                            "high": float(
-                                c[2]
-                            ),
-
-                            "low": float(
-                                c[3]
-                            ),
-
-                            "close": float(
-                                c[4]
-                            )
+                            "time": ts,
+                            "high": float(c[2]),
+                            "low": float(c[3]),
+                            "close": float(c[4]),
                         })
-
                 except Exception:
                     continue
 
+            formatted.sort(key=lambda x: x["time"])
             return formatted
-
         except Exception:
             return []
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # POSITION REFRESH
-    # =================================================================
+    # -----------------------------------------------------------------
 
     def refresh_position(self):
-
-        if not self.bot_enabled:
-
+        if not self.bot_enabled or not self.product_id:
             return {
                 "size": 0,
                 "entry_price": None,
-                "stop_loss": None,
-                "unrealized_pnl": 0
+                "stop_loss": self.stop_loss,
+                "unrealized_pnl": 0,
             }
 
-        if not self.product_id:
-
-            try:
-
-                self.product = (
-                    self.client.product()
-                )
-
-                self.product_id = int(
-                    self.product["id"]
-                )
-
-            except Exception:
-
-                return {
-                    "size": 0,
-                    "entry_price": None,
-                    "stop_loss": None,
-                    "unrealized_pnl": 0
-                }
-
         try:
-
-            exchange_pos = (
-                self.client.position(
-                    self.product_id
-                )
-            )
-
-            ex_size = exchange_pos.get(
-                "size",
-                0
-            )
+            exchange_pos = self.client.position(self.product_id)
+            ex_size = int(exchange_pos.get("size", 0) or 0)
 
             if ex_size != 0:
-
-                self.position = (
-                    "LONG"
-                    if ex_size > 0
-                    else "SHORT"
-                )
-
+                self.position = "LONG" if ex_size > 0 else "SHORT"
                 self.size = abs(ex_size)
 
-                if exchange_pos.get(
-                    "entry_price"
-                ):
-                    self.entry_price = (
-                        exchange_pos.get(
-                            "entry_price"
-                        )
-                    )
+                if exchange_pos.get("entry_price"):
+                    self.entry_price = exchange_pos["entry_price"]
 
-                unrealized_pnl = 0
-
-                if (
-                    self.entry_price
-                    and self.last_price
-                ):
-
-                    unrealized_pnl = float(
-                        calculate_trade_pnl(
-                            self.position,
-                            self.entry_price,
-                            self.last_price,
-                            self.size,
-                            self.product
-                            or {
-                                "contract_value":
-                                "0.001"
-                            }
-                        )
-                    )
+                unrealized_pnl = 0.0
+                if self.entry_price and self.last_price and self.product:
+                    unrealized_pnl = float(calculate_trade_pnl(
+                        self.position,
+                        self.entry_price,
+                        self.last_price,
+                        self.size,
+                        self.product,
+                    ))
 
                 return {
                     "size": ex_size,
                     "entry_price": self.entry_price,
                     "stop_loss": self.stop_loss,
-                    "leverage": (
-                        exchange_pos.get(
-                            "leverage"
-                        )
-                        or int(
-                            self.leverage
-                        )
-                    ),
-                    "liquidation_price": (
-                        exchange_pos.get(
-                            "liquidation_price"
-                        )
-                    ),
-                    "unrealized_pnl":
-                        unrealized_pnl
+                    "leverage": exchange_pos.get("leverage") or int(self.leverage),
+                    "liquidation_price": exchange_pos.get("liquidation_price"),
+                    "unrealized_pnl": unrealized_pnl,
                 }
 
-            else:
-
-                self.position = None
-                self.entry_price = None
-                self.size = 0
-
-                self.base_breakout_ready = True
-
-                return {
-                    "size": 0,
-                    "entry_price": None,
-                    "stop_loss": None,
-                    "unrealized_pnl": 0
-                }
-
-        except Exception:
+            # Exchange is flat. Do not change day_high/day_low here.
+            # Those levels are strategy state and must remain intact.
+            self.position = None
+            self.entry_price = None
+            self.size = 0
+            self.base_breakout_ready = True
 
             return {
                 "size": 0,
                 "entry_price": None,
-                "stop_loss": None,
-                "unrealized_pnl": 0
+                "stop_loss": self.stop_loss,
+                "unrealized_pnl": 0,
             }
 
-    # =================================================================
+        except Exception:
+            return {
+                "size": 0,
+                "entry_price": self.entry_price,
+                "stop_loss": self.stop_loss,
+                "unrealized_pnl": 0,
+            }
+
+    # -----------------------------------------------------------------
     # SETTINGS
-    # =================================================================
+    # -----------------------------------------------------------------
 
-    def update_settings(
-        self,
-        new_lev,
-        new_frac
-    ):
-
+    def update_settings(self, new_lev, new_frac):
         with self.lock:
-
             try:
-
-                self.leverage = Decimal(
-                    str(new_lev)
-                )
-
-                self.balance_fraction = Decimal(
-                    str(new_frac)
-                )
-
+                self.leverage = Decimal(str(new_lev))
+                self.balance_fraction = Decimal(str(new_frac))
                 if self.product_id:
-
-                    self.client.set_leverage(
-                        self.product_id,
-                        self.leverage
-                    )
-
+                    self.client.set_leverage(self.product_id, self.leverage)
                 self.save()
-
                 return {
                     "success": True,
                     "message": (
                         f"Saved {self.symbol} Settings! "
                         f"Lev: {int(self.leverage)}x | "
-                        f"Margin: "
-                        f"{float(self.balance_fraction) * 100}%"
-                    )
+                        f"Margin: {float(self.balance_fraction) * 100}%"
+                    ),
                 }
-
             except Exception as e:
+                return {"success": False, "message": str(e)}
 
-                return {
-                    "success": False,
-                    "message": str(e)
-                }
-
-    # =================================================================
+    # -----------------------------------------------------------------
     # START / STOP
-    # =================================================================
+    # -----------------------------------------------------------------
 
     def start_bot(self):
-
         with self.lock:
-
             if self.is_expired():
-
-                return {
-                    "success": False,
-                    "message": "Subscription expired."
-                }
+                return {"success": False, "message": "Subscription expired."}
 
             self.manual_squareoff_flag = False
-
             self.bot_enabled = True
 
             if not self.position or self.size <= 0:
                 self.base_breakout_ready = True
 
             self.save()
-
             return {
                 "success": True,
                 "bot_enabled": True,
-                "message": (
-                    f"Bot for {self.symbol} Started."
-                )
+                "message": f"Bot for {self.symbol} Started.",
             }
 
     def stop_bot(self):
-
         with self.lock:
-
             self.bot_enabled = False
-
             self.stop_reason = "MANUAL STOP"
-
             self.manual_squareoff_flag = True
 
-            if (
-                self.position
-                and self.size > 0
-            ):
-
+            if self.position and self.size > 0 and self.product_id:
                 try:
-
-                    close_sz = (
-                        self.size
-                        if self.position == "LONG"
-                        else -self.size
-                    )
-
-                    self.client.close_position(
-                        self.product_id,
-                        close_sz
-                    )
-
-                    self.finish_trade(
-                        "MANUAL",
-                        self.last_price or 0
-                    )
-
+                    close_sz = self.size if self.position == "LONG" else -self.size
+                    self.client.close_position(self.product_id, close_sz)
+                    self.finish_trade("MANUAL", self.last_price or 0)
                 except Exception:
                     pass
 
@@ -1772,364 +880,186 @@ class BreakoutSARBot:
             self.entry_price = None
             self.size = 0
             self.stop_loss = 0.0
-
             self.is_reversal_position = False
-
             self.base_breakout_ready = True
-
             self.save()
 
             return {
                 "success": True,
                 "bot_enabled": False,
-                "message": (
-                    f"Bot for {self.symbol} Stopped."
-                )
+                "message": f"Bot for {self.symbol} Stopped.",
             }
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # SESSION CHANGE
-    # =================================================================
+    # -----------------------------------------------------------------
 
-    def check_session_change(
-        self,
-        now
-    ):
+    def check_session_change(self, now):
+        current_sess = get_current_session_start(now)
 
-        current_sess = (
-            get_current_session_start(
-                now
-            )
-        )
+        if self.session_start == current_sess:
+            return
 
-        if self.session_start != current_sess:
+        if self.product_id:
+            try:
+                self.client.cancel_all_orders(self.product_id)
+            except Exception:
+                pass
 
-            if self.product_id:
+        # A new session starts at 05:30 IST Monday-Friday.
+        # Any position must not be carried through the weekend.
+        if self.position and self.size > 0 and self.product_id:
+            try:
+                close_sz = self.size if self.position == "LONG" else -self.size
+                self.client.close_position(self.product_id, close_sz)
+                self.finish_trade("SESSION_CHANGE_CLOSE", self.last_price or 0)
+            except Exception:
+                pass
 
-                self.client.cancel_all_orders(
-                    self.product_id
-                )
+        self.session_start = current_sess
+        self.day_high = None
+        self.day_low = None
+        self.prev_price = None
+        self.position = None
+        self.entry_price = None
+        self.size = 0
+        self.stop_loss = 0.0
+        self.is_reversal_position = False
+        self.base_breakout_ready = True
+        self.manual_squareoff_flag = False
+        self.ready = False
+        self.trading_armed = False
+        self.last_checked_candle_time = 0
+        self.last_strategy_price = None
 
-            self.session_start = (
-                current_sess
-            )
+        if self.product_id and not is_weekend(self.symbol, now):
+            h, l = self.client.get_session_high_low(self.session_start)
+            if h is not None and l is not None:
+                self.day_high = h
+                self.day_low = l
+                self.ready = True
 
-            self.day_high = None
-            self.day_low = None
-            self.prev_price = None
+        self.save()
 
-            self.position = None
-            self.entry_price = None
-            self.size = 0
-            self.stop_loss = 0.0
-
-            self.is_reversal_position = False
-
-            self.base_breakout_ready = True
-
-            self.manual_squareoff_flag = False
-
-            self.ready = False
-            self.trading_armed = False
-
-            if self.product_id:
-
-                h, l = (
-                    self.client.get_session_high_low(
-                        self.product_id,
-                        self.session_start
-                    )
-                )
-
-                if (
-                    h is not None
-                    and l is not None
-                ):
-
-                    self.day_high = h
-                    self.day_low = l
-                    self.ready = True
-
-            self.save()
-
-    # =================================================================
+    # -----------------------------------------------------------------
     # PREPARE
-    # =================================================================
+    # -----------------------------------------------------------------
 
     def prepare(self, now):
-
         if not self.product_id:
-
             try:
-
-                self.product = (
-                    self.client.product()
-                )
-
-                self.product_id = int(
-                    self.product["id"]
-                )
-
+                self.product = self.client.product()
+                self.product_id = int(self.product["id"])
             except Exception:
                 return False
 
         if self.session_start is None:
+            self.session_start = get_current_session_start(now)
 
-            self.session_start = (
-                get_current_session_start(
-                    now
-                )
-            )
+        # Weekend: do not create/update a trading session.
+        if is_weekend(self.symbol, now):
+            return True
 
-        if (
-            self.day_high is None
-            or self.day_low is None
-        ):
-
-            h, l = (
-                self.client.get_session_high_low(
-                    self.product_id,
-                    self.session_start
-                )
-            )
-
-            if (
-                h is not None
-                and l is not None
-            ):
-
+        if self.day_high is None or self.day_low is None:
+            h, l = self.client.get_session_high_low(self.session_start)
+            if h is not None and l is not None:
                 self.day_high = h
                 self.day_low = l
-
                 self.ready = True
-
                 self.save()
 
         return True
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # LIQUIDATION ESTIMATE
-    # =================================================================
+    # -----------------------------------------------------------------
 
-    def estimate_liquidation_price(
-        self,
-        entry_price,
-        leverage,
-        direction
-    ):
-
-        entry = Decimal(
-            str(entry_price)
-        )
-
-        lev = Decimal(
-            str(leverage)
-        )
-
-        if (
-            entry <= 0
-            or lev <= 0
-        ):
+    def estimate_liquidation_price(self, entry_price, leverage, direction):
+        entry = Decimal(str(entry_price))
+        lev = Decimal(str(leverage))
+        if entry <= 0 or lev <= 0:
             return None
 
-        m_raw = (
-            self.product.get(
-                "maintenance_margin",
-                0
-            )
-            if self.product
-            else 0
-        )
-
-        t_raw = (
-            self.product.get(
-                "taker_commission_rate",
-                0
-            )
-            if self.product
-            else 0
-        )
+        m_raw = self.product.get("maintenance_margin", 0) if self.product else 0
+        t_raw = self.product.get("taker_commission_rate", 0) if self.product else 0
 
         try:
-            maintenance = (
-                Decimal(str(m_raw))
-                / Decimal("100")
-            )
-
+            maintenance = Decimal(str(m_raw)) / Decimal("100")
         except Exception:
             maintenance = Decimal("0")
 
         try:
-            taker_fee = Decimal(
-                str(t_raw)
-            )
-
+            taker_fee = Decimal(str(t_raw))
         except Exception:
             taker_fee = Decimal("0")
 
-        safety = Decimal("0.0010")
-
-        effective_mm = (
-            maintenance
-            + taker_fee
-            + safety
-        )
+        effective_mm = maintenance + taker_fee + Decimal("0.0010")
 
         if direction == "LONG":
-
-            return (
-                entry
-                * (
-                    Decimal("1")
-                    - (
-                        Decimal("1")
-                        / lev
-                    )
-                    + effective_mm
-                )
+            return entry * (
+                Decimal("1") - Decimal("1") / lev + effective_mm
             )
 
-        return (
-            entry
-            * (
-                Decimal("1")
-                + (
-                    Decimal("1")
-                    / lev
-                )
-                - effective_mm
-            )
+        return entry * (
+            Decimal("1") + Decimal("1") / lev - effective_mm
         )
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # ENTER
-    # =================================================================
+    # -----------------------------------------------------------------
 
-    def enter(
-        self,
-        direction,
-        price,
-        initial_sl,
-        is_reversal=False
-    ):
-
+    def enter(self, direction, price, initial_sl, is_reversal=False):
         if (
             self.is_expired()
             or self.manual_squareoff_flag
             or not self.bot_enabled
+            or is_weekend(self.symbol)
         ):
             return False
 
         try:
-
-            current_pos = (
-                self.client.position(
-                    self.product_id
-                )
-            )
-
-            if current_pos.get(
-                "size",
-                0
-            ) != 0:
+            current_pos = self.client.position(self.product_id)
+            if int(current_pos.get("size", 0) or 0) != 0:
                 return False
 
-            if "BTC" in self.symbol:
-
-                lev_ladder = list(
-                    range(
-                        200,
-                        9,
-                        -10
-                    )
-                )
-
-            else:
-
-                lev_ladder = [
-                    100,
-                    90,
-                    80,
-                    70,
-                    60,
-                    50,
-                    40,
-                    30,
-                    20,
-                    10
-                ]
+            lev_ladder = (
+                list(range(200, 9, -10))
+                if "BTC" in self.symbol
+                else [100, 90, 80, 70, 60, 50, 40, 30, 20, 10]
+            )
 
             order_done = False
-
             chosen_lev = self.leverage
-
             size = 0
 
             for lev in lev_ladder:
-
-                lev_decimal = Decimal(
-                    str(lev)
+                lev_decimal = Decimal(str(lev))
+                candidate_liq = self.estimate_liquidation_price(
+                    price, lev_decimal, direction
                 )
-
-                candidate_liq = (
-                    self.estimate_liquidation_price(
-                        price,
-                        lev_decimal,
-                        direction
-                    )
-                )
-
                 if candidate_liq is None:
                     continue
 
-                if (
-                    direction == "LONG"
-                    and candidate_liq
-                    >= Decimal(str(initial_sl))
-                ):
+                if direction == "LONG" and candidate_liq >= Decimal(str(initial_sl)):
                     continue
-
-                if (
-                    direction == "SHORT"
-                    and candidate_liq
-                    <= Decimal(str(initial_sl))
-                ):
+                if direction == "SHORT" and candidate_liq <= Decimal(str(initial_sl)):
                     continue
 
                 try:
-
-                    self.client.set_leverage(
-                        self.product_id,
-                        lev_decimal
+                    self.client.set_leverage(self.product_id, lev_decimal)
+                    size = self.client.order_size(
+                        self.product,
+                        Decimal(str(price)),
+                        lev_decimal,
+                        self.balance_fraction,
                     )
-
-                    size = (
-                        self.client.order_size(
-                            self.product,
-                            Decimal(str(price)),
-                            lev_decimal,
-                            self.balance_fraction
-                        )
-                    )
-
-                    side = (
-                        "buy"
-                        if direction == "LONG"
-                        else "sell"
-                    )
-
+                    side = "buy" if direction == "LONG" else "sell"
                     self.client.market_entry_pure(
-                        self.product_id,
-                        side,
-                        size
+                        self.product_id, side, size
                     )
-
                     chosen_lev = lev_decimal
-
                     order_done = True
-
                     break
-
                 except Exception:
                     continue
 
@@ -2137,714 +1067,345 @@ class BreakoutSARBot:
                 return False
 
             self.position = direction
-
-            self.entry_price = float(
-                price
-            )
-
-            self.size = size
-
+            self.entry_price = float(price)
+            self.size = int(size)
             self.leverage = chosen_lev
-
-            self.stop_loss = float(
-                initial_sl
-            )
-
-            self.is_reversal_position = bool(
-                is_reversal
-            )
-
+            self.stop_loss = float(initial_sl)
+            self.is_reversal_position = bool(is_reversal)
             self.base_breakout_ready = False
-
             self.save()
 
             logging.info(
-                f"[{self.symbol}] "
-                f"Entered {direction} "
-                f"{'REVERSAL' if is_reversal else 'BASE BREAKOUT'} "
-                f"| Price: {price} "
-                f"| Lev: {int(chosen_lev)}x "
-                f"| Margin: "
-                f"{float(self.balance_fraction) * 100}% "
-                f"| SL: {initial_sl}"
+                f"[{self.symbol}] ENTER {direction} "
+                f"{'REVERSAL' if is_reversal else 'BASE'} "
+                f"| Price={price} | Lev={int(chosen_lev)}x "
+                f"| SL={initial_sl}"
             )
-
             return True
 
         except Exception as e:
-
-            logging.error(
-                f"[{self.symbol}] "
-                f"Entry error: {e}"
-            )
-
+            logging.error(f"[{self.symbol}] Entry error: {e}")
             return False
 
-    # =================================================================
-    # CLOSE CURRENT POSITION
-    # =================================================================
+    # -----------------------------------------------------------------
+    # CLOSE CURRENT
+    # -----------------------------------------------------------------
 
-    def close_current_position(
-        self,
-        reason,
-        exit_price
-    ):
-
-        if (
-            not self.position
-            or self.size <= 0
-        ):
+    def close_current_position(self, reason, exit_price):
+        if not self.position or self.size <= 0:
             return
 
         old_position = self.position
         old_size = self.size
 
         try:
-
-            close_sz = (
-                old_size
-                if old_position == "LONG"
-                else -old_size
-            )
-
-            self.finish_trade(
-                reason,
-                exit_price
-            )
-
-            self.client.close_position(
-                self.product_id,
-                close_sz
-            )
-
+            close_sz = old_size if old_position == "LONG" else -old_size
+            self.finish_trade(reason, exit_price)
+            self.client.close_position(self.product_id, close_sz)
         except Exception as e:
-
-            logging.error(
-                f"[{self.symbol}] "
-                f"Close error: {e}"
-            )
-
+            logging.error(f"[{self.symbol}] Close error: {e}")
         finally:
-
             self.position = None
             self.entry_price = None
             self.size = 0
             self.stop_loss = 0.0
-
             self.is_reversal_position = False
-
-            # IMPORTANT:
-            # Once flat, base breakout logic is immediately active.
             self.base_breakout_ready = True
-
             self.save()
 
-    # =================================================================
+    # -----------------------------------------------------------------
     # REVERSAL
-    # =================================================================
+    # -----------------------------------------------------------------
 
-    def reverse_from_sl(
-        self,
-        price,
-        prev_candle
-    ):
-
-        if (
-            not self.position
-            or self.size <= 0
-        ):
+    def reverse_from_sl(self, price, prev_candle):
+        if not self.position or self.size <= 0:
             return False
 
         old_direction = self.position
-
-        old_is_reversal = (
-            self.is_reversal_position
-        )
-
+        old_is_reversal = self.is_reversal_position
         old_size = self.size
 
-        # =============================================================
-        # LONG SL HIT
-        # =============================================================
+        # A reversal position can NEVER create another reversal.
+        if old_is_reversal:
+            logging.info(
+                f"[{self.symbol}] REVERSAL {old_direction} SL HIT "
+                f"| FLAT | NO SECOND REVERSAL"
+            )
+            self.close_current_position("REVERSAL_SL_HIT", price)
+            return True
 
         if old_direction == "LONG":
-
-            # ---------------------------------------------------------
-            # REVERSAL LONG SL:
-            #
-            # This is already the ONE reversal.
-            # Therefore:
-            #
-            # LONG reversal -> FLAT
-            #
-            # NO SECOND REVERSAL.
-            #
-            # After closing, evaluate() will continue and check
-            # BASE BREAKOUT MODE in the same tick.
-            # ---------------------------------------------------------
-
-            if old_is_reversal:
-
-                logging.info(
-                    f"[{self.symbol}] "
-                    f"REVERSAL LONG SL HIT "
-                    f"| Price: {price} "
-                    f"| Closing FLAT "
-                    f"| No further reversal "
-                    f"| BASE BREAKOUT MODE ACTIVE"
-                )
-
-                self.close_current_position(
-                    "REVERSAL_SL_HIT",
-                    price
-                )
-
-                return True
-
-            # ---------------------------------------------------------
-            # BASE LONG SL:
-            #
-            # LONG -> ONE SHORT REVERSAL
-            #
-            # SHORT reversal SL =
-            # SAME previous completed 5M candle HIGH.
-            # ---------------------------------------------------------
-
             reversal_sl = prev_candle["high"]
 
             logging.info(
-                f"[{self.symbol}] "
-                f"BASE LONG SL HIT "
-                f"| Price: {price} "
-                f"| ONE REVERSAL -> SHORT "
-                f"| SHORT SL: {reversal_sl}"
+                f"[{self.symbol}] BASE LONG SL HIT "
+                f"| ONE REVERSAL -> SHORT | SL={reversal_sl}"
             )
 
             try:
-
-                self.finish_trade(
-                    "SL_HIT_REVERSAL",
-                    price
-                )
-
-                self.client.close_position(
-                    self.product_id,
-                    old_size
-                )
-
+                self.finish_trade("SL_HIT_REVERSAL", price)
+                self.client.close_position(self.product_id, old_size)
             except Exception as e:
-
-                logging.error(
-                    f"[{self.symbol}] "
-                    f"LONG close before reversal "
-                    f"failed: {e}"
-                )
-
+                logging.error(f"[{self.symbol}] LONG close before reversal failed: {e}")
                 return False
 
             self.position = None
             self.entry_price = None
             self.size = 0
             self.stop_loss = 0.0
-
             self.is_reversal_position = False
-
+            self.base_breakout_ready = False
             self.save()
 
-            # ---------------------------------------------------------
-            # Enter ONE SHORT reversal.
-            # ---------------------------------------------------------
-
             success = self.enter(
-                "SHORT",
-                price,
-                reversal_sl,
-                is_reversal=True
+                "SHORT", price, reversal_sl, is_reversal=True
             )
 
             if not success:
-
                 self.position = None
                 self.entry_price = None
                 self.size = 0
                 self.stop_loss = 0.0
-
                 self.is_reversal_position = False
-
                 self.base_breakout_ready = True
-
                 self.save()
-
-                logging.warning(
-                    f"[{self.symbol}] "
-                    f"SHORT reversal entry failed. "
-                    f"BOT IS FLAT -> BASE BREAKOUT MODE ACTIVE."
-                )
 
             return success
 
-        # =============================================================
-        # SHORT SL HIT
-        # =============================================================
-
         if old_direction == "SHORT":
-
-            # ---------------------------------------------------------
-            # REVERSAL SHORT SL:
-            #
-            # This is already the ONE reversal.
-            #
-            # SHORT reversal -> FLAT
-            #
-            # NO SECOND REVERSAL.
-            #
-            # evaluate() will continue and check BASE BREAKOUT MODE.
-            # ---------------------------------------------------------
-
-            if old_is_reversal:
-
-                logging.info(
-                    f"[{self.symbol}] "
-                    f"REVERSAL SHORT SL HIT "
-                    f"| Price: {price} "
-                    f"| Closing FLAT "
-                    f"| No further reversal "
-                    f"| BASE BREAKOUT MODE ACTIVE"
-                )
-
-                self.close_current_position(
-                    "REVERSAL_SL_HIT",
-                    price
-                )
-
-                return True
-
-            # ---------------------------------------------------------
-            # BASE SHORT SL:
-            #
-            # SHORT -> ONE LONG REVERSAL
-            #
-            # LONG reversal SL =
-            # SAME previous completed 5M candle LOW.
-            # ---------------------------------------------------------
-
             reversal_sl = prev_candle["low"]
 
             logging.info(
-                f"[{self.symbol}] "
-                f"BASE SHORT SL HIT "
-                f"| Price: {price} "
-                f"| ONE REVERSAL -> LONG "
-                f"| LONG SL: {reversal_sl}"
+                f"[{self.symbol}] BASE SHORT SL HIT "
+                f"| ONE REVERSAL -> LONG | SL={reversal_sl}"
             )
 
             try:
-
-                self.finish_trade(
-                    "SL_HIT_REVERSAL",
-                    price
-                )
-
-                self.client.close_position(
-                    self.product_id,
-                    -old_size
-                )
-
+                self.finish_trade("SL_HIT_REVERSAL", price)
+                self.client.close_position(self.product_id, -old_size)
             except Exception as e:
-
-                logging.error(
-                    f"[{self.symbol}] "
-                    f"SHORT close before reversal "
-                    f"failed: {e}"
-                )
-
+                logging.error(f"[{self.symbol}] SHORT close before reversal failed: {e}")
                 return False
 
             self.position = None
             self.entry_price = None
             self.size = 0
             self.stop_loss = 0.0
-
             self.is_reversal_position = False
-
+            self.base_breakout_ready = False
             self.save()
 
-            # ---------------------------------------------------------
-            # Enter ONE LONG reversal.
-            # ---------------------------------------------------------
-
             success = self.enter(
-                "LONG",
-                price,
-                reversal_sl,
-                is_reversal=True
+                "LONG", price, reversal_sl, is_reversal=True
             )
 
             if not success:
-
                 self.position = None
                 self.entry_price = None
                 self.size = 0
                 self.stop_loss = 0.0
-
                 self.is_reversal_position = False
-
                 self.base_breakout_ready = True
-
                 self.save()
-
-                logging.warning(
-                    f"[{self.symbol}] "
-                    f"LONG reversal entry failed. "
-                    f"BOT IS FLAT -> BASE BREAKOUT MODE ACTIVE."
-                )
 
             return success
 
         return False
 
-    # =================================================================
-    # MAIN EVALUATION
-    # =================================================================
+    # -----------------------------------------------------------------
+    # WEEKEND FLAT
+    # -----------------------------------------------------------------
 
-    def evaluate(
-        self,
-        price=None
-    ):
-
+    def force_weekend_flat(self):
         with self.lock:
+            if self.position and self.size > 0 and self.product_id:
+                try:
+                    close_sz = self.size if self.position == "LONG" else -self.size
+                    self.finish_trade("WEEKEND_CLOSE", self.last_price or 0)
+                    self.client.close_position(self.product_id, close_sz)
+                except Exception as e:
+                    logging.warning(f"[{self.symbol}] Weekend close error: {e}")
 
-            if (
-                not self.bot_enabled
-                or self.is_expired()
-            ):
+            self.position = None
+            self.entry_price = None
+            self.size = 0
+            self.stop_loss = 0.0
+            self.is_reversal_position = False
+            self.base_breakout_ready = True
+            self.save()
+
+    # -----------------------------------------------------------------
+    # MAIN EVALUATION
+    # -----------------------------------------------------------------
+
+    def evaluate(self, price=None):
+        with self.lock:
+            if not self.bot_enabled or self.is_expired():
                 return
 
             now = now_ist()
 
-            price = (
-                price
-                or self.client.last_traded_price()
-            )
+            # HARD WEEKEND LOCK FOR BOTH ASSETS.
+            if is_weekend(self.symbol, now):
+                self.force_weekend_flat()
+                self.prev_price = None
+                return
 
+            if price is None:
+                price = self.client.last_traded_price()
             if price is None:
                 return
 
-            self.last_price = float(
-                price
-            )
+            new_price = float(price)
+            self.last_price = new_price
+
+            # Prevent identical price messages from being treated as
+            # multiple breakout signals.
+            if (
+                self.last_strategy_price is not None
+                and new_price == self.last_strategy_price
+            ):
+                return
+            self.last_strategy_price = new_price
 
             if self.prev_price is None:
-
-                self.prev_price = (
-                    self.last_price
-                )
-
+                self.prev_price = new_price
                 return
 
             old_price = self.prev_price
-
-            new_price = self.last_price
-
             self.prev_price = new_price
 
-            # ---------------------------------------------------------
-            # WEEKEND
-            # ---------------------------------------------------------
+            self.check_session_change(now)
 
-            if is_weekend(
-                self.symbol,
-                now
-            ):
-
-                if (
-                    self.position
-                    and self.size > 0
-                ):
-
-                    try:
-
-                        close_sz = (
-                            self.size
-                            if self.position == "LONG"
-                            else -self.size
-                        )
-
-                        self.client.close_position(
-                            self.product_id,
-                            close_sz
-                        )
-
-                        self.finish_trade(
-                            "WEEKEND_CLOSE",
-                            self.last_price
-                        )
-
-                    except Exception:
-                        pass
-
-                    self.position = None
-                    self.entry_price = None
-                    self.size = 0
-                    self.stop_loss = 0.0
-
-                    self.is_reversal_position = False
-
-                    self.base_breakout_ready = True
-
-                    self.save()
-
+            if not self.prepare(now) or not self.ready:
                 return
-
-            # ---------------------------------------------------------
-            # SESSION
-            # ---------------------------------------------------------
-
-            self.check_session_change(
-                now
-            )
-
-            if (
-                not self.prepare(now)
-                or not self.ready
-            ):
-                return
-
-            # ---------------------------------------------------------
-            # TRADING START
-            # ---------------------------------------------------------
 
             if now.time() < TRADING_START_TIME:
-
                 self.trading_armed = False
-
                 return
 
-            elif not self.trading_armed:
-
+            if not self.trading_armed:
                 self.trading_armed = True
-
                 return
 
-            # ---------------------------------------------------------
-            # GET 5M CANDLES
-            # ---------------------------------------------------------
-
-            candles = self.get_5m_candles(
-                limit=3
-            )
-
+            candles = self.get_5m_candles(limit=4)
             if len(candles) < 2:
                 return
 
-            # candles[-2] = previous completed candle
-            # candles[-1] = current/latest candle
-
             prev_candle = candles[-2]
             curr_candle = candles[-1]
-
             curr_time = curr_candle["time"]
 
             # =========================================================
-            # ACTIVE POSITION
-            # =========================================================
-            #
-            # IMPORTANT FIX:
-            #
-            # If a REVERSAL position gets its SL hit:
-            #
-            #   reverse_from_sl()
-            #       ->
-            #   position becomes FLAT
-            #
-            # We DO NOT blindly return.
-            #
-            # We check whether a position still exists.
-            #
-            # If position still exists:
-            #   It means a BASE SL triggered a reversal.
-            #   Therefore stop here because the reversal is active.
-            #
-            # If position is FLAT:
-            #   It means REVERSAL SL was hit, or reversal entry failed.
-            #   Therefore continue directly to BASE BREAKOUT logic.
+            # ACTIVE POSITION: SL + TRAILING SL
             # =========================================================
 
-            if (
-                self.position == "LONG"
-                and self.size > 0
-            ):
-
-                # -----------------------------------------------------
-                # CURRENT SL CHECK
-                # -----------------------------------------------------
-
-                if (
-                    self.last_price
-                    <= self.stop_loss
-                ):
-
+            if self.position == "LONG" and self.size > 0:
+                if new_price <= self.stop_loss:
                     logging.info(
-                        f"[{self.symbol}] "
-                        f"LONG SL HIT "
-                        f"| Price: {self.last_price} "
-                        f"| SL: {self.stop_loss} "
-                        f"| Reversal Trade: "
-                        f"{self.is_reversal_position}"
+                        f"[{self.symbol}] LONG SL HIT "
+                        f"| Price={new_price} | SL={self.stop_loss} "
+                        f"| Reversal={self.is_reversal_position}"
                     )
 
-                    self.reverse_from_sl(
-                        self.last_price,
-                        prev_candle
-                    )
+                    was_reversal = self.is_reversal_position
+                    self.reverse_from_sl(new_price, prev_candle)
 
-                    # -------------------------------------------------
-                    # IMPORTANT FIX:
-                    #
-                    # If reverse_from_sl() created a reversal position,
-                    # stop this evaluation.
-                    #
-                    # If reverse_from_sl() closed the REVERSAL and
-                    # became FLAT, DO NOT RETURN.
-                    #
-                    # Continue below and check the original BASE
-                    # breakout conditions immediately.
-                    # -------------------------------------------------
-
-                    if (
-                        self.position
-                        and self.size > 0
-                    ):
+                    # If a base SL created a reversal, STOP this tick.
+                    if self.position and self.size > 0:
                         return
 
-                    logging.info(
-                        f"[{self.symbol}] "
-                        f"POSITION IS FLAT AFTER SL PROCESSING "
-                        f"-> CONTINUING BASE BREAKOUT CHECK"
-                    )
+                    # If reversal SL closed the trade, do NOT enter again
+                    # on the old breakout level during the same tick.
+                    if was_reversal:
+                        changed = False
+                        if self.day_high is None or new_price > float(self.day_high):
+                            self.day_high = Decimal(str(new_price))
+                            changed = True
+                        if self.day_low is None or new_price < float(self.day_low):
+                            self.day_low = Decimal(str(new_price))
+                            changed = True
+                        if changed:
+                            self.save()
+                        return
 
                 else:
-
-                    # -------------------------------------------------
-                    # NEW COMPLETED CANDLE:
-                    #
+                    # Every newly completed 5M candle:
                     # LONG SL = previous completed candle LOW.
-                    # -------------------------------------------------
-
-                    if (
-                        curr_time
-                        != self.last_checked_candle_time
-                    ):
-
-                        self.stop_loss = (
-                            prev_candle["low"]
-                        )
-
-                        self.last_checked_candle_time = (
-                            curr_time
-                        )
-
+                    if curr_time != self.last_checked_candle_time:
+                        self.stop_loss = float(prev_candle["low"])
+                        self.last_checked_candle_time = curr_time
                         self.save()
 
-            # =========================================================
-            # ACTIVE SHORT
-            # =========================================================
+                        # The newly formed trailing stop is active immediately.
+                        if new_price <= self.stop_loss:
+                            logging.info(
+                                f"[{self.symbol}] NEW TRAILING LONG SL HIT "
+                                f"| Price={new_price} | New SL={self.stop_loss}"
+                            )
+                            was_reversal = self.is_reversal_position
+                            self.reverse_from_sl(new_price, prev_candle)
+                            if self.position and self.size > 0:
+                                return
+                            if was_reversal:
+                                return
+                            return
 
-            elif (
-                self.position == "SHORT"
-                and self.size > 0
-            ):
-
-                # -----------------------------------------------------
-                # CURRENT SL CHECK
-                # -----------------------------------------------------
-
-                if (
-                    self.last_price
-                    >= self.stop_loss
-                ):
-
+            elif self.position == "SHORT" and self.size > 0:
+                if new_price >= self.stop_loss:
                     logging.info(
-                        f"[{self.symbol}] "
-                        f"SHORT SL HIT "
-                        f"| Price: {self.last_price} "
-                        f"| SL: {self.stop_loss} "
-                        f"| Reversal Trade: "
-                        f"{self.is_reversal_position}"
+                        f"[{self.symbol}] SHORT SL HIT "
+                        f"| Price={new_price} | SL={self.stop_loss} "
+                        f"| Reversal={self.is_reversal_position}"
                     )
 
-                    self.reverse_from_sl(
-                        self.last_price,
-                        prev_candle
-                    )
+                    was_reversal = self.is_reversal_position
+                    self.reverse_from_sl(new_price, prev_candle)
 
-                    # -------------------------------------------------
-                    # IMPORTANT FIX:
-                    #
-                    # If reversal was entered, stop.
-                    #
-                    # If reversal SL closed the position and we are
-                    # FLAT, continue to BASE BREAKOUT logic.
-                    # -------------------------------------------------
-
-                    if (
-                        self.position
-                        and self.size > 0
-                    ):
+                    if self.position and self.size > 0:
                         return
 
-                    logging.info(
-                        f"[{self.symbol}] "
-                        f"POSITION IS FLAT AFTER SL PROCESSING "
-                        f"-> CONTINUING BASE BREAKOUT CHECK"
-                    )
+                    if was_reversal:
+                        changed = False
+                        if self.day_high is None or new_price > float(self.day_high):
+                            self.day_high = Decimal(str(new_price))
+                            changed = True
+                        if self.day_low is None or new_price < float(self.day_low):
+                            self.day_low = Decimal(str(new_price))
+                            changed = True
+                        if changed:
+                            self.save()
+                        return
 
                 else:
-
-                    # -------------------------------------------------
-                    # NEW COMPLETED CANDLE:
-                    #
+                    # Every newly completed 5M candle:
                     # SHORT SL = previous completed candle HIGH.
-                    # -------------------------------------------------
-
-                    if (
-                        curr_time
-                        != self.last_checked_candle_time
-                    ):
-
-                        self.stop_loss = (
-                            prev_candle["high"]
-                        )
-
-                        self.last_checked_candle_time = (
-                            curr_time
-                        )
-
+                    if curr_time != self.last_checked_candle_time:
+                        self.stop_loss = float(prev_candle["high"])
+                        self.last_checked_candle_time = curr_time
                         self.save()
+
+                        # The newly formed trailing stop is active immediately.
+                        if new_price >= self.stop_loss:
+                            logging.info(
+                                f"[{self.symbol}] NEW TRAILING SHORT SL HIT "
+                                f"| Price={new_price} | New SL={self.stop_loss}"
+                            )
+                            was_reversal = self.is_reversal_position
+                            self.reverse_from_sl(new_price, prev_candle)
+                            if self.position and self.size > 0:
+                                return
+                            if was_reversal:
+                                return
+                            return
 
             # =========================================================
             # BASE BREAKOUT MODE
-            # =========================================================
             #
-            # This block is deliberately AFTER the SL processing.
-            #
-            # Therefore:
-            #
-            # BASE LONG
-            #   ->
-            # LONG SL
-            #   ->
-            # SHORT REVERSAL
-            #   ->
-            # SHORT SL
-            #   ->
-            # FLAT
-            #   ->
-            # SAME evaluate()
-            #   ->
-            # BASE BREAKOUT CHECK
-            #
-            # No base breakout is permanently disabled.
+            # IMPORTANT:
+            # We compare against the CURRENT RUNNING session extreme.
+            # If a NEW HIGH/LOW is broken, the level is immediately
+            # updated, so that same old level can NEVER fire again.
             # =========================================================
 
             if (
@@ -2852,184 +1413,103 @@ class BreakoutSARBot:
                 and self.size == 0
                 and self.base_breakout_ready
                 and not self.manual_squareoff_flag
+                and self.day_high is not None
+                and self.day_low is not None
             ):
+                current_high = float(self.day_high)
+                current_low = float(self.day_low)
 
                 # -----------------------------------------------------
-                # Protect against missing day levels.
+                # NEW HIGH ONLY -> BASE LONG
                 # -----------------------------------------------------
+                if new_price > current_high:
+                    initial_sl = float(prev_candle["low"])
 
-                if (
-                    self.day_high is not None
-                    and self.day_low is not None
-                ):
+                    # Consume the old breakout level immediately.
+                    # This prevents repeated entries on the same high.
+                    self.day_high = Decimal(str(new_price))
+                    self.save()
 
-                    day_high_float = float(
-                        self.day_high
+                    logging.info(
+                        f"[{self.symbol}] NEW HIGH BREAK "
+                        f"| OldHigh={current_high} "
+                        f"| NewHigh={new_price} "
+                        f"| BASE LONG | Initial SL={initial_sl}"
                     )
 
-                    day_low_float = float(
-                        self.day_low
+                    success = self.enter(
+                        "LONG",
+                        new_price,
+                        initial_sl,
+                        is_reversal=False,
                     )
 
-                    # =================================================
-                    # DAY HIGH BREAKOUT -> NEW BASE LONG
-                    # =================================================
+                    if success:
+                        self.is_reversal_position = False
+                        self.base_breakout_ready = False
+                        self.save()
 
-                    if (
-                        old_price <= day_high_float
-                        and new_price > day_high_float
-                    ):
+                    return
 
-                        initial_sl = (
-                            prev_candle["low"]
-                        )
+                # -----------------------------------------------------
+                # NEW LOW ONLY -> BASE SHORT
+                # -----------------------------------------------------
+                if new_price < current_low:
+                    initial_sl = float(prev_candle["high"])
 
-                        logging.info(
-                            f"[{self.symbol}] "
-                            f"NEW DAY HIGH BREAKOUT "
-                            f"| Old: {old_price} "
-                            f"| New: {new_price} "
-                            f"| Day High: {self.day_high} "
-                            f"| ENTER NEW BASE LONG "
-                            f"| SL: {initial_sl}"
-                        )
+                    # Consume the old breakout level immediately.
+                    # This prevents repeated entries on the same low.
+                    self.day_low = Decimal(str(new_price))
+                    self.save()
 
-                        success = self.enter(
-                            "LONG",
-                            new_price,
-                            initial_sl,
-                            is_reversal=False
-                        )
+                    logging.info(
+                        f"[{self.symbol}] NEW LOW BREAK "
+                        f"| OldLow={current_low} "
+                        f"| NewLow={new_price} "
+                        f"| BASE SHORT | Initial SL={initial_sl}"
+                    )
 
-                        if success:
+                    success = self.enter(
+                        "SHORT",
+                        new_price,
+                        initial_sl,
+                        is_reversal=False,
+                    )
 
-                            # -------------------------------------------------
-                            # NEW BASE BREAKOUT = NEW REVERSAL CYCLE.
-                            #
-                            # The new position is definitely BASE,
-                            # never reversal.
-                            # -------------------------------------------------
+                    if success:
+                        self.is_reversal_position = False
+                        self.base_breakout_ready = False
+                        self.save()
 
-                            self.is_reversal_position = False
+                    return
 
-                            self.base_breakout_ready = False
-
-                            self.save()
-
-                        return
-
-                    # =================================================
-                    # DAY LOW BREAKDOWN -> NEW BASE SHORT
-                    # =================================================
-
-                    elif (
-                        old_price >= day_low_float
-                        and new_price < day_low_float
-                    ):
-
-                        initial_sl = (
-                            prev_candle["high"]
-                        )
-
-                        logging.info(
-                            f"[{self.symbol}] "
-                            f"NEW DAY LOW BREAKDOWN "
-                            f"| Old: {old_price} "
-                            f"| New: {new_price} "
-                            f"| Day Low: {self.day_low} "
-                            f"| ENTER NEW BASE SHORT "
-                            f"| SL: {initial_sl}"
-                        )
-
-                        success = self.enter(
-                            "SHORT",
-                            new_price,
-                            initial_sl,
-                            is_reversal=False
-                        )
-
-                        if success:
-
-                            self.is_reversal_position = False
-
-                            self.base_breakout_ready = False
-
-                            self.save()
-
-                        return
-
-            # =========================================================
-            # UPDATE SESSION HIGH / LOW
-            # =========================================================
+            # ---------------------------------------------------------
+            # Keep running extremes synchronized even when a position
+            # is active. This means a future base breakout is always
+            # based on the TRUE current session high/low.
             #
-            # Day High / Day Low remain dynamic running extremes.
-            #
-            # Example:
-            #
-            # Day High = 100
-            # Price = 103
-            # Day High becomes 103.
-            #
-            # Later:
-            # Price returns to 103
-            # then breaks 103
-            # ->
-            # NEW BASE LONG.
-            #
-            # Same logic applies to Day Low.
-            # =========================================================
+            # Do NOT use an old level after it has been broken.
+            # ---------------------------------------------------------
 
-            if (
-                new_price
-                > float(self.day_high or 0)
-            ):
+            changed = False
 
-                self.day_high = Decimal(
-                    str(new_price)
-                )
+            if self.day_high is None or new_price > float(self.day_high):
+                self.day_high = Decimal(str(new_price))
+                changed = True
 
+            if self.day_low is None or new_price < float(self.day_low):
+                self.day_low = Decimal(str(new_price))
+                changed = True
+
+            if changed:
                 self.save()
 
-                logging.info(
-                    f"[{self.symbol}] "
-                    f"NEW DAY HIGH UPDATED -> "
-                    f"{self.day_high}"
-                )
-
-            if (
-                new_price
-                < float(
-                    self.day_low
-                    or 999999
-                )
-            ):
-
-                self.day_low = Decimal(
-                    str(new_price)
-                )
-
-                self.save()
-
-                logging.info(
-                    f"[{self.symbol}] "
-                    f"NEW DAY LOW UPDATED -> "
-                    f"{self.day_low}"
-                )
-
-    # =================================================================
+    # -----------------------------------------------------------------
     # TRADE HISTORY
-    # =================================================================
+    # -----------------------------------------------------------------
 
-    def finish_trade(
-        self,
-        reason,
-        exit_price
-    ):
-
-        if (
-            not self.position
-            or not self.entry_price
-        ):
+    def finish_trade(self, reason, exit_price):
+        if not self.position or not self.entry_price:
             return
 
         pnl = calculate_trade_pnl(
@@ -3037,62 +1517,27 @@ class BreakoutSARBot:
             self.entry_price,
             exit_price,
             self.size,
-            self.product
-            or {
-                "contract_value":
-                "0.001"
-            }
+            self.product or {"contract_value": "0.001"},
         )
 
         trade = {
-            "id": (
-                f"{self.symbol.lower()}_"
-                f"{int(time.time() * 1000)}"
-            ),
-
+            "id": f"{self.symbol.lower()}_{int(time.time() * 1000)}",
             "account_id": self.unique_id,
-
             "account": self.account_name,
-
             "symbol": self.symbol,
-
-            "date": now_ist().strftime(
-                "%Y-%m-%d %H:%M"
-            ),
-
+            "date": now_ist().strftime("%Y-%m-%d %H:%M"),
             "direction": self.position,
-
-            "entry_price": float(
-                self.entry_price
-            ),
-
-            "exit_price": float(
-                exit_price
-            ),
-
+            "entry_price": float(self.entry_price),
+            "exit_price": float(exit_price),
             "size": self.size,
-
             "pnl": float(pnl),
-
             "reason": reason,
-
-            "trade_type": (
-                "REVERSAL"
-                if self.is_reversal_position
-                else "BREAKOUT"
-            )
+            "trade_type": "REVERSAL" if self.is_reversal_position else "BREAKOUT",
         }
 
-        history = load_trade_history(
-            self.unique_id
-        )
-
+        history = load_trade_history(self.unique_id)
         history.append(trade)
-
-        save_trade_history(
-            self.unique_id,
-            history
-        )
+        save_trade_history(self.unique_id, history)
 
 
 # =====================================================================
@@ -3100,21 +1545,12 @@ class BreakoutSARBot:
 # =====================================================================
 
 BOT_ACCOUNTS = {}
-
 ACCOUNTS_LOCK = threading.RLock()
 
 
 def load_all_accounts():
-
     with ACCOUNTS_LOCK:
-
-        for (
-            b_id,
-            b_obj
-        ) in list(
-            BOT_ACCOUNTS.items()
-        ):
-
+        for b_obj in list(BOT_ACCOUNTS.values()):
             try:
                 b_obj.stop_bot()
             except Exception:
@@ -3122,611 +1558,222 @@ def load_all_accounts():
 
         BOT_ACCOUNTS.clear()
 
-        # -------------------------------------------------------------
-        # PRIMARY ACCOUNT
-        # -------------------------------------------------------------
+        if PRIMARY_API_KEY and PRIMARY_API_SECRET:
+            for symbol in ("XAUTUSD", "BTCUSD"):
+                bot = BreakoutSARBot(
+                    PRIMARY_ACCOUNT_ID,
+                    PRIMARY_ACCOUNT_NAME,
+                    "primary",
+                    PRIMARY_API_KEY,
+                    PRIMARY_API_SECRET,
+                    symbol,
+                )
+                BOT_ACCOUNTS[bot.unique_id] = bot
 
-        if (
-            PRIMARY_API_KEY
-            and PRIMARY_API_SECRET
-        ):
-
-            bot_xaut = BreakoutSARBot(
-                PRIMARY_ACCOUNT_ID,
-                PRIMARY_ACCOUNT_NAME,
-                "primary",
-                PRIMARY_API_KEY,
-                PRIMARY_API_SECRET,
-                "XAUTUSD"
-            )
-
-            bot_btc = BreakoutSARBot(
-                PRIMARY_ACCOUNT_ID,
-                PRIMARY_ACCOUNT_NAME,
-                "primary",
-                PRIMARY_API_KEY,
-                PRIMARY_API_SECRET,
-                "BTCUSD"
-            )
-
-            BOT_ACCOUNTS[
-                bot_xaut.unique_id
-            ] = bot_xaut
-
-            BOT_ACCOUNTS[
-                bot_btc.unique_id
-            ] = bot_btc
-
-        # -------------------------------------------------------------
-        # CLIENT ACCOUNTS
-        # -------------------------------------------------------------
-
-        clients_cfg = (
-            load_clients_config()
-        )
+        clients_cfg = load_clients_config()
 
         for cid, cdata in clients_cfg.items():
-
             sub_dict = {
-                "start": cdata.get(
-                    "subscription_start"
-                ),
-
-                "expiry": cdata.get(
-                    "subscription_expiry"
-                )
+                "start": cdata.get("subscription_start"),
+                "expiry": cdata.get("subscription_expiry"),
             }
 
-            bot_xaut = BreakoutSARBot(
-                cid,
-                cdata.get(
-                    "name",
-                    "Client"
-                ),
-                "client",
-                cdata.get(
-                    "api_key"
-                ),
-                cdata.get(
-                    "api_secret"
-                ),
-                "XAUTUSD",
-                sub_dict
-            )
-
-            bot_btc = BreakoutSARBot(
-                cid,
-                cdata.get(
-                    "name",
-                    "Client"
-                ),
-                "client",
-                cdata.get(
-                    "api_key"
-                ),
-                cdata.get(
-                    "api_secret"
-                ),
-                "BTCUSD",
-                sub_dict
-            )
-
-            BOT_ACCOUNTS[
-                bot_xaut.unique_id
-            ] = bot_xaut
-
-            BOT_ACCOUNTS[
-                bot_btc.unique_id
-            ] = bot_btc
+            for symbol in ("XAUTUSD", "BTCUSD"):
+                bot = BreakoutSARBot(
+                    cid,
+                    cdata.get("name", "Client"),
+                    "client",
+                    cdata.get("api_key"),
+                    cdata.get("api_secret"),
+                    symbol,
+                    sub_dict,
+                )
+                BOT_ACCOUNTS[bot.unique_id] = bot
 
 
 # =====================================================================
-# DASHBOARD HANDLER
+# DASHBOARD
 # =====================================================================
 
-class DashboardHandler(
-    SimpleHTTPRequestHandler
-):
-
-    def __init__(
-        self,
-        *args,
-        **kwargs
-    ):
-
-        super().__init__(
-            *args,
-            directory=BASE_DIR,
-            **kwargs
-        )
-
-    # =================================================================
-    # GET
-    # =================================================================
+class DashboardHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=BASE_DIR, **kwargs)
 
     def do_GET(self):
-
-        parsed = urlparse(
-            self.path
-        )
-
+        parsed = urlparse(self.path)
         path = parsed.path
-
-        query = parse_qs(
-            parsed.query
-        )
+        query = parse_qs(parsed.query)
 
         if path == "/api/health":
-
-            self.send_json({
-                "success": True,
-                "online": True
-            })
-
+            self.send_json({"success": True, "online": True})
             return
 
         if path == "/api/dashboard":
-
-            client_token = query.get(
-                "token",
-                [None]
-            )[0]
-
-            server_ip = (
-                CACHED_SERVER_IP
-            )
+            client_token = query.get("token", [None])[0]
 
             with ACCOUNTS_LOCK:
-
-                bots = list(
-                    BOT_ACCOUNTS.values()
-                )
+                bots = list(BOT_ACCOUNTS.values())
 
             if client_token:
-
-                clients_cfg = (
-                    load_clients_config()
-                )
-
+                clients_cfg = load_clients_config()
                 target_cid = None
 
-                for (
-                    cid,
-                    cdata
-                ) in clients_cfg.items():
-
-                    if (
-                        cdata.get("token")
-                        == client_token
-                    ):
-
+                for cid, cdata in clients_cfg.items():
+                    if cdata.get("token") == client_token:
                         target_cid = cid
-
                         break
 
                 if not target_cid:
-
                     self.send_json(
-                        {
-                            "success": False,
-                            "message":
-                                "Unauthorized client token"
-                        },
-                        status=403
+                        {"success": False, "message": "Unauthorized client token"},
+                        status=403,
                     )
-
                     return
 
                 bots = [
-                    b
-                    for b in bots
-                    if b.base_account_id
-                    == target_cid
+                    b for b in bots
+                    if b.base_account_id == target_cid
                 ]
 
             accounts_data = []
-
-            clients_cfg = (
-                load_clients_config()
-            )
+            clients_cfg = load_clients_config()
 
             for b in bots:
-
                 try:
-
-                    price = float(
-                        b.client.last_traded_price()
-                        or 0
-                    )
-
+                    price = float(b.client.last_traded_price() or 0)
                     b.last_price = price
-
-                    pos = (
-                        b.refresh_position()
-                        if b.bot_enabled
-                        else {
-                            "size": 0,
-                            "entry_price": None,
-                            "stop_loss": None,
-                            "unrealized_pnl": 0
-                        }
-                    )
-
-                    balance = float(
-                        b.client.balance()
-                    )
-
+                    pos = b.refresh_position() if b.bot_enabled else {
+                        "size": 0,
+                        "entry_price": None,
+                        "stop_loss": b.stop_loss,
+                        "unrealized_pnl": 0,
+                    }
+                    balance = float(b.client.balance())
                 except Exception:
-
                     pos = {
                         "size": 0,
                         "entry_price": None,
-                        "stop_loss": None,
-                        "unrealized_pnl": 0
+                        "stop_loss": b.stop_loss,
+                        "unrealized_pnl": 0,
                     }
-
                     balance = 0
-
                     price = 0
 
                 direction = "FLAT"
+                if b.bot_enabled and pos.get("size", 0) != 0:
+                    direction = "LONG" if pos["size"] > 0 else "SHORT"
 
-                if (
-                    b.bot_enabled
-                    and pos.get("size", 0) != 0
-                ):
-
-                    if pos.get(
-                        "size",
-                        0
-                    ) > 0:
-
-                        direction = "LONG"
-
-                    elif pos.get(
-                        "size",
-                        0
-                    ) < 0:
-
-                        direction = "SHORT"
-
-                entry_p = (
-                    pos.get("entry_price")
-                    if b.bot_enabled
-                    else None
-                )
-
-                active_sl = (
-                    pos.get("stop_loss")
-                    if b.bot_enabled
-                    else None
-                )
-
-                actual_lev = (
-                    pos.get("leverage")
-                    if (
-                        b.bot_enabled
-                        and pos.get("leverage")
-                    )
-                    else int(b.leverage)
-                )
-
-                unrealized_pnl = (
-                    pos.get(
-                        "unrealized_pnl",
-                        0
-                    )
-                    if b.bot_enabled
-                    else 0
-                )
-
-                history = (
-                    load_trade_history(
-                        b.unique_id
-                    )
-                )
-
-                stats = (
-                    calculate_statistics(
-                        history
-                    )
-                )
+                history = load_trade_history(b.unique_id)
+                stats = calculate_statistics(history)
 
                 token = (
-                    clients_cfg.get(
-                        b.base_account_id,
-                        {}
-                    ).get(
-                        "token",
-                        ""
-                    )
-                    if b.account_type
-                    == "client"
+                    clients_cfg.get(b.base_account_id, {}).get("token", "")
+                    if b.account_type == "client"
                     else ""
                 )
 
-                sub_info = getattr(
-                    b,
-                    "subscription",
-                    {}
-                )
-
                 accounts_data.append({
-                    "account_id":
-                        b.unique_id,
-
-                    "account_name":
-                        b.account_name,
-
-                    "account_type":
-                        b.account_type,
-
-                    "symbol":
-                        b.symbol,
-
-                    "token":
-                        token,
-
-                    "server_ip":
-                        server_ip,
-
-                    "balance":
-                        balance,
-
-                    "current_price":
-                        price,
-
-                    "bot_enabled":
-                        (
-                            b.bot_enabled
-                            and not b.is_expired()
-                        ),
-
-                    "is_expired":
-                        b.is_expired(),
-
-                    "leverage":
-                        actual_lev,
-
-                    "balance_fraction":
-                        float(
-                            b.balance_fraction
-                        ),
-
-                    "base_breakout_ready":
-                        b.base_breakout_ready,
-
+                    "account_id": b.unique_id,
+                    "account_name": b.account_name,
+                    "account_type": b.account_type,
+                    "symbol": b.symbol,
+                    "token": token,
+                    "server_ip": CACHED_SERVER_IP,
+                    "balance": balance,
+                    "current_price": price,
+                    "bot_enabled": b.bot_enabled and not b.is_expired(),
+                    "is_expired": b.is_expired(),
+                    "leverage": pos.get("leverage") or int(b.leverage),
+                    "balance_fraction": float(b.balance_fraction),
+                    "base_breakout_ready": b.base_breakout_ready,
+                    "day_high": float(b.day_high) if b.day_high is not None else None,
+                    "day_low": float(b.day_low) if b.day_low is not None else None,
                     "position": {
-                        "size":
-                            (
-                                pos.get(
-                                    "size",
-                                    0
-                                )
-                                if b.bot_enabled
-                                else 0
-                            ),
-
-                        "direction":
-                            direction,
-
-                        "entry_price":
-                            entry_p,
-
-                        "stop_loss":
-                            active_sl,
-
-                        "liquidation_price":
-                            (
-                                pos.get(
-                                    "liquidation_price"
-                                )
-                                if b.bot_enabled
-                                else None
-                            ),
-
-                        "unrealized_pnl":
-                            unrealized_pnl,
-
-                        "is_reversal":
-                            b.is_reversal_position
-                            if b.bot_enabled
-                            else False
+                        "size": pos.get("size", 0) if b.bot_enabled else 0,
+                        "direction": direction,
+                        "entry_price": pos.get("entry_price") if b.bot_enabled else None,
+                        "stop_loss": b.stop_loss if b.bot_enabled else None,
+                        "liquidation_price": pos.get("liquidation_price") if b.bot_enabled else None,
+                        "unrealized_pnl": pos.get("unrealized_pnl", 0) if b.bot_enabled else 0,
+                        "is_reversal": b.is_reversal_position if b.bot_enabled else False,
                     },
-
-                    "statistics":
-                        stats,
-
-                    "trade_history":
-                        history,
-
-                    "subscription":
-                        sub_info
+                    "statistics": stats,
+                    "trade_history": history,
+                    "subscription": b.subscription,
                 })
 
             self.send_json({
                 "success": True,
                 "server_online": True,
-                "server_ip": server_ip,
-                "accounts":
-                    accounts_data
+                "server_ip": CACHED_SERVER_IP,
+                "accounts": accounts_data,
             })
-
             return
 
-        if (
-            path == "/"
-            or path == ""
-        ):
-
+        if path in ("/", ""):
             self.send_html_dashboard()
-
             return
 
         return super().do_GET()
 
-    # =================================================================
-    # POST
-    # =================================================================
-
     def do_POST(self):
+        parsed = urlparse(self.path).path
 
-        parsed = urlparse(
-            self.path
-        ).path
-
-        length = int(
-            self.headers.get(
-                "Content-Length",
-                0
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = (
+                json.loads(self.rfile.read(length).decode("utf-8"))
+                if length > 0 else {}
             )
-        )
+        except Exception:
+            self.send_json({"success": False, "message": "Invalid JSON"}, 400)
+            return
 
-        body = (
-            json.loads(
-                self.rfile.read(
-                    length
-                ).decode("utf-8")
-            )
-            if length > 0
-            else {}
-        )
-
-        clients_cfg = (
-            load_clients_config()
-        )
-
-        # -------------------------------------------------------------
-        # START
-        # -------------------------------------------------------------
+        clients_cfg = load_clients_config()
 
         if parsed == "/api/bot/start":
-
-            bot = BOT_ACCOUNTS.get(
-                body.get(
-                    "account_id"
-                )
-            )
-
+            bot = BOT_ACCOUNTS.get(body.get("account_id"))
             if bot:
-
-                self.send_json(
-                    bot.start_bot()
-                )
-
+                self.send_json(bot.start_bot())
                 return
-
-            self.send_json(
-                {
-                    "success": False,
-                    "message": "Not found"
-                },
-                404
-            )
-
+            self.send_json({"success": False, "message": "Not found"}, 404)
             return
-
-        # -------------------------------------------------------------
-        # STOP
-        # -------------------------------------------------------------
 
         if parsed == "/api/bot/stop":
-
-            bot = BOT_ACCOUNTS.get(
-                body.get(
-                    "account_id"
-                )
-            )
-
+            bot = BOT_ACCOUNTS.get(body.get("account_id"))
             if bot:
-
-                self.send_json(
-                    bot.stop_bot()
-                )
-
+                self.send_json(bot.stop_bot())
                 return
-
-            self.send_json(
-                {
-                    "success": False,
-                    "message": "Not found"
-                },
-                404
-            )
-
+            self.send_json({"success": False, "message": "Not found"}, 404)
             return
-
-        # -------------------------------------------------------------
-        # SETTINGS
-        # -------------------------------------------------------------
 
         if parsed == "/api/bot/settings":
-
-            bot = BOT_ACCOUNTS.get(
-                body.get(
-                    "account_id"
-                )
-            )
-
+            bot = BOT_ACCOUNTS.get(body.get("account_id"))
             if bot:
-
-                res = bot.update_settings(
-                    body.get(
-                        "leverage"
-                    ),
-                    body.get(
-                        "balance_fraction"
+                self.send_json(
+                    bot.update_settings(
+                        body.get("leverage"),
+                        body.get("balance_fraction", 0.10),
                     )
                 )
-
-                self.send_json(res)
-
                 return
-
-            self.send_json(
-                {
-                    "success": False,
-                    "message": "Not found"
-                },
-                404
-            )
-
+            self.send_json({"success": False, "message": "Not found"}, 404)
             return
 
-        # -------------------------------------------------------------
-        # ADD CLIENT
-        # -------------------------------------------------------------
-
         if parsed == "/api/client/add":
-
             name = body.get("name")
             key = body.get("api_key")
             secret = body.get("api_secret")
-            expiry = body.get(
-                "subscription_expiry"
-            )
+            expiry = body.get("subscription_expiry")
 
-            if (
-                not name
-                or not key
-                or not secret
-            ):
-
+            if not name or not key or not secret:
                 self.send_json(
-                    {
-                        "success": False,
-                        "message":
-                            "Missing fields"
-                    },
-                    400
+                    {"success": False, "message": "Missing fields"},
+                    400,
                 )
-
                 return
 
-            cid = (
-                f"client_{int(time.time())}"
-            )
-
+            cid = f"client_{int(time.time())}"
             token = hashlib.sha256(
                 f"{cid}_{time.time()}".encode()
             ).hexdigest()[:16]
@@ -3736,1126 +1783,300 @@ class DashboardHandler(
                 "api_key": key,
                 "api_secret": secret,
                 "token": token,
-                "subscription_start":
-                    now_ist().strftime(
-                        "%Y-%m-%d"
-                    ),
-                "subscription_expiry":
-                    expiry or "2099-12-31",
-                "subscription_fee": 0
+                "subscription_start": now_ist().strftime("%Y-%m-%d"),
+                "subscription_expiry": expiry or "2099-12-31",
+                "subscription_fee": 0,
             }
 
-            save_clients_config(
-                clients_cfg
-            )
-
+            save_clients_config(clients_cfg)
             load_all_accounts()
 
             self.send_json({
                 "success": True,
-                "message":
-                    "Client added successfully!"
+                "message": "Client added successfully!",
             })
-
             return
 
-        # -------------------------------------------------------------
-        # DELETE CLIENT
-        # -------------------------------------------------------------
-
         if parsed == "/api/client/delete":
+            acc_id = body.get("account_id", "")
+            parts = acc_id.split("_")
 
-            acc_id = body.get(
-                "account_id"
-            )
-
-            base_cid = (
-                acc_id.split("_")[0]
-                + "_"
-                + acc_id.split("_")[1]
-                if acc_id
-                and "_" in acc_id
-                else acc_id
-            )
+            if len(parts) >= 2:
+                base_cid = parts[0] + "_" + parts[1]
+            else:
+                base_cid = acc_id
 
             if base_cid in clients_cfg:
-
-                del clients_cfg[
-                    base_cid
-                ]
-
-                save_clients_config(
-                    clients_cfg
-                )
+                del clients_cfg[base_cid]
+                save_clients_config(clients_cfg)
 
                 with ACCOUNTS_LOCK:
-
                     keys_to_del = [
-                        k
-                        for k in BOT_ACCOUNTS
-                        if k.startswith(
-                            base_cid
-                        )
+                        k for k in BOT_ACCOUNTS
+                        if k.startswith(base_cid + "_")
                     ]
-
                     for k in keys_to_del:
-
-                        BOT_ACCOUNTS[
-                            k
-                        ].stop_bot()
-
-                        del BOT_ACCOUNTS[
-                            k
-                        ]
+                        try:
+                            BOT_ACCOUNTS[k].stop_bot()
+                        except Exception:
+                            pass
+                        del BOT_ACCOUNTS[k]
 
                 self.send_json({
                     "success": True,
-                    "message":
-                        "Client removed"
+                    "message": "Client removed",
                 })
-
                 return
 
-            self.send_json(
-                {
-                    "success": False,
-                    "message":
-                        "Client not found"
-                },
-                404
-            )
-
+            self.send_json({
+                "success": False,
+                "message": "Client not found",
+            }, 404)
             return
 
-        self.send_json(
-            {
-                "success": False,
-                "message": "Not found"
-            },
-            404
-        )
-
-    # =================================================================
-    # DASHBOARD HTML
-    # =================================================================
+        self.send_json({"success": False, "message": "Not found"}, 404)
 
     def send_html_dashboard(self):
-
+        # Keep the dashboard simple; strategy logic is entirely server-side.
         html = """<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-    <title>Delta Pro AutoTrader</title>
-
-    <script src="https://cdn.tailwindcss.com"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Delta Pro AutoTrader</title>
+<script src="https://cdn.tailwindcss.com"></script>
 </head>
-
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4">
-
 <div class="max-w-md mx-auto space-y-6">
-
 <header class="text-center">
-
-<h1 class="text-2xl font-bold text-amber-400">
-Delta Pro AutoTrader
-</h1>
-
-<p
-    id="server-ip"
-    class="text-xs text-slate-400 mt-1"
->
-IP: Loading...
-</p>
-
+<h1 class="text-2xl font-bold text-amber-400">Delta Pro AutoTrader</h1>
+<p id="server-ip" class="text-xs text-slate-400 mt-1">IP: Loading...</p>
 </header>
 
-
-<div
-    id="add-client-section"
-    class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3"
->
-
-<h3 class="font-bold text-sm text-amber-400 uppercase">
-Add New Client Account
-</h3>
-
-<input
-    type="text"
-    id="c-name"
-    placeholder="Client Name"
-    class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200"
->
-
-<input
-    type="text"
-    id="c-key"
-    placeholder="Delta API Key"
-    class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200"
->
-
-<input
-    type="password"
-    id="c-secret"
-    placeholder="Delta API Secret"
-    class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200"
->
-
-<div>
-
-<label class="block text-[10px] text-slate-400 mb-1">
-Subscription Expiry Date
-</label>
-
-<input
-    type="date"
-    id="c-expiry"
-    class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs text-slate-200"
->
-
+<div id="add-client-section" class="bg-slate-800 rounded-2xl p-4 shadow-xl border border-slate-700 space-y-3">
+<h3 class="font-bold text-sm text-amber-400 uppercase">Add New Client Account</h3>
+<input id="c-name" placeholder="Client Name" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
+<input id="c-key" placeholder="Delta API Key" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
+<input id="c-secret" type="password" placeholder="Delta API Secret" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
+<input id="c-expiry" type="date" class="w-full bg-slate-900 border border-slate-700 rounded-lg p-2 text-xs">
+<button onclick="addClient()" class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg">Add Client & Generate Link</button>
 </div>
 
-<button
-    onclick="addClient()"
-    class="w-full bg-amber-600 hover:bg-amber-500 text-xs font-semibold py-2 rounded-lg transition text-white"
->
-Add Client & Generate Link
-</button>
-
+<div id="accounts-container" class="space-y-6">
+<div class="text-center text-slate-400">Loading Dashboard...</div>
 </div>
-
-
-<div
-    id="accounts-container"
-    class="space-y-6"
->
-
-<div class="text-center text-slate-400">
-Loading Dashboard...
 </div>
-
-</div>
-
-</div>
-
 
 <script>
-
 let isEditingSettings = false;
 
-
 async function fetchDashboard() {
-
     if (isEditingSettings) return;
-
     try {
+        const token = new URLSearchParams(window.location.search).get("token");
+        const url = token ? `/api/dashboard?token=${encodeURIComponent(token)}&_t=${Date.now()}` : `/api/dashboard?_t=${Date.now()}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!data.success) return;
 
-        let urlParams =
-            new URLSearchParams(
-                window.location.search
-            );
+        document.getElementById("server-ip").innerText = "Server IP: " + data.server_ip;
+        if (token) document.getElementById("add-client-section").style.display = "none";
 
-        let token =
-            urlParams.get("token");
+        const container = document.getElementById("accounts-container");
+        container.innerHTML = "";
 
-        let fetchUrl =
-            token
-            ? `/api/dashboard?token=${token}&_t=${Date.now()}`
-            : `/api/dashboard?_t=${Date.now()}`;
+        data.accounts.forEach(acc => {
+            const pos = acc.position;
+            const stats = acc.statistics;
+            const expiry = acc.subscription && acc.subscription.expiry ? acc.subscription.expiry : "N/A";
+            const clientLink = acc.token ? `${window.location.origin}/?token=${acc.token}` : "";
+            const tradeType = pos.is_reversal ? "REVERSAL" : "BREAKOUT";
 
-        let res =
-            await fetch(fetchUrl);
-
-        let data =
-            await res.json();
-
-        if (data.success) {
-
-            document.getElementById(
-                "server-ip"
-            ).innerText =
-                "Server IP: "
-                + data.server_ip;
-
-
-            if (token) {
-
-                let addSec =
-                    document.getElementById(
-                        "add-client-section"
-                    );
-
-                if (addSec)
-                    addSec.style.display =
-                        "none";
-            }
-
-
-            let container =
-                document.getElementById(
-                    "accounts-container"
-                );
-
-            container.innerHTML = "";
-
-
-            data.accounts.forEach(acc => {
-
-                let pos =
-                    acc.position;
-
-                let stats =
-                    acc.statistics;
-
-                let clientLink =
-                    acc.token
-                    ? `${window.location.origin}/?token=${acc.token}`
-                    : "";
-
-                let expiryText =
-                    acc.subscription
-                    && acc.subscription.expiry
-                    ? acc.subscription.expiry
-                    : "N/A";
-
-                let finalEntry =
-                    (
-                        pos.entry_price !== null
-                        &&
-                        pos.entry_price !== undefined
-                        &&
-                        pos.entry_price > 0
-                    )
-                    ? pos.entry_price
-                    : "N/A";
-
-                let finalSl =
-                    (
-                        pos.stop_loss !== null
-                        &&
-                        pos.stop_loss !== undefined
-                        &&
-                        pos.stop_loss > 0
-                    )
-                    ? pos.stop_loss
-                    : "N/A";
-
-                let tradeLevDisplay =
-                    acc.leverage + "x";
-
-                let isBtc =
-                    acc.symbol.includes(
-                        "BTC"
-                    );
-
-
-                let tradeType =
-                    pos.is_reversal
-                    ? "REVERSAL"
-                    : "BREAKOUT";
-
-
-                let html = `
-
-<div
-    class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4"
->
-
-
-<div
-    class="flex justify-between items-center border-b border-slate-700 pb-3"
->
-
+            const html = `
+<div class="bg-slate-800 rounded-2xl p-5 shadow-xl border border-slate-700 space-y-4">
+<div class="flex justify-between items-center border-b border-slate-700 pb-3">
 <div>
-
-<h2 class="font-bold text-base text-amber-300">
-${acc.account_name}
-</h2>
-
-<p class="text-xs text-slate-400">
-Balance: $${acc.balance.toFixed(2)}
-|
-Price: ${acc.current_price || "N/A"}
-</p>
-
-${acc.account_type == "client"
-    ? `<p class="text-[10px] text-amber-400 mt-0.5">
-Expiry: ${expiryText}${acc.is_expired ? "(EXPIRED)" : ""}
-</p>`
-    : ""}
-
+<h2 class="font-bold text-base text-amber-300">${acc.account_name}</h2>
+<p class="text-xs text-slate-400">Balance: $${Number(acc.balance).toFixed(2)} | Price: ${acc.current_price || "N/A"}</p>
+${acc.account_type === "client" ? `<p class="text-[10px] text-amber-400 mt-0.5">Expiry: ${expiry}${acc.is_expired ? " (EXPIRED)" : ""}</p>` : ""}
+</div>
+<span class="px-3 py-1 rounded-full text-xs font-semibold ${acc.bot_enabled ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400"}">${acc.bot_enabled ? "RUNNING" : "STOPPED"}</span>
 </div>
 
+${clientLink ? `<div class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs">
+<span class="text-slate-400 text-[10px] block">Client Unique Link:</span>
+<input readonly value="${clientLink}" class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all">
+</div>` : ""}
 
-<span
-    class="px-3 py-1 rounded-full text-xs font-semibold
-    ${acc.bot_enabled
-        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-        : 'bg-rose-500/20 text-rose-400 border border-rose-500/30'}"
->
-
-${acc.bot_enabled
-    ? 'RUNNING'
-    : 'STOPPED'}
-
-</span>
-
-</div>
-
-
-${clientLink
-    ? `<div
-        class="bg-slate-900/60 p-2.5 rounded-xl border border-slate-700 text-xs space-y-1"
-    >
-
-        <span class="text-slate-400 text-[10px] block">
-        Client Unique Link:
-        </span>
-
-        <input
-            type="text"
-            readonly
-            value="${clientLink}"
-            class="w-full bg-slate-800 border border-slate-700 rounded p-1 text-[11px] text-amber-300 select-all"
-        >
-
-    </div>`
-    : ""}
-
-
-<div
-    class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3"
->
-
-<div
-    class="text-xs font-semibold text-amber-400 uppercase"
->
-Risk Settings (Fixed 10% Margin)
-</div>
-
-
+<div class="bg-slate-900/50 p-3 rounded-xl border border-slate-700/50 space-y-3">
+<div class="text-xs font-semibold text-amber-400 uppercase">Risk Settings</div>
 <div class="grid grid-cols-2 gap-2">
-
 <div>
-
-<label class="block text-[10px] text-slate-400 mb-1">
-Max/Default Leverage
-</label>
-
-<select
-    id="lev-${acc.account_id}"
-    onfocus="isEditingSettings=true"
-    onblur="isEditingSettings=false"
-    class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200"
->
-
-${isBtc
-    ? `
-
-<option
-    value="200"
-    ${acc.leverage==200?'selected':''}
->
-200x
-</option>
-
-<option
-    value="150"
-    ${acc.leverage==150?'selected':''}
->
-150x
-</option>
-
-<option
-    value="100"
-    ${acc.leverage==100?'selected':''}
->
-100x
-</option>
-
-<option
-    value="50"
-    ${acc.leverage==50?'selected':''}
->
-50x
-</option>
-
-`
-    : `
-
-<option
-    value="100"
-    ${acc.leverage==100?'selected':''}
->
-100x
-</option>
-
-<option
-    value="50"
-    ${acc.leverage==50?'selected':''}
->
-50x
-</option>
-
-<option
-    value="25"
-    ${acc.leverage==25?'selected':''}
->
-25x
-</option>
-
-<option
-    value="10"
-    ${acc.leverage==10?'selected':''}
->
-10x
-</option>
-
-`}
-
+<label class="block text-[10px] text-slate-400 mb-1">Max/Default Leverage</label>
+<select id="lev-${acc.account_id}" onfocus="isEditingSettings=true" onblur="isEditingSettings=false" class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs">
+${acc.symbol.includes("BTC") ? `
+<option value="200" ${acc.leverage==200?"selected":""}>200x</option>
+<option value="150" ${acc.leverage==150?"selected":""}>150x</option>
+<option value="100" ${acc.leverage==100?"selected":""}>100x</option>
+<option value="50" ${acc.leverage==50?"selected":""}>50x</option>` : `
+<option value="100" ${acc.leverage==100?"selected":""}>100x</option>
+<option value="50" ${acc.leverage==50?"selected":""}>50x</option>
+<option value="25" ${acc.leverage==25?"selected":""}>25x</option>
+<option value="10" ${acc.leverage==10?"selected":""}>10x</option>`}
 </select>
-
 </div>
-
-
 <div>
-
-<label class="block text-[10px] text-slate-400 mb-1">
-Margin Fraction
-</label>
-
-<select
-    id="frac-${acc.account_id}"
-    onfocus="isEditingSettings=true"
-    onblur="isEditingSettings=false"
-    class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs text-slate-200"
->
-
-<option
-    value="0.10"
-    selected
->
-10%
-</option>
-
+<label class="block text-[10px] text-slate-400 mb-1">Margin Fraction</label>
+<select class="w-full bg-slate-800 border border-slate-700 rounded-lg p-1.5 text-xs">
+<option selected>10%</option>
 </select>
-
+</div>
+</div>
+<button onclick="updateSettings('${acc.account_id}')" class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg">Save Settings</button>
 </div>
 
+<div class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm">
+<div class="flex justify-between"><span class="text-slate-400">Session High:</span><span class="font-semibold text-emerald-300">${acc.day_high ?? "N/A"}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Session Low:</span><span class="font-semibold text-rose-300">${acc.day_low ?? "N/A"}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Direction:</span><span class="font-bold ${pos.direction=="LONG"?"text-emerald-400":pos.direction=="SHORT"?"text-rose-400":"text-slate-300"}">${pos.direction}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Trade Type:</span><span class="font-semibold ${pos.is_reversal?"text-purple-400":"text-amber-400"}">${pos.direction=="FLAT"?"—":tradeType}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Size:</span><span>${pos.size}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Entry Price:</span><span class="font-semibold text-amber-300">${pos.entry_price ?? "N/A"}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Trade Leverage:</span><span class="font-semibold text-amber-400">${acc.leverage}x</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Trailing SL:</span><span class="font-semibold text-rose-400">${pos.stop_loss ?? "N/A"}</span></div>
+<div class="flex justify-between"><span class="text-slate-400">Unrealized P&L:</span><span class="font-semibold ${pos.unrealized_pnl>=0?"text-emerald-400":"text-rose-400"}">$${Number(pos.unrealized_pnl).toFixed(2)}</span></div>
 </div>
-
-
-<button
-    onclick="updateSettings('${acc.account_id}')"
-    class="w-full bg-slate-700 hover:bg-slate-600 text-xs font-semibold py-1.5 rounded-lg"
->
-Save Settings
-</button>
-
-</div>
-
-
-<div
-    class="space-y-2 bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 text-sm"
->
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Direction:
-</span>
-
-<span
-    class="font-bold
-    ${pos.direction=='LONG'
-        ? 'text-emerald-400'
-        : pos.direction=='SHORT'
-            ? 'text-rose-400'
-            : 'text-slate-300'}"
->
-${pos.direction}
-</span>
-</div>
-
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Trade Type:
-</span>
-
-<span
-    class="font-semibold
-    ${pos.is_reversal
-        ? 'text-purple-400'
-        : 'text-amber-400'}"
->
-${pos.direction == 'FLAT'
-    ? '—'
-    : tradeType}
-</span>
-</div>
-
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Size:
-</span>
-
-<span class="font-semibold">
-${pos.size}
-</span>
-</div>
-
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Entry Price:
-</span>
-
-<span class="font-semibold text-amber-300">
-${finalEntry}
-</span>
-</div>
-
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Trade Leverage:
-</span>
-
-<span class="font-semibold text-amber-400">
-${tradeLevDisplay}
-</span>
-</div>
-
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Stop Loss:
-</span>
-
-<span class="font-semibold text-rose-400">
-${finalSl}
-</span>
-</div>
-
-
-<div class="flex justify-between">
-<span class="text-slate-400">
-Unrealized P&L:
-</span>
-
-<span
-    class="font-semibold
-    ${pos.unrealized_pnl>=0
-        ? 'text-emerald-400'
-        : 'text-rose-400'}"
->
-$${pos.unrealized_pnl.toFixed(2)}
-</span>
-
-</div>
-
-</div>
-
 
 <div class="space-y-2">
-
-<div
-    class="text-xs font-bold text-slate-400 uppercase"
->
-Trading Performance
-</div>
-
-
+<div class="text-xs font-bold text-slate-400 uppercase">Trading Performance</div>
 <div class="grid grid-cols-2 gap-2 text-xs">
-
-<div
-    class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60 space-y-1"
->
-
-<div class="font-semibold text-amber-400">
-TODAY
+<div class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60">
+<div class="font-semibold text-amber-400">TODAY</div>
+<div class="text-slate-400">Trades: ${stats.today.total_trades}</div>
+<div class="text-slate-400">Win Rate: ${stats.today.win_rate.toFixed(1)}%</div>
+<div class="font-bold ${stats.today.pnl>=0?"text-emerald-400":"text-rose-400"}">P&L: $${stats.today.pnl.toFixed(2)}</div>
 </div>
-
-<div class="text-slate-400">
-Trades: ${stats.today.total_trades}
+<div class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60">
+<div class="font-semibold text-amber-400">ALL TIME</div>
+<div class="text-slate-400">Trades: ${stats.all_time.total_trades}</div>
+<div class="text-slate-400">Win Rate: ${stats.all_time.win_rate.toFixed(1)}%</div>
+<div class="font-bold ${stats.all_time.pnl>=0?"text-emerald-400":"text-rose-400"}">P&L: $${stats.all_time.pnl.toFixed(2)}</div>
 </div>
-
-<div class="text-slate-400">
-Win Rate: ${stats.today.win_rate.toFixed(1)}%
 </div>
-
-<div
-    class="font-bold
-    ${stats.today.pnl >= 0
-        ? 'text-emerald-400'
-        : 'text-rose-400'}"
->
-P&L: $${stats.today.pnl.toFixed(2)}
 </div>
-
-</div>
-
-
-<div
-    class="bg-slate-900/50 p-2.5 rounded-xl border border-slate-700/60 space-y-1"
->
-
-<div class="font-semibold text-amber-400">
-ALL TIME
-</div>
-
-<div class="text-slate-400">
-Trades: ${stats.all_time.total_trades}
-</div>
-
-<div class="text-slate-400">
-Win Rate: ${stats.all_time.win_rate.toFixed(1)}%
-</div>
-
-<div
-    class="font-bold
-    ${stats.all_time.pnl >= 0
-        ? 'text-emerald-400'
-        : 'text-rose-400'}"
->
-P&L: $${stats.all_time.pnl.toFixed(2)}
-</div>
-
-</div>
-
-</div>
-
-</div>
-
 
 <div class="flex gap-2">
-
-<button
-    onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})"
-    class="flex-1 py-2.5 rounded-xl font-semibold text-sm transition
-    ${acc.bot_enabled
-        ? 'bg-rose-600 hover:bg-rose-500 text-white'
-        : 'bg-emerald-600 hover:bg-emerald-500 text-white'}"
->
-
-${acc.bot_enabled
-    ? 'STOP BOT'
-    : 'START BOT'}
-
-</button>
-
-
-${acc.account_type == "client" && !token
-    ? `<button
-        onclick="deleteClient('${acc.account_id}')"
-        class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold transition"
-    >
-        Remove
-    </button>`
-    : ""}
-
+<button onclick="toggleBot('${acc.account_id}', ${acc.bot_enabled})" class="flex-1 py-2.5 rounded-xl font-semibold text-sm ${acc.bot_enabled?"bg-rose-600":"bg-emerald-600"}">${acc.bot_enabled?"STOP BOT":"START BOT"}</button>
+${acc.account_type=="client" && !token ? `<button onclick="deleteClient('${acc.account_id}')" class="bg-slate-700 hover:bg-rose-700 px-3 py-2.5 rounded-xl text-xs font-semibold">Remove</button>` : ""}
 </div>
 
-
-<div
-    class="space-y-2 pt-2 border-t border-slate-700"
->
-
-<div
-    class="text-xs font-bold text-slate-400 uppercase"
->
-Trade History (${acc.trade_history.length})
-</div>
-
-
-<div
-    class="max-h-40 overflow-y-auto space-y-1.5 text-xs"
->
-
-${acc.trade_history.length === 0
-    ? '<div class="text-slate-500 text-center py-2">No closed trades yet.</div>'
-    : ''}
-
-
-${acc.trade_history
-    .slice()
-    .reverse()
-    .map(t => `
-
-<div
-    class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between items-center"
->
-
+<div class="space-y-2 pt-2 border-t border-slate-700">
+<div class="text-xs font-bold text-slate-400 uppercase">Trade History (${acc.trade_history.length})</div>
+<div class="max-h-40 overflow-y-auto space-y-1.5 text-xs">
+${acc.trade_history.length===0 ? '<div class="text-slate-500 text-center py-2">No closed trades yet.</div>' : ""}
+${acc.trade_history.slice().reverse().map(t => `
+<div class="bg-slate-900/40 p-2 rounded border border-slate-800 flex justify-between">
 <div>
-
-<span
-    class="font-bold
-    ${t.direction=='LONG'
-        ? 'text-emerald-400'
-        : 'text-rose-400'}"
->
-${t.direction}
-</span>
-
-<span class="text-slate-400 ml-1">
-(${t.date})
-</span>
-
-<div class="text-[10px] text-slate-500">
-Entry: ${t.entry_price}
-→ Exit: ${t.exit_price}
+<span class="font-bold ${t.direction=="LONG"?"text-emerald-400":"text-rose-400"}">${t.direction}</span>
+<span class="text-slate-400 ml-1">(${t.date})</span>
+<div class="text-[10px] text-slate-500">Entry: ${t.entry_price} → Exit: ${t.exit_price}</div>
+<div class="text-[10px] ${t.trade_type=="REVERSAL"?"text-purple-400":"text-amber-400"}">${t.trade_type || "BREAKOUT"}</div>
 </div>
-
-<div class="text-[10px] ${t.trade_type=='REVERSAL'
-    ? 'text-purple-400'
-    : 'text-amber-400'}">
-${t.trade_type || 'BREAKOUT'}
+<div class="text-right font-bold ${t.pnl>=0?"text-emerald-400":"text-rose-400"}">$${Number(t.pnl).toFixed(2)}</div>
+</div>`).join("")}
 </div>
-
 </div>
-
-
-<div
-    class="text-right font-bold
-    ${t.pnl >= 0
-        ? 'text-emerald-400'
-        : 'text-rose-400'}"
->
-$${t.pnl.toFixed(2)}
-</div>
-
-</div>
-
-`).join("")}
-
-</div>
-
-</div>
-
-</div>
-`;
-
-                container.innerHTML += html;
-
-            });
-
-        }
-
-    }
-
-    catch(e) {
-
+</div>`;
+            container.innerHTML += html;
+        });
+    } catch (e) {
         console.error(e);
-
     }
-
 }
-
-
-// =====================================================================
-// ADD CLIENT
-// =====================================================================
 
 async function addClient() {
+    const name = document.getElementById("c-name").value;
+    const key = document.getElementById("c-key").value;
+    const secret = document.getElementById("c-secret").value;
+    const expiry = document.getElementById("c-expiry").value;
 
-    let name =
-        document.getElementById(
-            "c-name"
-        ).value;
-
-    let key =
-        document.getElementById(
-            "c-key"
-        ).value;
-
-    let secret =
-        document.getElementById(
-            "c-secret"
-        ).value;
-
-    let expiry =
-        document.getElementById(
-            "c-expiry"
-        ).value;
-
-
-    if (
-        !name
-        || !key
-        || !secret
-        || !expiry
-    ) {
-
-        alert(
-            "Please fill all fields!"
-        );
-
+    if (!name || !key || !secret || !expiry) {
+        alert("Please fill all fields!");
         return;
     }
 
-
-    let res =
-        await fetch(
-            "/api/client/add",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify({
-                        name,
-                        api_key: key,
-                        api_secret: secret,
-                        subscription_expiry:
-                            expiry
-                    })
-            }
-        );
-
-
-    let data =
-        await res.json();
-
-
-    alert(
-        data.message
-    );
-
-
-    document.getElementById(
-        "c-name"
-    ).value = "";
-
-    document.getElementById(
-        "c-key"
-    ).value = "";
-
-    document.getElementById(
-        "c-secret"
-    ).value = "";
-
-    document.getElementById(
-        "c-expiry"
-    ).value = "";
-
-
+    const res = await fetch("/api/client/add", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({name, api_key:key, api_secret:secret, subscription_expiry:expiry})
+    });
+    const data = await res.json();
+    alert(data.message);
+    document.getElementById("c-name").value = "";
+    document.getElementById("c-key").value = "";
+    document.getElementById("c-secret").value = "";
+    document.getElementById("c-expiry").value = "";
     fetchDashboard();
-
 }
-
-
-// =====================================================================
-// DELETE CLIENT
-// =====================================================================
 
 async function deleteClient(accId) {
-
-    if (
-        !confirm(
-            "Are you sure you want to remove this client?"
-        )
-    ) {
-        return;
-    }
-
-
-    await fetch(
-        "/api/client/delete",
-        {
-            method: "POST",
-
-            headers: {
-                "Content-Type":
-                    "application/json"
-            },
-
-            body:
-                JSON.stringify({
-                    account_id: accId
-                })
-        }
-    );
-
-
+    if (!confirm("Are you sure you want to remove this client?")) return;
+    await fetch("/api/client/delete", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({account_id:accId})
+    });
     fetchDashboard();
-
 }
 
-
-// =====================================================================
-// START / STOP BOT
-// =====================================================================
-
-async function toggleBot(
-    accId,
-    state
-) {
-
-    let endpoint =
-        state
-        ? "/api/bot/stop"
-        : "/api/bot/start";
-
-
-    await fetch(
-        endpoint,
-        {
-            method: "POST",
-
-            headers: {
-                "Content-Type":
-                    "application/json"
-            },
-
-            body:
-                JSON.stringify({
-                    account_id: accId
-                })
-        }
-    );
-
-
+async function toggleBot(accId, state) {
+    const endpoint = state ? "/api/bot/stop" : "/api/bot/start";
+    await fetch(endpoint, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({account_id:accId})
+    });
     fetchDashboard();
-
 }
 
-
-// =====================================================================
-// SETTINGS
-// =====================================================================
-
-async function updateSettings(
-    accId
-) {
-
-    let lev =
-        document.getElementById(
-            "lev-" + accId
-        ).value;
-
-    let frac = 0.10;
-
+async function updateSettings(accId) {
+    const lev = document.getElementById("lev-" + accId).value;
     isEditingSettings = true;
-
-
-    let res =
-        await fetch(
-            "/api/bot/settings",
-            {
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify({
-                        account_id:
-                            accId,
-
-                        leverage:
-                            lev,
-
-                        balance_fraction:
-                            frac
-                    })
-            }
-        );
-
-
-    let data =
-        await res.json();
-
-
-    alert(
-        data.message
-    );
-
-
+    const res = await fetch("/api/bot/settings", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+            account_id:accId,
+            leverage:lev,
+            balance_fraction:0.10
+        })
+    });
+    const data = await res.json();
+    alert(data.message);
     isEditingSettings = false;
-
-
     fetchDashboard();
-
 }
 
-
-// =====================================================================
-// AUTO REFRESH
-// =====================================================================
-
-setInterval(
-    fetchDashboard,
-    3000
-);
-
+setInterval(fetchDashboard, 3000);
 fetchDashboard();
-
 </script>
-
 </body>
-</html>
-"""
+</html>"""
 
         self.send_response(200)
-
-        self.send_header(
-            "Content-Type",
-            "text/html; charset=utf-8"
-        )
-
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.end_headers()
+        self.wfile.write(html.encode("utf-8"))
 
-        self.wfile.write(
-            html.encode("utf-8")
-        )
-
-    # =================================================================
-    # JSON
-    # =================================================================
-
-    def send_json(
-        self,
-        data,
-        status=200
-    ):
-
-        raw = json.dumps(
-            data
-        ).encode("utf-8")
-
-        self.send_response(
-            status
-        )
-
-        self.send_header(
-            "Content-Type",
-            "application/json"
-        )
-
-        self.send_header(
-            "Access-Control-Allow-Origin",
-            "*"
-        )
-
+    def send_json(self, data, status=200):
+        raw = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+        self.wfile.write(raw)
 
-        self.wfile.write(
-            raw
-        )
-
-    def log_message(
-        self,
-        format,
-        *args
-    ):
+    def log_message(self, format, *args):
         pass
 
 
@@ -4864,61 +2085,10 @@ fetchDashboard();
 # =====================================================================
 
 def start_dashboard():
-
-    port = int(
-        os.getenv(
-            "PORT",
-            DASHBOARD_PORT
-        )
-    )
-
-    server = ThreadingHTTPServer(
-        ("0.0.0.0", port),
-        DashboardHandler
-    )
-
-    logging.warning(
-        f"WEB SERVER STARTED ON PORT {port}"
-    )
-
+    port = int(os.getenv("PORT", DASHBOARD_PORT))
+    server = ThreadingHTTPServer(("0.0.0.0", port), DashboardHandler)
+    logging.warning(f"WEB SERVER STARTED ON PORT {port}")
     server.serve_forever()
-
-
-# =====================================================================
-# BACKGROUND LOOP
-# =====================================================================
-
-def background_timer_loop():
-
-    while True:
-
-        time.sleep(1)
-
-        try:
-
-            with ACCOUNTS_LOCK:
-
-                bots = list(
-                    BOT_ACCOUNTS.values()
-                )
-
-            for b in bots:
-
-                try:
-
-                    price = (
-                        b.client.last_traded_price()
-                    )
-
-                    if price:
-                        b.evaluate(price)
-
-                except Exception:
-
-                    b.evaluate()
-
-        except Exception:
-            pass
 
 
 # =====================================================================
@@ -4926,117 +2096,70 @@ def background_timer_loop():
 # =====================================================================
 
 def run_websocket():
-
     while True:
-
         try:
-
             def on_open(ws):
+                ws.send(json.dumps({
+                    "type": "subscribe",
+                    "payload": {
+                        "channels": [{
+                            "name": "trades",
+                            "symbols": ["XAUTUSD", "BTCUSD"],
+                        }]
+                    },
+                }))
 
-                ws.send(
-                    json.dumps({
-                        "type":
-                            "subscribe",
-
-                        "payload": {
-                            "channels": [
-                                {
-                                    "name":
-                                        "trades",
-
-                                    "symbols": [
-                                        "XAUTUSD",
-                                        "BTCUSD"
-                                    ]
-                                }
-                            ]
-                        }
-                    })
-                )
-
-
-            def on_message(
-                ws,
-                message
-            ):
-
+            def on_message(ws, message):
                 try:
+                    parsed = json.loads(message)
 
-                    parsed = json.loads(
-                        message
-                    )
-
-                    if (
-                        parsed.get(
-                            "type"
-                        )
-                        != "trades"
-                    ):
+                    if parsed.get("type") != "trades":
                         return
 
-                    payload = (
-                        parsed.get(
-                            "data",
-                            parsed
-                        )
-                    )
-
-                    p_val = (
-                        payload.get("p")
-                        or payload.get("price")
-                        or parsed.get("p")
-                    )
-
-                    sym = (
-                        payload.get("symbol")
-                        or parsed.get("symbol")
-                    )
+                    p_val = parsed.get("p") or parsed.get("price")
+                    sym = parsed.get("sy") or parsed.get("symbol")
 
                     if p_val is None:
                         return
 
-                    price = Decimal(
-                        str(p_val)
-                    )
+                    price = Decimal(str(p_val))
 
                     with ACCOUNTS_LOCK:
-
-                        bots = list(
-                            BOT_ACCOUNTS.values()
-                        )
+                        bots = list(BOT_ACCOUNTS.values())
 
                     for b in bots:
-
-                        if (
-                            sym
-                            and b.symbol.upper()
-                            != str(sym).upper()
-                        ):
+                        if sym and b.symbol.upper() != str(sym).upper():
                             continue
-
                         b.evaluate(price)
 
                 except Exception:
                     pass
 
+            def on_error(ws, error):
+                logging.warning(f"WEBSOCKET ERROR | {error}")
+
+            def on_close(ws, close_status_code, close_msg):
+                logging.warning(
+                    f"WEBSOCKET CLOSED | code={close_status_code} | msg={close_msg}"
+                )
 
             ws = websocket.WebSocketApp(
                 WS_URL,
                 on_open=on_open,
-                on_message=on_message
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
             )
 
             ws.run_forever(
                 ping_interval=30,
-                ping_timeout=10
+                ping_timeout=10,
             )
 
-        except Exception:
-            pass
+        except Exception as e:
+            logging.warning(f"WEBSOCKET LOOP ERROR | {e}")
 
-        time.sleep(
-            RECONNECT_SECONDS
-        )
+        time.sleep(RECONNECT_SECONDS)
 
 
 # =====================================================================
@@ -5044,31 +2167,17 @@ def run_websocket():
 # =====================================================================
 
 if __name__ == "__main__":
-
-    logging.warning(
-        "=================================================="
-    )
-
-    logging.warning(
-        "DELTA DUAL ASSET AUTOTRADER STARTING..."
-    )
-
-    logging.warning(
-        "=================================================="
-    )
+    logging.warning("==================================================")
+    logging.warning("DELTA DUAL ASSET AUTOTRADER STARTING - FIXED")
+    logging.warning("BTCUSD + XAUTUSD | WEEKEND LOCK | NEW EXTREMES | TRAILING 5M SL")
+    logging.warning("==================================================")
 
     update_server_ip()
-
     load_all_accounts()
 
     threading.Thread(
-        target=background_timer_loop,
-        daemon=True
-    ).start()
-
-    threading.Thread(
         target=run_websocket,
-        daemon=True
+        daemon=True,
     ).start()
 
     start_dashboard()
