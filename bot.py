@@ -890,6 +890,8 @@ class XAUTTargetBot:
         return {
             "success": True,
             "bot_running": self.bot_running,
+            "enabled": self.bot_running,
+            "active": self.bot_running,
             "current_price": self.last_price or 0.0,
             "balance": balance_val,
             "total_pnl": 0.0,
@@ -959,7 +961,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if path in ("/api/dashboard", "/api/state"):
             self.send_json(BOT.dashboard_data())
             return
-        if path == "/api/accounts":
+        if path in ("/api/accounts", "/api/terminal/accounts", "/api/client/accounts"):
             self.send_json({
                 "success": True,
                 "accounts": [{
@@ -968,7 +970,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     "name": ACCOUNT_NAME,
                     "symbol": SYMBOL,
                     "type": "primary",
-                    "enabled": BOT.bot_running,
+                    "enabled": True,
+                    "active": True,
+                    "bot_running": BOT.bot_running,
+                    **BOT.dashboard_data()
                 }]
             })
             return
