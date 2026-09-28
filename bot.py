@@ -795,16 +795,6 @@ class BreakoutSARBot:
                 self.save()
         return True
 
-    def estimate_liquidation_price(self, entry_price, leverage, direction):
-        entry = Decimal(str(entry_price))
-        lev = Decimal(str(leverage))
-        if entry <= 0 or lev <= 0:
-            return None
-        effective_mm = Decimal("0.01")
-        if direction == "LONG":
-            return entry * (Decimal("1") - Decimal("1") / lev + effective_mm)
-        return entry * (Decimal("1") + Decimal("1") / lev - effective_mm)
-
     def enter(self, direction, price, initial_sl, is_reversal=False):
         if self.is_expired() or self.manual_squareoff_flag or not self.bot_enabled or is_weekend(self.symbol):
             return False
@@ -890,7 +880,6 @@ class BreakoutSARBot:
             if len(candles) < 2:
                 return
             prev_candle = candles[-2]
-            current_candle = candles[-1]
             
             if self.position == "LONG" and self.size > 0:
                 if self.stop_loss > 0 and new_price <= self.stop_loss:
@@ -963,6 +952,29 @@ def create_all_accounts():
                 symbol,
             )
             new_accounts[bot.unique_id] = bot
+    clients_cfg = load_clients_config()
+    for client_id, client_data in clients_cfg.items():
+        if not isinstance(client_data, dict):
+            continue
+        subscription = {
+            "start": client_data.get("subscription_start"),
+            "expiry": client_data.get("subscription_expiry"),
+        }
+        api_key = (client_data.get("api_key") or "").strip()
+        api_secret = (client_data.get("api_secret") or "").strip()
+        if not api_key or not api_secret:
+            continue
+        for symbol in ("XAUTUSD", "BTCUSD"):
+            bot = BreakoutSARBot(
+                client_id,
+                client_data.get("name", "Client"),
+                "client",
+                api_key,
+                api_secret,
+                symbol,
+                subscription,
+            )
+            new_accounts[bot.unique_id] = bot
     return new_accounts
 
 
@@ -985,9 +997,13 @@ def serialize_bot(bot):
     stats = calculate_statistics(history)
     return {
         "id": bot.unique_id,
+        "unique_id": bot.unique_id,
+        "account_id": bot.base_account_id,
         "account_name": bot.account_name,
+        "account_type": bot.account_type,
         "symbol": bot.symbol,
         "bot_enabled": bot.bot_enabled,
+        "expired": bot.is_expired(),
         "last_price": bot.last_price,
         "local_position": bot.position,
         "size": abs(int(position.get("size", 0))),
@@ -1031,6 +1047,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 bots = list(BOT_ACCOUNTS.values())
             self.send_json({
                 "success": True,
+                "server_ip": CACHED_SERVER_IP,
                 "bots": [serialize_bot(bot) for bot in bots],
             })
             return
@@ -1039,19 +1056,39 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         body = self.read_json_body()
-        bot_id = body.get("id") or body.get("unique_id")
-        bot = get_bot(bot_id)
 
         if parsed.path == "/api/start":
+            bot = get_bot(body.get("id") or body.get("unique_id"))
             if not bot:
                 return self.send_json({"success": False, "message": "Bot not found"}, 404)
-            self.send_json(bot.start_bot())
-            return
+            return self.send_json(bot.start_bot())
+
         if parsed.path == "/api/stop":
+            bot = get_bot(body.get("id") or body.get("unique_id"))
             if not bot:
                 return self.send_json({"success": False, "message": "Bot not found"}, 404)
-            self.send_json(bot.stop_bot())
-            return
+            return self.send_json(bot.stop_bot())
+
+        if parsed.path == "/api/client/add":
+            client_id = str(body.get("client_id") or body.get("id") or uuid.uuid4().hex[:10]).strip()
+            name = str(body.get("name") or "Client").strip()
+            api_key = str(body.get("api_key") or "").strip()
+            api_secret = str(body.get("api_secret") or "").strip()
+            if not api_key or not api_secret:
+                return self.send_json({"success": False, "message": "API key and secret required"}, 400)
+            
+            clients_cfg = load_clients_config()
+            clients_cfg[client_id] = {
+                "name": name,
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "subscription_start": body.get("subscription_start"),
+                "subscription_expiry": body.get("subscription_expiry"),
+            }
+            save_clients_config(clients_cfg)
+            load_all_accounts()
+            return self.send_json({"success": True, "message": "Client added successfully"})
+
         self.send_json({"success": False, "message": "Endpoint not found"}, 404)
 
 
