@@ -168,6 +168,7 @@ def get_public_ip():
         ip = response.json().get("ip")
         if ip:
             PUBLIC_IP = ip
+            logging.info("RAILWAY OUTBOUND IP --> %s", ip)
     except Exception:
         PUBLIC_IP = "Unknown"
     return PUBLIC_IP
@@ -176,6 +177,9 @@ def get_public_ip():
 class DeltaClient:
     def __init__(self):
         self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
         self.session.headers.update(
             {
                 "Accept": "application/json",
@@ -287,7 +291,7 @@ class DeltaClient:
     def calculate_order_size(self, product, price, leverage):
         balance = self.balance()
         if balance <= 0:
-            balance = Decimal("1000") # Fallback dummy to prevent crash if 401
+            balance = Decimal("1000")
         margin = balance * MARGIN_FRACTION
         notional = margin * Decimal(str(leverage))
         contract_value = Decimal(str(product.get("contract_value") or "0.001"))
@@ -704,8 +708,7 @@ class XAUTTargetBot:
                 quantity = min(int(quantity), abs(exchange_size))
                 signed_close_size = quantity if exchange_size > 0 else -quantity
                 self.client.reduce_only_market_close(self.product_id, signed_close_size)
-                if not self.wait_until_flat():
-                    pass
+                self.wait_until_flat()
                 self.target_hit[target_index] = True
                 self.save()
                 return True
@@ -1017,6 +1020,7 @@ def extract_trade(message):
 def websocket_on_open(ws):
     payload = {"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": [SYMBOL]}]}}
     ws.send(json.dumps(payload))
+    logging.info("Websocket connected")
 
 
 def websocket_on_message(ws, message):
