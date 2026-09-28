@@ -115,11 +115,8 @@ def current_session_start(dt=None):
 
 def is_weekend(dt=None):
     dt = dt or now_ist()
-    if dt.weekday() == 5 and dt.time() >= SESSION_START:
-        return True
-    if dt.weekday() == 6:
-        return True
-    if dt.weekday() == 0 and dt.time() < SESSION_START:
+    # Saturday (5) anytime or Sunday (6) anytime
+    if dt.weekday() == 5 or dt.weekday() == 6:
         return True
     return False
 
@@ -799,6 +796,7 @@ class XAUTTargetBot:
             if not self.bot_running or self.execution_uncertain:
                 return
             current_time = now_ist()
+            # Weekend check: do not trade on Saturday or Sunday
             if is_weekend(current_time):
                 return
             self.last_price = float(price)
@@ -842,6 +840,8 @@ class XAUTTargetBot:
             low = float(self.day_low) if self.day_low else float(price)
             current_price = float(price)
 
+            # SL hit hone ke bad position flat ho jati hai, aur yahan se bot wapas 
+            # Day High ya Day Low ke break hone ka wait karega aur naya trade lega:
             if current_price > high:
                 stop_loss = low
                 self.day_high = Decimal(str(current_price))
