@@ -82,51 +82,6 @@
       font-weight: 700;
       cursor: pointer;
       font-size: 13px;
-      transition: 0.2s;
-    }
-    .btn-gold:hover { opacity: 0.95; }
-
-    .client-form-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 15px;
-      margin-top: 20px;
-      padding-top: 20px;
-      border-top: 1px solid var(--border-color);
-    }
-    @media (min-width: 768px) {
-      .client-form-grid { grid-template-columns: repeat(3, 1fr); }
-    }
-
-    .input-group label {
-      display: block;
-      font-size: 11px;
-      color: var(--text-muted);
-      margin-bottom: 6px;
-      font-weight: 700;
-      text-transform: uppercase;
-    }
-    .input-group input {
-      width: 100%;
-      background: #030712;
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 12px;
-      color: white;
-      font-size: 13px;
-    }
-    .input-group input:focus { outline: none; border-color: var(--accent-gold); }
-
-    .btn-green {
-      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-      color: white;
-      border: none;
-      padding: 14px;
-      width: 100%;
-      border-radius: 10px;
-      font-weight: 800;
-      cursor: pointer;
-      margin-top: 15px;
     }
 
     #accounts-container {
@@ -136,9 +91,6 @@
     }
     @media (min-width: 900px) {
       #accounts-container { grid-template-columns: repeat(2, 1fr); }
-    }
-    @media (min-width: 1350px) {
-      #accounts-container { grid-template-columns: repeat(3, 1fr); }
     }
 
     .account-card {
@@ -181,8 +133,38 @@
       text-transform: uppercase;
       letter-spacing: 0.5px;
     }
+    .segment-box p {
+      margin-bottom: 4px;
+      color: var(--text-muted);
+    }
+    .segment-box b {
+      color: var(--text-main);
+    }
     .profit { color: var(--accent-green); font-weight: bold; }
     .loss { color: var(--accent-red); font-weight: bold; }
+
+    .history-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 20px;
+      margin-top: 25px;
+    }
+    .history-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 15px;
+      font-size: 12px;
+    }
+    .history-table th, .history-table td {
+      border: 1px solid var(--border-color);
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .history-table th {
+      color: var(--accent-gold);
+      background: #030712;
+    }
   </style>
 </head>
 <body>
@@ -198,26 +180,6 @@
       <div id="server-ip-display" class="server-badge">IP: Loading...</div>
     </header>
 
-    <!-- ADMIN MANAGEMENT -->
-    <section class="management-panel">
-      <div class="management-top">
-        <div>
-          <h2 style="font-size: 18px; font-weight: 700;">Client Management Portal</h2>
-          <p style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Deploy and manage isolated API trading instances.</p>
-        </div>
-        <button class="btn-gold" onclick="toggleClientForm()">+ ADD NEW CLIENT</button>
-      </div>
-
-      <div id="client-form" style="display:none;">
-        <div class="client-form-grid">
-          <div class="input-group"><label>Client Name</label><input id="client-name" type="text" placeholder="e.g. Rahul" /></div>
-          <div class="input-group"><label>Delta API Key</label><input id="client-api-key" type="text" placeholder="API Key" /></div>
-          <div class="input-group"><label>Delta API Secret</label><input id="client-api-secret" type="password" placeholder="API Secret" /></div>
-        </div>
-        <button class="btn-green" onclick="addClient()">SAVE & ADD CLIENT</button>
-      </div>
-    </section>
-
     <!-- ACCOUNTS GRID -->
     <main id="accounts-container">
       <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:16px; padding:40px; text-align:center; color:var(--text-muted); grid-column: 1 / -1;">
@@ -225,14 +187,32 @@
       </div>
     </main>
 
+    <!-- TRADE HISTORY -->
+    <section class="history-section">
+      <h3 style="font-size: 16px; color: var(--accent-gold); margin-bottom: 10px;">Trade History & Executions</h3>
+      <div style="overflow-x: auto;">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th>Date/Time</th>
+              <th>Symbol</th>
+              <th>Direction</th>
+              <th>Entry Price</th>
+              <th>Exit Price</th>
+              <th>Size</th>
+              <th>Reason / Target</th>
+            </tr>
+          </thead>
+          <tbody id="history-rows">
+            <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">No trades recorded yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
   </div>
 
   <script>
-    function toggleClientForm() {
-      const f = document.getElementById('client-form');
-      f.style.display = f.style.display === 'none' ? 'block' : 'none';
-    }
-
     async function fetchDashboard() {
       try {
         const res = await fetch('/api/dashboard');
@@ -253,7 +233,7 @@
                     <span style="font-size: 11px; font-family: monospace; background: #1e293b; padding: 4px 8px; border-radius: 6px; color: var(--accent-gold);">${bot.symbol}</span>
                   </div>
                   <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
-                    Status: <b>${bot.bot_enabled ? '🟢 ACTIVE' : '🔴 INACTIVE'}</b> | LTP: <b>${bot.last_price || '-'}</b>
+                    Status: <b>${bot.bot_enabled ? '🟢 ACTIVE' : '🔴 INACTIVE'}</b> | Balance: <b>$${Number(bot.balance || 0).toFixed(2)}</b> | LTP: <b>${bot.last_price || '-'}</b>
                   </p>
                   
                   <button class="btn-action ${bot.bot_enabled ? 'btn-stop' : 'btn-start'}" onclick="toggleBot('${bot.id}', ${bot.bot_enabled})">
@@ -264,25 +244,48 @@
                     <div class="segment-box">
                       <h4>Live Position</h4>
                       <p>Dir: <b>${bot.local_position || 'FLAT'}</b></p>
-                      <p>Size: <b>${bot.size}</b></p>
+                      <p>Size: <b>${bot.size || 0}</b></p>
                       <p>Entry: <b>${bot.entry_price || '-'}</b></p>
-                      <p>PnL: <span class="${bot.unrealized_pnl >= 0 ? 'profit' : 'loss'}">$${Number(bot.unrealized_pnl).toFixed(2)}</span></p>
+                      <p>Stop Loss: <b style="color:var(--accent-red);">${bot.stop_loss || '-'}</b></p>
+                      <p>Leverage: <b>${bot.leverage || 10}x</b></p>
+                      <p>Margin: <b>$${Number(bot.margin || 0).toFixed(2)}</b></p>
+                      <p>PnL: <span class="${(bot.unrealized_pnl || 0) >= 0 ? 'profit' : 'loss'}">$${Number(bot.unrealized_pnl || 0).toFixed(2)}</span></p>
                     </div>
                     <div class="segment-box">
-                      <h4>Performance</h4>
+                      <h4>Session & Targets</h4>
+                      <p>Day High: <b style="color:var(--accent-green);">${bot.day_high || '-'}</b></p>
+                      <p>Day Low: <b style="color:var(--accent-red);">${bot.day_low || '-'}</b></p>
+                      <p>Active Target: <b>${bot.active_target || 'None'}</b></p>
                       <p>Trades: <b>${bot.stats.today.total_trades}</b></p>
-                      <p>Win Rate: <b>${bot.stats.today.win_rate.toFixed(1)}%</b></p>
-                      <p>Today: <span class="${bot.stats.today.pnl >= 0 ? 'profit' : 'loss'}">$${Number(bot.stats.today.pnl).toFixed(2)}</span></p>
-                      <p>All-Time: <span class="${bot.stats.all_time.pnl >= 0 ? 'profit' : 'loss'}">$${Number(bot.stats.all_time.pnl).toFixed(2)}</span></p>
+                      <p>Today PnL: <span class="${bot.stats.today.pnl >= 0 ? 'profit' : 'loss'}">$${Number(bot.stats.today.pnl).toFixed(2)}</span></p>
                     </div>
                   </div>
                 </div>
               `;
             });
           } else {
-            html = `<div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:16px; padding:40px; text-align:center; color:var(--text-muted); grid-column: 1 / -1;">No active accounts or bots configured. Check API keys.</div>`;
+            html = `<div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:16px; padding:40px; text-align:center; color:var(--text-muted); grid-column: 1 / -1;">No active accounts or bots configured.</div>`;
           }
           document.getElementById('accounts-container').innerHTML = html;
+
+          // History render
+          if (data.trades && data.trades.length > 0) {
+            let histHtml = '';
+            data.trades.slice().reverse().forEach(t => {
+              histHtml += `
+                <tr>
+                  <td>${t.date || '-'}</td>
+                  <td>${t.symbol || 'XAUTUSD'}</td>
+                  <td><b>${t.direction || '-'}</b></td>
+                  <td>${t.entry_price || '-'}</td>
+                  <td>${t.exit_price || '-'}</td>
+                  <td>${t.size || '-'}</td>
+                  <td><span style="color:var(--accent-gold);">${t.reason || '-'}</span></td>
+                </tr>
+              `;
+            });
+            document.getElementById('history-rows').innerHTML = histHtml;
+          }
         }
       } catch (e) {
         console.error('Fetch error:', e);
@@ -302,31 +305,6 @@
         fetchDashboard();
       } catch (err) {
         console.error('Error toggling bot:', err);
-      }
-    }
-
-    async function addClient() {
-      const name = document.getElementById('client-name').value;
-      const api_key = document.getElementById('client-api-key').value;
-      const api_secret = document.getElementById('client-api-secret').value;
-      if (!api_key || !api_secret) {
-        alert('API Key and Secret are required.');
-        return;
-      }
-      try {
-        const res = await fetch('/api/client/add', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name, api_key, api_secret })
-        });
-        const result = await res.json();
-        alert(result.message);
-        if (result.success) {
-          document.getElementById('client-form').style.display = 'none';
-          fetchDashboard();
-        }
-      } catch (err) {
-        console.error('Error adding client:', err);
       }
     }
 
