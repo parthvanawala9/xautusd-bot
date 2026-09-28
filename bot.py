@@ -49,7 +49,6 @@ DASHBOARD_PORT = int(
     or "8000"
 )
 
-
 SESSION_START_TIME = dtime(5, 30)
 TRADING_START_TIME = dtime(5, 45)
 
@@ -58,8 +57,6 @@ RECONNECT_SECONDS = 5
 ENTRY_CONFIRM_TIMEOUT = 10.0
 CLOSE_CONFIRM_TIMEOUT = 10.0
 POSITION_POLL_INTERVAL = 0.25
-EXECUTION_UNKNOWN_RECHECK_INTERVAL = 5.0
-
 
 STATE_DIR = os.path.join(
     PERSISTENT_DATA_DIR,
@@ -75,7 +72,6 @@ CLIENTS_FILE = os.path.join(
     PERSISTENT_DATA_DIR,
     "clients_config.json"
 )
-
 
 PRIMARY_ACCOUNT_ID = os.getenv(
     "ACCOUNT_ID",
@@ -97,17 +93,14 @@ PRIMARY_API_SECRET = os.getenv(
     ""
 ).strip()
 
-
 os.makedirs(STATE_DIR, exist_ok=True)
 os.makedirs(HISTORY_DIR, exist_ok=True)
-
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
     force=True,
 )
-
 
 CACHED_SERVER_IP = "Detecting..."
 
@@ -161,15 +154,12 @@ def is_weekend(symbol=None, dt=None):
     weekday = dt.weekday()
     current_time = dt.time()
 
-    # Saturday after session start
     if weekday == 5 and current_time >= SESSION_START_TIME:
         return True
 
-    # Sunday
     if weekday == 6:
         return True
 
-    # Monday before session start
     if weekday == 0 and current_time < SESSION_START_TIME:
         return True
 
@@ -190,6 +180,18 @@ def get_current_session_start(dt=None):
         return session_time
 
     return session_time - timedelta(days=1)
+
+
+def get_5m_bucket_start(dt=None):
+    """
+    Returns the start timestamp of the CURRENT running 5-minute candle.
+    """
+
+    dt = dt or now_ist()
+
+    ts = int(dt.timestamp())
+
+    return (ts // 300) * 300
 
 
 # ============================================================
@@ -301,7 +303,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "MultiBot/99.0",
+            "User-Agent": "MultiBot/100.0",
         })
 
 
@@ -335,7 +337,7 @@ class DeltaClient:
             "api-key": self.api_key,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "MultiBot/99.0",
+            "User-Agent": "MultiBot/100.0",
         }
 
 
@@ -867,7 +869,14 @@ class DeltaClient:
                 auth=True
             )
 
-        except Exception:
+        except Exception as e:
+
+            logging.warning(
+                "[%s] Cancel all orders failed: %s",
+                self.symbol,
+                e
+            )
+
             return None
 
 
@@ -1188,9 +1197,7 @@ class BreakoutSARBot:
         subscription=None
     ):
 
-        self.base_account_id = (
-            account_id
-        )
+        self.base_account_id = account_id
 
         self.symbol = (
             symbol.strip().upper()
@@ -1212,9 +1219,7 @@ class BreakoutSARBot:
             f"Breakout + Reversal]"
         )
 
-        self.account_type = (
-            account_type
-        )
+        self.account_type = account_type
 
         self.subscription = (
             subscription or {}
@@ -1238,29 +1243,25 @@ class BreakoutSARBot:
         self.last_price = None
         self.prev_price = None
 
-        self.last_strategy_price = None
-
         self.ready = False
         self.trading_armed = False
-
         self.bot_enabled = False
 
         self.stop_reason = None
-
         self.manual_squareoff_flag = False
 
         self.position = None
 
         self.stop_loss = 0.0
-
         self.entry_price = None
-
         self.size = 0
 
         self.is_reversal_position = False
 
         self.base_breakout_ready = True
 
+        # Timestamp of the completed 5m candle
+        # currently being used for SL.
         self.last_checked_candle_time = 0
 
         self.lock = threading.RLock()
@@ -1268,21 +1269,17 @@ class BreakoutSARBot:
         self.order_in_progress = False
 
         self.execution_uncertain = False
-
         self.execution_unknown_since = None
 
         self.last_reconciliation_time = 0.0
-
         self.last_execution_time = 0.0
 
-        # Existing leverage logic preserved
         self.leverage = (
             Decimal("200")
             if "BTC" in self.symbol
             else Decimal("100")
         )
 
-        # 10% balance
         self.balance_fraction = Decimal(
             "0.10"
         )
@@ -1587,9 +1584,13 @@ class BreakoutSARBot:
             return False
 
 
+    # ========================================================
+    # 5 MINUTE CANDLE FUNCTIONS
+    # ========================================================
+
     def get_5m_candles(
         self,
-        limit=5
+        limit=10
     ):
 
         try:
@@ -1601,6 +1602,7 @@ class BreakoutSARBot:
             start_ts = (
                 end_ts
                 - limit * 5 * 60
+                - 600
             )
 
             data = self.client.api(
@@ -1636,6 +1638,9 @@ class BreakoutSARBot:
                             )
                             or candle.get(
                                 "timestamp"
+                            )
+                            or candle.get(
+                                "start"
                             )
                             or 0
                         )
@@ -1699,9 +1704,234 @@ class BreakoutSARBot:
 
             return formatted
 
-        except Exception:
+        except Exception as e:
+
+            logging.warning(
+                "[%s] 5m candle API error: %s",
+                self.symbol,
+                e
+            )
+
             return []
 
+
+    def get_previous_completed_5m_candle(self):
+        """
+        IMPORTANT:
+
+        Current running candle is NEVER used.
+
+        If current time is 07:23:
+            Current candle = 07:20-07:25
+            Previous completed = 07:15-07:20
+
+        If current time is 07:25:
+            Current candle = 07:25-07:30
+            Previous completed = 07:20-07:25
+        """
+
+        candles = self.get_5m_candles(
+            limit=10
+        )
+
+        if not candles:
+            return None
+
+        current_bucket = get_5m_bucket_start()
+
+        completed = []
+
+        for candle in candles:
+
+            candle_time = int(
+                float(candle["time"])
+            )
+
+            if candle_time < current_bucket:
+                completed.append(
+                    candle
+                )
+
+        if not completed:
+            return None
+
+        previous_candle = max(
+            completed,
+            key=lambda x: x["time"]
+        )
+
+        return previous_candle
+
+
+    def get_previous_candle_sl(
+        self,
+        direction
+    ):
+        """
+        LONG  -> previous completed candle LOW
+        SHORT -> previous completed candle HIGH
+        """
+
+        candle = (
+            self.get_previous_completed_5m_candle()
+        )
+
+        if candle is None:
+            return None, None
+
+        candle_time = int(
+            float(candle["time"])
+        )
+
+        if direction == "LONG":
+
+            sl = float(
+                candle["low"]
+            )
+
+        else:
+
+            sl = float(
+                candle["high"]
+            )
+
+        return sl, candle_time
+
+
+    def update_trailing_5m_sl(
+        self,
+        current_price
+    ):
+        """
+        SL trails to the most recently completed 5m candle.
+
+        LONG:
+            SL = LOW of latest completed candle
+
+        SHORT:
+            SL = HIGH of latest completed candle
+
+        It updates ONLY when a NEW 5m candle has completed.
+        """
+
+        if (
+            not self.position
+            or self.size <= 0
+        ):
+            return False
+
+        candle = (
+            self.get_previous_completed_5m_candle()
+        )
+
+        if candle is None:
+            return False
+
+        candle_time = int(
+            float(candle["time"])
+        )
+
+        # Same completed candle.
+        # No need to shift SL again.
+        if (
+            self.last_checked_candle_time
+            == candle_time
+        ):
+            return False
+
+        old_sl = self.stop_loss
+
+        if self.position == "LONG":
+
+            new_sl = float(
+                candle["low"]
+            )
+
+        else:
+
+            new_sl = float(
+                candle["high"]
+            )
+
+
+        candle_dt = datetime.fromtimestamp(
+            candle_time,
+            IST
+        )
+
+
+        self.stop_loss = new_sl
+
+        self.last_checked_candle_time = (
+            candle_time
+        )
+
+        self.save()
+
+
+        logging.warning(
+            "=================================================="
+        )
+
+        logging.warning(
+            "[%s] 5M TRAILING SL SHIFT",
+            self.symbol
+        )
+
+        logging.warning(
+            "[%s] POSITION = %s",
+            self.symbol,
+            self.position
+        )
+
+        logging.warning(
+            "[%s] COMPLETED CANDLE = %s",
+            self.symbol,
+            candle_dt.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        logging.warning(
+            "[%s] CANDLE HIGH = %s",
+            self.symbol,
+            candle["high"]
+        )
+
+        logging.warning(
+            "[%s] CANDLE LOW = %s",
+            self.symbol,
+            candle["low"]
+        )
+
+        logging.warning(
+            "[%s] OLD SL = %s",
+            self.symbol,
+            old_sl
+        )
+
+        logging.warning(
+            "[%s] NEW SL = %s",
+            self.symbol,
+            new_sl
+        )
+
+        logging.warning(
+            "[%s] CURRENT PRICE = %s",
+            self.symbol,
+            current_price
+        )
+
+        logging.warning(
+            "=================================================="
+        )
+
+        return True
+
+
+    # ========================================================
+    # EXCHANGE POSITION
+    # ========================================================
 
     def read_exchange_position(self):
 
@@ -1780,10 +2010,7 @@ class BreakoutSARBot:
                     ):
                         return position
 
-                    if (
-                        expected_direction
-                        is None
-                    ):
+                    if expected_direction is None:
                         return position
 
             except Exception:
@@ -1922,6 +2149,7 @@ class BreakoutSARBot:
             self.stop_loss = 0.0
             self.is_reversal_position = False
             self.base_breakout_ready = True
+            self.last_checked_candle_time = 0
             self.execution_uncertain = False
 
             self.save()
@@ -1964,6 +2192,10 @@ class BreakoutSARBot:
                     "message": str(e)
                 }
 
+
+    # ========================================================
+    # START / STOP
+    # ========================================================
 
     def start_bot(self):
 
@@ -2074,6 +2306,7 @@ class BreakoutSARBot:
                     self.stop_loss = 0.0
                     self.is_reversal_position = False
                     self.base_breakout_ready = True
+                    self.last_checked_candle_time = 0
 
                 except Exception as e:
 
@@ -2096,6 +2329,10 @@ class BreakoutSARBot:
                     f"Bot for {self.symbol} Stopped."
             }
 
+
+    # ========================================================
+    # SESSION
+    # ========================================================
 
     def check_session_change(
         self,
@@ -2136,6 +2373,7 @@ class BreakoutSARBot:
         self.trading_armed = False
 
         self.prev_price = None
+        self.last_checked_candle_time = 0
 
         if (
             self.product_id
@@ -2299,7 +2537,7 @@ class BreakoutSARBot:
             )
 
             logging.warning(
-                "[%s] STOP LOSS = %s",
+                "[%s] INITIAL 5M SL = %s",
                 self.symbol,
                 initial_sl
             )
@@ -2308,6 +2546,12 @@ class BreakoutSARBot:
                 "[%s] SIZE = %s",
                 self.symbol,
                 size
+            )
+
+            logging.warning(
+                "[%s] REVERSAL = %s",
+                self.symbol,
+                is_reversal
             )
 
             logging.warning(
@@ -2373,15 +2617,34 @@ class BreakoutSARBot:
                 time.time()
             )
 
+            # Mark the exact completed candle
+            # from which this initial SL came.
+            previous_candle = (
+                self.get_previous_completed_5m_candle()
+            )
+
+            if previous_candle is not None:
+
+                self.last_checked_candle_time = int(
+                    float(
+                        previous_candle["time"]
+                    )
+                )
+
+            else:
+
+                self.last_checked_candle_time = 0
+
             self.save()
 
             logging.warning(
-                "[%s] ENTRY CONFIRMED | %s | ENTRY=%s | SIZE=%s | SL=%s",
+                "[%s] ENTRY CONFIRMED | %s | ENTRY=%s | SIZE=%s | SL=%s | CANDLE_TS=%s",
                 self.symbol,
                 self.position,
                 self.entry_price,
                 self.size,
-                self.stop_loss
+                self.stop_loss,
+                self.last_checked_candle_time
             )
 
             return True
@@ -2391,7 +2654,8 @@ class BreakoutSARBot:
             logging.error(
                 "[%s] Entry error: %s",
                 self.symbol,
-                e
+                e,
+                exc_info=True
             )
 
             return False
@@ -2399,6 +2663,144 @@ class BreakoutSARBot:
         finally:
 
             self.order_in_progress = False
+
+
+    # ========================================================
+    # REVERSAL
+    # ========================================================
+
+    def reverse_after_stop(
+        self,
+        stopped_direction,
+        price
+    ):
+        """
+        LONG SL -> SHORT
+        SHORT SL -> LONG
+
+        Reversal SL uses the SAME previous completed
+        5-minute candle logic.
+        """
+
+        if (
+            not self.bot_enabled
+            or self.manual_squareoff_flag
+            or self.is_expired()
+            or is_weekend(self.symbol)
+        ):
+            return False
+
+        reverse_direction = (
+            "SHORT"
+            if stopped_direction == "LONG"
+            else "LONG"
+        )
+
+        logging.warning(
+            "=================================================="
+        )
+
+        logging.warning(
+            "[%s] REVERSAL START",
+            self.symbol
+        )
+
+        logging.warning(
+            "[%s] STOPPED = %s",
+            self.symbol,
+            stopped_direction
+        )
+
+        logging.warning(
+            "[%s] REVERSE = %s",
+            self.symbol,
+            reverse_direction
+        )
+
+        logging.warning(
+            "[%s] PRICE = %s",
+            self.symbol,
+            price
+        )
+
+        logging.warning(
+            "=================================================="
+        )
+
+
+        reversal_sl, candle_time = (
+            self.get_previous_candle_sl(
+                reverse_direction
+            )
+        )
+
+        if (
+            reversal_sl is None
+            or candle_time is None
+        ):
+
+            logging.error(
+                "[%s] REVERSAL CANCELLED | Previous completed 5m candle unavailable",
+                self.symbol
+            )
+
+            self.base_breakout_ready = True
+            self.save()
+
+            return False
+
+
+        # LONG needs SL below current price.
+        if (
+            reverse_direction == "LONG"
+            and reversal_sl >= price
+        ):
+
+            logging.error(
+                "[%s] REVERSAL LONG CANCELLED | SL=%s >= PRICE=%s",
+                self.symbol,
+                reversal_sl,
+                price
+            )
+
+            self.base_breakout_ready = True
+            self.save()
+
+            return False
+
+
+        # SHORT needs SL above current price.
+        if (
+            reverse_direction == "SHORT"
+            and reversal_sl <= price
+        ):
+
+            logging.error(
+                "[%s] REVERSAL SHORT CANCELLED | SL=%s <= PRICE=%s",
+                self.symbol,
+                reversal_sl,
+                price
+            )
+
+            self.base_breakout_ready = True
+            self.save()
+
+            return False
+
+
+        self.last_checked_candle_time = (
+            candle_time
+        )
+
+        self.save()
+
+
+        return self.enter(
+            reverse_direction,
+            price,
+            reversal_sl,
+            is_reversal=True
+        )
 
 
     # ========================================================
@@ -2474,8 +2876,9 @@ class BreakoutSARBot:
 
             self.is_reversal_position = False
 
-            # Allow next valid breakout
             self.base_breakout_ready = True
+
+            self.last_checked_candle_time = 0
 
             self.execution_uncertain = False
 
@@ -2495,7 +2898,8 @@ class BreakoutSARBot:
             logging.error(
                 "[%s] Close error: %s",
                 self.symbol,
-                e
+                e,
+                exc_info=True
             )
 
             return False
@@ -2532,7 +2936,7 @@ class BreakoutSARBot:
 
 
             # ------------------------------------------------
-            # GET LIVE PRICE
+            # LIVE PRICE
             # ------------------------------------------------
 
             if price is None:
@@ -2554,10 +2958,8 @@ class BreakoutSARBot:
 
                 return
 
-
             if new_price <= 0:
                 return
-
 
             self.last_price = new_price
 
@@ -2602,11 +3004,7 @@ class BreakoutSARBot:
 
 
             # ------------------------------------------------
-            # ARM BOT
-            #
-            # IMPORTANT:
-            # First tick is NOT ignored anymore if it has
-            # already crossed a level.
+            # ARM
             # ------------------------------------------------
 
             if not self.trading_armed:
@@ -2624,10 +3022,6 @@ class BreakoutSARBot:
                 self.save()
 
 
-            # ------------------------------------------------
-            # CURRENT LEVELS
-            # ------------------------------------------------
-
             current_high = float(
                 self.day_high
             )
@@ -2636,58 +3030,59 @@ class BreakoutSARBot:
                 self.day_low
             )
 
-
             previous_price = (
                 self.prev_price
             )
 
 
-            # ------------------------------------------------
-            # DEBUG
-            # ------------------------------------------------
-
-            if (
-                previous_price is None
-                or
-                int(time.time()) % 10 == 0
-            ):
-
-                logging.info(
-                    "[%s] PRICE=%s | PREV=%s | DAY_HIGH=%s | DAY_LOW=%s | POS=%s",
-                    self.symbol,
-                    new_price,
-                    previous_price,
-                    current_high,
-                    current_low,
-                    self.position
-                )
-
-
-            # ------------------------------------------------
-            # OPEN POSITION: LONG
-            # ------------------------------------------------
+            # =================================================
+            # OPEN LONG
+            # =================================================
 
             if (
                 self.position == "LONG"
                 and self.size > 0
             ):
 
+                # FIRST:
+                # If a NEW 5-minute candle has completed,
+                # shift SL to its LOW.
+                self.update_trailing_5m_sl(
+                    new_price
+                )
+
+
+                # THEN:
+                # Check the NEW SL immediately.
                 if (
                     self.stop_loss > 0
                     and new_price <= self.stop_loss
                 ):
 
+                    stopped_direction = (
+                        self.position
+                    )
+
                     logging.warning(
-                        "[%s] LONG SL HIT | PRICE=%s | SL=%s",
+                        "[%s] LONG 5M TRAILING SL HIT | PRICE=%s | SL=%s",
                         self.symbol,
                         new_price,
                         self.stop_loss
                     )
 
-                    self.close_current_position(
-                        "SL_HIT",
-                        new_price
+                    closed = (
+                        self.close_current_position(
+                            "SL_HIT",
+                            new_price
+                        )
                     )
+
+                    if closed:
+
+                        self.reverse_after_stop(
+                            stopped_direction,
+                            new_price
+                        )
 
                 self.prev_price = (
                     new_price
@@ -2696,31 +3091,54 @@ class BreakoutSARBot:
                 return
 
 
-            # ------------------------------------------------
-            # OPEN POSITION: SHORT
-            # ------------------------------------------------
+            # =================================================
+            # OPEN SHORT
+            # =================================================
 
             if (
                 self.position == "SHORT"
                 and self.size > 0
             ):
 
+                # FIRST:
+                # If a NEW 5-minute candle has completed,
+                # shift SL to its HIGH.
+                self.update_trailing_5m_sl(
+                    new_price
+                )
+
+
+                # THEN:
+                # Check the NEW SL immediately.
                 if (
                     self.stop_loss > 0
                     and new_price >= self.stop_loss
                 ):
 
+                    stopped_direction = (
+                        self.position
+                    )
+
                     logging.warning(
-                        "[%s] SHORT SL HIT | PRICE=%s | SL=%s",
+                        "[%s] SHORT 5M TRAILING SL HIT | PRICE=%s | SL=%s",
                         self.symbol,
                         new_price,
                         self.stop_loss
                     )
 
-                    self.close_current_position(
-                        "SL_HIT",
-                        new_price
+                    closed = (
+                        self.close_current_position(
+                            "SL_HIT",
+                            new_price
+                        )
                     )
+
+                    if closed:
+
+                        self.reverse_after_stop(
+                            stopped_direction,
+                            new_price
+                        )
 
                 self.prev_price = (
                     new_price
@@ -2729,9 +3147,9 @@ class BreakoutSARBot:
                 return
 
 
-            # ------------------------------------------------
+            # =================================================
             # NO POSITION
-            # ------------------------------------------------
+            # =================================================
 
             if not (
                 self.position is None
@@ -2747,17 +3165,7 @@ class BreakoutSARBot:
 
 
             # =================================================
-            # DAY HIGH BREAKOUT
-            #
-            # LONG
-            #
-            # Trigger:
-            # 1. Previous price <= Day High
-            # 2. Current price > Day High
-            #
-            # OR:
-            # Current price is already above Day High and
-            # previous price is unavailable.
+            # DAY HIGH BREAKOUT -> LONG
             # =================================================
 
             high_break = False
@@ -2815,43 +3223,53 @@ class BreakoutSARBot:
                 )
 
 
-                # 5m candle SL
-                candles = self.get_5m_candles(
-                    limit=5
+                # EXACT previous completed 5m candle LOW
+                initial_sl, candle_time = (
+                    self.get_previous_candle_sl(
+                        "LONG"
+                    )
                 )
 
-                if len(candles) >= 2:
 
-                    prev_candle = (
-                        candles[-2]
+                if (
+                    initial_sl is None
+                    or candle_time is None
+                ):
+
+                    logging.error(
+                        "[%s] LONG ENTRY CANCELLED | Previous completed 5m candle unavailable",
+                        self.symbol
                     )
 
-                    initial_sl = float(
-                        prev_candle["low"]
-                    )
-
-                else:
-
-                    # Safety fallback:
-                    # use Day Low if candle unavailable
-                    initial_sl = current_low
+                    self.prev_price = new_price
+                    return
 
 
-                # Never allow LONG SL >= entry
                 if initial_sl >= new_price:
 
-                    initial_sl = current_low
+                    logging.error(
+                        "[%s] LONG ENTRY CANCELLED | PREVIOUS 5M LOW=%s >= ENTRY=%s",
+                        self.symbol,
+                        initial_sl,
+                        new_price
+                    )
+
+                    self.prev_price = new_price
+                    return
 
 
-                # Update breakout reference
                 self.day_high = Decimal(
                     str(new_price)
+                )
+
+                self.last_checked_candle_time = (
+                    candle_time
                 )
 
                 self.save()
 
 
-                entered = self.enter(
+                self.enter(
                     "LONG",
                     new_price,
                     initial_sl,
@@ -2866,17 +3284,7 @@ class BreakoutSARBot:
 
 
             # =================================================
-            # DAY LOW BREAKDOWN
-            #
-            # SHORT
-            #
-            # Trigger:
-            # 1. Previous price >= Day Low
-            # 2. Current price < Day Low
-            #
-            # OR:
-            # Current price is already below Day Low and
-            # previous price is unavailable.
+            # DAY LOW BREAKDOWN -> SHORT
             # =================================================
 
             low_break = False
@@ -2934,43 +3342,53 @@ class BreakoutSARBot:
                 )
 
 
-                # 5m candle SL
-                candles = self.get_5m_candles(
-                    limit=5
+                # EXACT previous completed 5m candle HIGH
+                initial_sl, candle_time = (
+                    self.get_previous_candle_sl(
+                        "SHORT"
+                    )
                 )
 
-                if len(candles) >= 2:
 
-                    prev_candle = (
-                        candles[-2]
+                if (
+                    initial_sl is None
+                    or candle_time is None
+                ):
+
+                    logging.error(
+                        "[%s] SHORT ENTRY CANCELLED | Previous completed 5m candle unavailable",
+                        self.symbol
                     )
 
-                    initial_sl = float(
-                        prev_candle["high"]
-                    )
-
-                else:
-
-                    # Safety fallback:
-                    # use Day High if candle unavailable
-                    initial_sl = current_high
+                    self.prev_price = new_price
+                    return
 
 
-                # Never allow SHORT SL <= entry
                 if initial_sl <= new_price:
 
-                    initial_sl = current_high
+                    logging.error(
+                        "[%s] SHORT ENTRY CANCELLED | PREVIOUS 5M HIGH=%s <= ENTRY=%s",
+                        self.symbol,
+                        initial_sl,
+                        new_price
+                    )
+
+                    self.prev_price = new_price
+                    return
 
 
-                # Update breakout reference
                 self.day_low = Decimal(
                     str(new_price)
+                )
+
+                self.last_checked_candle_time = (
+                    candle_time
                 )
 
                 self.save()
 
 
-                entered = self.enter(
+                self.enter(
                     "SHORT",
                     new_price,
                     initial_sl,
@@ -2983,11 +3401,6 @@ class BreakoutSARBot:
 
                 return
 
-
-            # ------------------------------------------------
-            # IMPORTANT:
-            # Always update previous price after evaluation.
-            # ------------------------------------------------
 
             self.prev_price = (
                 new_price
@@ -3098,10 +3511,7 @@ def create_all_accounts():
     new_accounts = {}
 
 
-    # --------------------------------------------------------
     # PRIMARY
-    # --------------------------------------------------------
-
     if (
         PRIMARY_API_KEY
         and PRIMARY_API_SECRET
@@ -3126,10 +3536,7 @@ def create_all_accounts():
             ] = bot
 
 
-    # --------------------------------------------------------
     # CLIENTS
-    # --------------------------------------------------------
-
     clients_cfg = (
         load_clients_config()
     )
@@ -3492,10 +3899,7 @@ class DashboardHandler(
         body = self.read_json_body()
 
 
-        # ----------------------------------------------------
         # START
-        # ----------------------------------------------------
-
         if parsed.path == "/api/start":
 
             bot = get_bot(
@@ -3519,10 +3923,7 @@ class DashboardHandler(
             )
 
 
-        # ----------------------------------------------------
         # STOP
-        # ----------------------------------------------------
-
         if parsed.path == "/api/stop":
 
             bot = get_bot(
@@ -3546,10 +3947,7 @@ class DashboardHandler(
             )
 
 
-        # ----------------------------------------------------
         # ADD CLIENT
-        # ----------------------------------------------------
-
         if parsed.path == "/api/client/add":
 
             client_id = str(
@@ -3665,16 +4063,6 @@ def extract_trade(message):
             or data
         )
 
-
-        # Delta trades channel normally sends:
-        #
-        # {
-        #   "p": "72141.5",
-        #   "sy": "BTCUSD",
-        #   ...
-        # }
-        #
-        # But keep compatibility with nested payloads.
 
         if isinstance(item, list):
 
@@ -3937,6 +4325,10 @@ def main():
     )
 
     logging.info(
+        "5M TRAILING SL + REVERSAL ENABLED"
+    )
+
+    logging.info(
         "BASE URL = %s",
         BASE_URL
     )
@@ -3971,20 +4363,6 @@ def main():
 
     load_all_accounts()
 
-
-    # ========================================================
-    # IMPORTANT FIX
-    #
-    # OLD CODE CREATED THREAD BUT NEVER STARTED IT.
-    #
-    # WRONG:
-    #
-    # threading.Thread(...).name = "ws"
-    #
-    # CORRECT:
-    #
-    # create -> daemon -> start
-    # ========================================================
 
     websocket_thread = threading.Thread(
         target=run_websocket_forever,
