@@ -17,42 +17,88 @@ import requests
 import websocket
 from dotenv import load_dotenv
 
+
 load_dotenv()
 
+
+# ============================================================
+# CONFIG
+# ============================================================
+
 IST = ZoneInfo("Asia/Kolkata")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR)
-BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
-WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.exchange")
-PORT = int(os.getenv("PORT") or os.getenv("DASHBOARD_PORT") or "8080")
+
+BASE_URL = os.getenv(
+    "DELTA_BASE_URL",
+    "https://api.india.delta.exchange"
+).rstrip("/")
+
+WS_URL = os.getenv(
+    "DELTA_PUBLIC_WS_URL",
+    "wss://public-socket.india.delta.exchange"
+)
+
+PORT = int(
+    os.getenv("PORT")
+    or os.getenv("DASHBOARD_PORT")
+    or "8080"
+)
 
 API_KEY = os.getenv("DELTA_API_KEY", "").strip()
 API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
+
 ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "Main").strip()
 ACCOUNT_ID = os.getenv("ACCOUNT_ID", "primary").strip()
 
 SYMBOL = "XAUTUSD"
+
+# Session starts at 5:30 AM IST.
 SESSION_START = dtime(5, 30)
+
+# Trading is allowed from 5:45 AM IST.
 TRADING_START = dtime(5, 45)
 
+# 10% of available balance as margin.
 MARGIN_FRACTION = Decimal("0.10")
+
 MAX_LEVERAGE = 100
 MIN_LEVERAGE = 10
 
 TARGET_COUNT = 10
+
 RECONNECT_SECONDS = 5
+
 ENTRY_CONFIRM_TIMEOUT = 10
 CLOSE_CONFIRM_TIMEOUT = 10
+PARTIAL_CONFIRM_TIMEOUT = 10
+
 POLL_INTERVAL = 0.25
 
-STATE_FILE = os.path.join(DATA_DIR, "xautusd_bot_state.json")
-HISTORY_FILE = os.path.join(DATA_DIR, "xautusd_trade_history.json")
-LOCK_FILE = os.path.join(DATA_DIR, "xautusd_bot.lock")
+
+STATE_FILE = os.path.join(
+    DATA_DIR,
+    "xautusd_bot_state.json"
+)
+
+HISTORY_FILE = os.path.join(
+    DATA_DIR,
+    "xautusd_trade_history.json"
+)
+
+LOCK_FILE = os.path.join(
+    DATA_DIR,
+    "xautusd_bot.lock"
+)
+
 
 LOCK_HANDLE = None
 PUBLIC_IP = "Loading..."
 
+
 os.makedirs(DATA_DIR, exist_ok=True)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,14 +107,25 @@ logging.basicConfig(
 )
 
 
+# ============================================================
+# BASIC HELPERS
+# ============================================================
+
 def now_ist():
     return datetime.now(IST)
 
 
 def atomic_write(path, data):
     tmp = path + ".tmp"
+
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, default=str)
+        json.dump(
+            data,
+            f,
+            indent=2,
+            default=str
+        )
+
     os.replace(tmp, path)
 
 
@@ -76,15 +133,21 @@ def load_json(path, default):
     try:
         if not os.path.exists(path):
             return default
+
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
+
     except Exception:
         return default
 
 
 def load_history():
     data = load_json(HISTORY_FILE, [])
-    return data if isinstance(data, list) else []
+
+    if isinstance(data, list):
+        return data
+
+    return []
 
 
 def save_history(history):
@@ -107,101 +170,236 @@ def as_float(value, default=None):
 
 def current_session_start(dt=None):
     dt = dt or now_ist()
-    base = dt.replace(hour=5, minute=30, second=0, microsecond=0)
+
+    base = dt.replace(
+        hour=5,
+        minute=30,
+        second=0,
+        microsecond=0
+    )
+
     if dt.time() >= SESSION_START:
         return base
+
     return base - timedelta(days=1)
 
 
 def is_weekend(dt=None):
     dt = dt or now_ist()
-    if dt.weekday() == 5 or dt.weekday() == 6:
-        return True
-    return False
 
+    return dt.weekday() in (5, 6)
+
+
+# ============================================================
+# SINGLE PROCESS LOCK
+# ============================================================
 
 def acquire_single_process_lock():
     global LOCK_HANDLE
+
     try:
         import fcntl
     except ImportError:
         return True
+
     try:
-        LOCK_HANDLE = open(LOCK_FILE, "w", encoding="utf-8")
-        fcntl.flock(LOCK_HANDLE.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        LOCK_HANDLE = open(
+            LOCK_FILE,
+            "w",
+            encoding="utf-8"
+        )
+
+        fcntl.flock(
+            LOCK_HANDLE.fileno(),
+            fcntl.LOCK_EX | fcntl.LOCK_NB
+        )
+
     except BlockingIOError:
         return False
+
     except Exception:
         return False
+
     LOCK_HANDLE.write(str(os.getpid()))
     LOCK_HANDLE.flush()
-    atexit.register(release_single_process_lock)
+
+    atexit.register(
+        release_single_process_lock
+    )
+
     return True
 
 
 def release_single_process_lock():
     global LOCK_HANDLE
+
     if LOCK_HANDLE is None:
         return
+
     try:
         import fcntl
-        fcntl.flock(LOCK_HANDLE.fileno(), fcntl.LOCK_UN)
+
+        fcntl.flock(
+            LOCK_HANDLE.fileno(),
+            fcntl.LOCK_UN
+        )
+
     except Exception:
         pass
+
     try:
         LOCK_HANDLE.close()
     except Exception:
         pass
+
     LOCK_HANDLE = None
 
 
+# ============================================================
+# PUBLIC IP
+# ============================================================
+
 def get_public_ip():
     global PUBLIC_IP
+
     if PUBLIC_IP != "Loading...":
         return PUBLIC_IP
+
     try:
-        response = requests.get("https://api.ipify.org?format=json", timeout=5)
+        response = requests.get(
+            "https://api.ipify.org?format=json",
+            timeout=5
+        )
+
         ip = response.json().get("ip")
+
         if ip:
             PUBLIC_IP = ip
-            logging.info("RAILWAY OUTBOUND IP --> %s", ip)
+
+            logging.info(
+                "RAILWAY OUTBOUND IP --> %s",
+                ip
+            )
+
     except Exception:
         PUBLIC_IP = "Unknown"
+
     return PUBLIC_IP
 
 
+# ============================================================
+# DELTA CLIENT
+# ============================================================
+
 class DeltaClient:
+
     def __init__(self):
+
         self.session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=50, pool_maxsize=50)
-        self.session.mount("https://", adapter)
-        self.session.mount("http://", adapter)
+
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=50,
+            pool_maxsize=50
+        )
+
+        self.session.mount(
+            "https://",
+            adapter
+        )
+
+        self.session.mount(
+            "http://",
+            adapter
+        )
+
         self.session.headers.update(
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Target-Bot/1.0",
+                "User-Agent": "XAUTUSD-Target-Bot/2.0",
             }
         )
 
-    def sign(self, method, path, query="", body=""):
-        timestamp = str(int(time.time()))
-        message = method.upper() + timestamp + path + query + body
+    # --------------------------------------------------------
+    # SIGN
+    # --------------------------------------------------------
+
+    def sign(
+        self,
+        method,
+        path,
+        query="",
+        body=""
+    ):
+
+        timestamp = str(
+            int(time.time())
+        )
+
+        message = (
+            method.upper()
+            + timestamp
+            + path
+            + query
+            + body
+        )
+
         signature = hmac.new(
-            API_SECRET.encode(), message.encode(), hashlib.sha256
+            API_SECRET.encode(),
+            message.encode(),
+            hashlib.sha256
         ).hexdigest()
+
         return {
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Target-Bot/1.0",
+            "User-Agent": "XAUTUSD-Target-Bot/2.0",
         }
 
-    def api(self, method, path, params=None, body=None, auth=False):
+    # --------------------------------------------------------
+    # API
+    # --------------------------------------------------------
+
+    def api(
+        self,
+        method,
+        path,
+        params=None,
+        body=None,
+        auth=False
+    ):
+
         params = params or {}
-        body_text = json.dumps(body, separators=(",", ":")) if body is not None else ""
-        query = "?" + urlencode(params, doseq=True) if params else ""
-        headers = self.sign(method, path, query, body_text) if auth else {}
+
+        body_text = (
+            json.dumps(
+                body,
+                separators=(",", ":")
+            )
+            if body is not None
+            else ""
+        )
+
+        query = (
+            "?" + urlencode(
+                params,
+                doseq=True
+            )
+            if params
+            else ""
+        )
+
+        headers = (
+            self.sign(
+                method,
+                path,
+                query,
+                body_text
+            )
+            if auth
+            else {}
+        )
 
         response = self.session.request(
             method.upper(),
@@ -211,861 +409,3248 @@ class DeltaClient:
             headers=headers,
             timeout=(4, 12),
         )
+
         response.raise_for_status()
+
         data = response.json()
+
         if data.get("success") is False:
-            raise RuntimeError(f"Delta API error: {data}")
+            raise RuntimeError(
+                f"Delta API error: {data}"
+            )
+
         return data
 
+    # --------------------------------------------------------
+    # PRODUCT
+    # --------------------------------------------------------
+
     def product(self):
-        data = self.api("GET", f"/v2/products/{SYMBOL}")
+
+        data = self.api(
+            "GET",
+            f"/v2/products/{SYMBOL}"
+        )
+
         result = data.get("result")
+
         if not isinstance(result, dict):
-            raise RuntimeError(f"Invalid product response: {data}")
+            raise RuntimeError(
+                f"Invalid product response: {data}"
+            )
+
         return result
 
+    # --------------------------------------------------------
+    # POSITION
+    # --------------------------------------------------------
+
     def position(self, product_id):
+
         try:
+
             data = self.api(
                 "GET",
                 "/v2/positions",
-                params={"product_id": int(product_id)},
-                auth=True,
+                params={
+                    "product_id": int(product_id)
+                },
+                auth=True
             )
-            result = data.get("result", {})
+
+            result = data.get(
+                "result",
+                {}
+            )
+
             position = {}
+
             if isinstance(result, dict):
+
                 position = result
+
             elif isinstance(result, list):
+
                 for item in result:
-                    if isinstance(item, dict) and as_int(item.get("product_id"), 0) == int(product_id):
+
+                    if (
+                        isinstance(item, dict)
+                        and as_int(
+                            item.get("product_id"),
+                            0
+                        ) == int(product_id)
+                    ):
                         position = item
                         break
-                if not position and result and isinstance(result[0], dict):
+
+                if (
+                    not position
+                    and result
+                    and isinstance(result[0], dict)
+                ):
                     position = result[0]
 
             return {
-                "size": as_int(position.get("size"), 0),
-                "entry_price": as_float(position.get("entry_price") or position.get("avg_price")),
-                "stop_loss": as_float(position.get("stop_loss")),
-                "liquidation_price": as_float(position.get("liquidation_price")),
-                "mark_price": as_float(position.get("mark_price")),
-                "unrealized_pnl": as_float(position.get("unrealized_pnl"), 0.0) or 0.0,
-                "leverage": as_int(position.get("leverage") or position.get("user_leverage"), 10) or 10,
-                "margin": as_float(position.get("margin"), 0.0) or 0.0,
+                "size": as_int(
+                    position.get("size"),
+                    0
+                ),
+
+                "entry_price": as_float(
+                    position.get("entry_price")
+                    or position.get("avg_price")
+                ),
+
+                "stop_loss": as_float(
+                    position.get("stop_loss")
+                ),
+
+                "liquidation_price": as_float(
+                    position.get("liquidation_price")
+                ),
+
+                "mark_price": as_float(
+                    position.get("mark_price")
+                ),
+
+                "unrealized_pnl": as_float(
+                    position.get("unrealized_pnl"),
+                    0.0
+                ) or 0.0,
+
+                "leverage": as_int(
+                    position.get("leverage")
+                    or position.get("user_leverage"),
+                    10
+                ) or 10,
+
+                "margin": as_float(
+                    position.get("margin"),
+                    0.0
+                ) or 0.0,
             }
-        except Exception:
-            return {"size": 0, "unrealized_pnl": 0.0, "leverage": 10, "margin": 0.0}
+
+        except Exception as e:
+
+            logging.warning(
+                "Position API error: %s",
+                e
+            )
+
+            return {
+                "size": 0,
+                "unrealized_pnl": 0.0,
+                "leverage": 10,
+                "margin": 0.0,
+            }
+
+    # --------------------------------------------------------
+    # BALANCE
+    # --------------------------------------------------------
 
     def balance(self):
-        try:
-            data = self.api("GET", "/v2/wallet/balances", auth=True)
-            result = data.get("result", [])
-            if isinstance(result, dict):
-                result = [result]
-            for wallet in result:
-                if not isinstance(wallet, dict):
-                    continue
-                asset = str(wallet.get("asset_symbol", "")).upper()
-                if asset not in ("USD", "USDT"):
-                    continue
-                value = wallet.get("available_balance") if wallet.get("available_balance") is not None else wallet.get("balance")
-                if value is not None:
-                    return Decimal(str(value))
-        except Exception:
-            pass
-        return Decimal("0")
 
-    def set_leverage(self, product_id, leverage):
+        data = self.api(
+            "GET",
+            "/v2/wallet/balances",
+            auth=True
+        )
+
+        result = data.get(
+            "result",
+            []
+        )
+
+        if isinstance(result, dict):
+            result = [result]
+
+        for wallet in result:
+
+            if not isinstance(wallet, dict):
+                continue
+
+            asset = str(
+                wallet.get(
+                    "asset_symbol",
+                    ""
+                )
+            ).upper()
+
+            if asset not in (
+                "USD",
+                "USDT"
+            ):
+                continue
+
+            value = (
+                wallet.get("available_balance")
+                if wallet.get("available_balance") is not None
+                else wallet.get("balance")
+            )
+
+            if value is not None:
+                return Decimal(
+                    str(value)
+                )
+
+        raise RuntimeError(
+            "USD/USDT balance not found."
+        )
+
+    # --------------------------------------------------------
+    # LEVERAGE
+    # --------------------------------------------------------
+
+    def set_leverage(
+        self,
+        product_id,
+        leverage
+    ):
+
         return self.api(
             "POST",
             f"/v2/products/{product_id}/orders/leverage",
-            body={"leverage": str(int(leverage))},
-            auth=True,
+            body={
+                "leverage": str(
+                    int(leverage)
+                )
+            },
+            auth=True
         )
 
-    def calculate_order_size(self, product, price, leverage):
+    # --------------------------------------------------------
+    # ORDER SIZE
+    # --------------------------------------------------------
+
+    def calculate_order_size(
+        self,
+        product,
+        price,
+        leverage
+    ):
+
         balance = self.balance()
+
         if balance <= 0:
-            balance = Decimal("1000")
-        margin = balance * MARGIN_FRACTION
-        notional = margin * Decimal(str(leverage))
-        contract_value = Decimal(str(product.get("contract_value") or "0.001"))
-        raw_size = notional / Decimal(str(price)) / contract_value
-        increment = Decimal(str(product.get("lot_size") or "1"))
-        minimum = Decimal(str(product.get("min_order_size") or increment))
-        size_decimal = (raw_size / increment).to_integral_value(rounding=ROUND_DOWN) * increment
+            raise RuntimeError(
+                "Available balance is zero."
+            )
+
+        margin = (
+            balance
+            * MARGIN_FRACTION
+        )
+
+        notional = (
+            margin
+            * Decimal(str(leverage))
+        )
+
+        contract_value = Decimal(
+            str(
+                product.get(
+                    "contract_value"
+                )
+                or "0.001"
+            )
+        )
+
+        if contract_value <= 0:
+            raise RuntimeError(
+                "Invalid contract value."
+            )
+
+        raw_size = (
+            notional
+            / Decimal(str(price))
+            / contract_value
+        )
+
+        increment = Decimal(
+            str(
+                product.get(
+                    "lot_size"
+                )
+                or "1"
+            )
+        )
+
+        minimum = Decimal(
+            str(
+                product.get(
+                    "min_order_size"
+                )
+                or increment
+            )
+        )
+
+        size_decimal = (
+            (
+                raw_size / increment
+            ).to_integral_value(
+                rounding=ROUND_DOWN
+            )
+            * increment
+        )
+
         if size_decimal < minimum:
             size_decimal = minimum
+
         return int(size_decimal)
 
-    def market_entry(self, product_id, direction, size):
-        side = "buy" if direction == "LONG" else "sell"
+    # --------------------------------------------------------
+    # MARKET ENTRY
+    # --------------------------------------------------------
+
+    def market_entry(
+        self,
+        product_id,
+        direction,
+        size
+    ):
+
+        side = (
+            "buy"
+            if direction == "LONG"
+            else "sell"
+        )
+
         body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
             "size": int(size),
             "side": side,
             "order_type": "market_order",
-            "client_order_id": self.make_client_id("entry"),
+            "client_order_id": self.make_client_id(
+                "entry"
+            ),
         }
-        return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def reduce_only_market_close(self, product_id, signed_size):
+        return self.api(
+            "POST",
+            "/v2/orders",
+            body=body,
+            auth=True
+        )
+
+    # --------------------------------------------------------
+    # REDUCE ONLY CLOSE
+    # --------------------------------------------------------
+
+    def reduce_only_market_close(
+        self,
+        product_id,
+        signed_size
+    ):
+
         if signed_size == 0:
             return None
-        side = "sell" if signed_size > 0 else "buy"
+
+        side = (
+            "sell"
+            if signed_size > 0
+            else "buy"
+        )
+
         body = {
             "product_id": int(product_id),
             "product_symbol": SYMBOL,
-            "size": abs(int(signed_size)),
+            "size": abs(
+                int(signed_size)
+            ),
             "side": side,
             "order_type": "market_order",
             "reduce_only": True,
-            "client_order_id": self.make_client_id("close"),
+            "client_order_id": self.make_client_id(
+                "close"
+            ),
         }
-        return self.api("POST", "/v2/orders", body=body, auth=True)
 
-    def cancel_all_orders(self, product_id):
+        return self.api(
+            "POST",
+            "/v2/orders",
+            body=body,
+            auth=True
+        )
+
+    # --------------------------------------------------------
+    # CANCEL ORDERS
+    # --------------------------------------------------------
+
+    def cancel_all_orders(
+        self,
+        product_id
+    ):
+
         try:
-            return self.api("DELETE", "/v2/orders/all", body={"product_id": int(product_id)}, auth=True)
+
+            return self.api(
+                "DELETE",
+                "/v2/orders/all",
+                body={
+                    "product_id": int(
+                        product_id
+                    )
+                },
+                auth=True
+            )
+
         except Exception:
             return None
 
-    def make_client_id(self, prefix):
-        return f"{prefix}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"[-32:]
+    # --------------------------------------------------------
+    # CLIENT ID
+    # --------------------------------------------------------
 
-    def candles(self, resolution, start_ts, end_ts):
+    def make_client_id(
+        self,
+        prefix
+    ):
+
+        return (
+            f"{prefix}_"
+            f"{int(time.time() * 1000)}_"
+            f"{uuid.uuid4().hex[:8]}"
+        )[-32:]
+
+    # --------------------------------------------------------
+    # CANDLES
+    # --------------------------------------------------------
+
+    def candles(
+        self,
+        resolution,
+        start_ts,
+        end_ts
+    ):
+
         try:
+
             data = self.api(
                 "GET",
                 "/v2/history/candles",
-                params={"resolution": resolution, "symbol": SYMBOL, "start": int(start_ts), "end": int(end_ts)},
+                params={
+                    "resolution": resolution,
+                    "symbol": SYMBOL,
+                    "start": int(start_ts),
+                    "end": int(end_ts),
+                }
             )
-            result = data.get("result", [])
-            return result if isinstance(result, list) else []
+
+            result = data.get(
+                "result",
+                []
+            )
+
+            return (
+                result
+                if isinstance(result, list)
+                else []
+            )
+
         except Exception:
+
             return []
 
 
+# ============================================================
+# XAUTUSD BOT
+# ============================================================
+
 class XAUTTargetBot:
+
     def __init__(self):
+
         self.client = DeltaClient()
+
         self.product = None
         self.product_id = 0
+
         self.session = None
+
+        # Session Day High / Day Low
         self.day_high = None
         self.day_low = None
+
         self.last_price = None
+
         self.bot_running = False
         self.trading_armed = False
+
+        # Current position
         self.position = None
         self.direction = None
         self.entry_price = None
         self.stop_loss = 0.0
+
         self.original_size = 0
         self.remaining_size = 0
+
         self.leverage = 10
-        self.target_hit = [False for _ in range(TARGET_COUNT)]
-        self.target_quantities = [0 for _ in range(TARGET_COUNT)]
+
+        # 10 targets
+        self.target_hit = [
+            False
+            for _ in range(TARGET_COUNT)
+        ]
+
+        self.target_quantities = [
+            0
+            for _ in range(TARGET_COUNT)
+        ]
+
         self.trade_started_at = None
         self.trade_id = None
+
         self.execution_uncertain = False
         self.order_in_progress = False
+
         self.lock = threading.RLock()
+
         self.load_state()
 
+    # ========================================================
+    # SAVE STATE
+    # ========================================================
+
     def save(self):
+
         atomic_write(
             STATE_FILE,
             {
-                "session": self.session.isoformat() if self.session else None,
-                "day_high": str(self.day_high) if self.day_high is not None else None,
-                "day_low": str(self.day_low) if self.day_low is not None else None,
+                "session": (
+                    self.session.isoformat()
+                    if self.session
+                    else None
+                ),
+
+                "day_high": (
+                    str(self.day_high)
+                    if self.day_high is not None
+                    else None
+                ),
+
+                "day_low": (
+                    str(self.day_low)
+                    if self.day_low is not None
+                    else None
+                ),
+
                 "last_price": self.last_price,
+
                 "bot_running": self.bot_running,
+
                 "trading_armed": self.trading_armed,
+
                 "position": self.position,
+
                 "direction": self.direction,
+
                 "entry_price": self.entry_price,
+
                 "stop_loss": self.stop_loss,
+
                 "original_size": self.original_size,
+
                 "remaining_size": self.remaining_size,
+
                 "leverage": self.leverage,
+
                 "target_hit": self.target_hit,
+
                 "target_quantities": self.target_quantities,
+
                 "trade_started_at": self.trade_started_at,
+
                 "trade_id": self.trade_id,
+
                 "execution_uncertain": self.execution_uncertain,
-            },
+            }
         )
+
+    # ========================================================
+    # LOAD STATE
+    # ========================================================
 
     def load_state(self):
-        state = load_json(STATE_FILE, {})
+
+        state = load_json(
+            STATE_FILE,
+            {}
+        )
+
         try:
+
             if state.get("session"):
-                self.session = datetime.fromisoformat(state["session"])
+                self.session = datetime.fromisoformat(
+                    state["session"]
+                )
+
             if state.get("day_high") is not None:
-                self.day_high = Decimal(str(state["day_high"]))
+                self.day_high = Decimal(
+                    str(state["day_high"])
+                )
+
             if state.get("day_low") is not None:
-                self.day_low = Decimal(str(state["day_low"]))
-            self.last_price = as_float(state.get("last_price"))
-            self.bot_running = bool(state.get("bot_running", False))
-            self.trading_armed = bool(state.get("trading_armed", False))
-            self.position = state.get("position")
-            self.direction = state.get("direction")
-            self.entry_price = as_float(state.get("entry_price"))
-            self.stop_loss = as_float(state.get("stop_loss"), 0.0) or 0.0
-            self.original_size = as_int(state.get("original_size"), 0)
-            self.remaining_size = as_int(state.get("remaining_size"), 0)
-            self.leverage = as_int(state.get("leverage"), 10) or 10
-            hits = state.get("target_hit")
-            if isinstance(hits, list) and len(hits) == TARGET_COUNT:
-                self.target_hit = [bool(x) for x in hits]
-            quantities = state.get("target_quantities")
-            if isinstance(quantities, list) and len(quantities) == TARGET_COUNT:
-                self.target_quantities = [as_int(x) for x in quantities]
-            self.trade_started_at = state.get("trade_started_at")
-            self.trade_id = state.get("trade_id")
-            self.execution_uncertain = bool(state.get("execution_uncertain", False))
-        except Exception:
-            pass
+                self.day_low = Decimal(
+                    str(state["day_low"])
+                )
+
+            self.last_price = as_float(
+                state.get("last_price")
+            )
+
+            self.bot_running = bool(
+                state.get(
+                    "bot_running",
+                    False
+                )
+            )
+
+            self.trading_armed = bool(
+                state.get(
+                    "trading_armed",
+                    False
+                )
+            )
+
+            self.position = state.get(
+                "position"
+            )
+
+            self.direction = state.get(
+                "direction"
+            )
+
+            self.entry_price = as_float(
+                state.get("entry_price")
+            )
+
+            self.stop_loss = as_float(
+                state.get("stop_loss"),
+                0.0
+            ) or 0.0
+
+            self.original_size = as_int(
+                state.get("original_size"),
+                0
+            )
+
+            self.remaining_size = as_int(
+                state.get("remaining_size"),
+                0
+            )
+
+            self.leverage = as_int(
+                state.get("leverage"),
+                10
+            ) or 10
+
+            hits = state.get(
+                "target_hit"
+            )
+
+            if (
+                isinstance(hits, list)
+                and len(hits) == TARGET_COUNT
+            ):
+                self.target_hit = [
+                    bool(x)
+                    for x in hits
+                ]
+
+            quantities = state.get(
+                "target_quantities"
+            )
+
+            if (
+                isinstance(quantities, list)
+                and len(quantities) == TARGET_COUNT
+            ):
+                self.target_quantities = [
+                    as_int(x)
+                    for x in quantities
+                ]
+
+            self.trade_started_at = state.get(
+                "trade_started_at"
+            )
+
+            self.trade_id = state.get(
+                "trade_id"
+            )
+
+            self.execution_uncertain = bool(
+                state.get(
+                    "execution_uncertain",
+                    False
+                )
+            )
+
+        except Exception as e:
+
+            logging.error(
+                "State load error: %s",
+                e
+            )
+
+    # ========================================================
+    # PRODUCT
+    # ========================================================
 
     def prepare_product(self):
+
         if self.product_id:
             return True
+
         try:
+
             self.product = self.client.product()
-            self.product_id = int(self.product["id"])
+
+            self.product_id = int(
+                self.product["id"]
+            )
+
             return True
-        except Exception:
+
+        except Exception as e:
+
+            logging.error(
+                "Product error: %s",
+                e
+            )
+
             return False
 
-    def get_session_high_low(self, session_start):
+    # ========================================================
+    # SESSION HIGH / LOW
+    # ========================================================
+
+    def get_session_high_low(
+        self,
+        session_start
+    ):
+
         candles = self.client.candles(
             "1m",
-            int(session_start.timestamp()),
-            int(now_ist().timestamp()),
+            int(
+                session_start.timestamp()
+            ),
+            int(
+                now_ist().timestamp()
+            )
         )
-        highest, lowest = None, None
+
+        highest = None
+        lowest = None
+
         for candle in candles:
+
             try:
+
                 if isinstance(candle, dict):
-                    high = Decimal(str(candle.get("high")))
-                    low = Decimal(str(candle.get("low")))
-                elif isinstance(candle, list) and len(candle) >= 4:
-                    high = Decimal(str(candle[2]))
-                    low = Decimal(str(candle[3]))
+
+                    high = Decimal(
+                        str(
+                            candle.get("high")
+                        )
+                    )
+
+                    low = Decimal(
+                        str(
+                            candle.get("low")
+                        )
+                    )
+
+                elif (
+                    isinstance(candle, list)
+                    and len(candle) >= 4
+                ):
+
+                    high = Decimal(
+                        str(candle[2])
+                    )
+
+                    low = Decimal(
+                        str(candle[3])
+                    )
+
                 else:
                     continue
-                if highest is None or high > highest:
+
+                if (
+                    highest is None
+                    or high > highest
+                ):
                     highest = high
-                if lowest is None or low < lowest:
+
+                if (
+                    lowest is None
+                    or low < lowest
+                ):
                     lowest = low
+
             except Exception:
                 continue
+
         return highest, lowest
 
-    def wait_for_position(self, expected_direction=None, timeout=ENTRY_CONFIRM_TIMEOUT):
-        deadline = time.time() + timeout
+    # ========================================================
+    # WAIT FOR POSITION
+    # ========================================================
+
+    def wait_for_position(
+        self,
+        expected_direction=None,
+        timeout=ENTRY_CONFIRM_TIMEOUT
+    ):
+
+        deadline = (
+            time.time()
+            + timeout
+        )
+
         while time.time() < deadline:
+
             try:
-                position = self.client.position(self.product_id)
-                size = as_int(position.get("size"), 0)
+
+                position = self.client.position(
+                    self.product_id
+                )
+
+                size = as_int(
+                    position.get("size"),
+                    0
+                )
+
                 if size == 0:
-                    time.sleep(POLL_INTERVAL)
+                    time.sleep(
+                        POLL_INTERVAL
+                    )
                     continue
-                if expected_direction == "LONG" and size > 0:
+
+                if (
+                    expected_direction == "LONG"
+                    and size > 0
+                ):
                     return position
-                if expected_direction == "SHORT" and size < 0:
+
+                if (
+                    expected_direction == "SHORT"
+                    and size < 0
+                ):
                     return position
+
                 if expected_direction is None:
                     return position
+
             except Exception:
                 pass
-            time.sleep(POLL_INTERVAL)
+
+            time.sleep(
+                POLL_INTERVAL
+            )
+
         return None
 
-    def wait_until_flat(self, timeout=CLOSE_CONFIRM_TIMEOUT):
-        deadline = time.time() + timeout
+    # ========================================================
+    # WAIT FOR EXACT / EXPECTED REMAINING SIZE
+    # ========================================================
+
+    def wait_for_remaining_size(
+        self,
+        expected_max_size,
+        timeout=PARTIAL_CONFIRM_TIMEOUT
+    ):
+
+        deadline = (
+            time.time()
+            + timeout
+        )
+
+        expected_max_size = abs(
+            int(expected_max_size)
+        )
+
         while time.time() < deadline:
+
             try:
-                position = self.client.position(self.product_id)
-                if as_int(position.get("size"), 0) == 0:
-                    return True
+
+                position = self.client.position(
+                    self.product_id
+                )
+
+                current_size = abs(
+                    as_int(
+                        position.get("size"),
+                        0
+                    )
+                )
+
+                if current_size <= expected_max_size:
+                    return position
+
             except Exception:
                 pass
-            time.sleep(POLL_INTERVAL)
+
+            time.sleep(
+                POLL_INTERVAL
+            )
+
+        return None
+
+    # ========================================================
+    # WAIT UNTIL FLAT
+    # ========================================================
+
+    def wait_until_flat(
+        self,
+        timeout=CLOSE_CONFIRM_TIMEOUT
+    ):
+
+        deadline = (
+            time.time()
+            + timeout
+        )
+
+        while time.time() < deadline:
+
+            try:
+
+                position = self.client.position(
+                    self.product_id
+                )
+
+                if (
+                    as_int(
+                        position.get("size"),
+                        0
+                    )
+                    == 0
+                ):
+                    return True
+
+            except Exception:
+                pass
+
+            time.sleep(
+                POLL_INTERVAL
+            )
+
         return False
 
-    def adopt_exchange_position(self, position):
-        size = as_int(position.get("size"), 0)
+    # ========================================================
+    # ADOPT EXCHANGE POSITION
+    # ========================================================
+
+    def adopt_exchange_position(
+        self,
+        position
+    ):
+
+        size = as_int(
+            position.get("size"),
+            0
+        )
+
         if size == 0:
             return
-        self.direction = "LONG" if size > 0 else "SHORT"
+
+        self.direction = (
+            "LONG"
+            if size > 0
+            else "SHORT"
+        )
+
         self.position = self.direction
+
         self.remaining_size = abs(size)
+
         if self.original_size <= 0:
             self.original_size = abs(size)
-        if position.get("entry_price") is not None:
-            self.entry_price = float(position.get("entry_price"))
+
+        if (
+            position.get("entry_price")
+            is not None
+        ):
+            self.entry_price = float(
+                position.get(
+                    "entry_price"
+                )
+            )
+
         if position.get("leverage"):
-            self.leverage = int(position.get("leverage"))
+            self.leverage = int(
+                position.get(
+                    "leverage"
+                )
+            )
+
         self.execution_uncertain = False
+
+    # ========================================================
+    # CLEAR POSITION
+    # ========================================================
 
     def clear_position(self):
+
         self.position = None
         self.direction = None
+
         self.entry_price = None
         self.stop_loss = 0.0
+
         self.original_size = 0
         self.remaining_size = 0
-        self.target_hit = [False for _ in range(TARGET_COUNT)]
-        self.target_quantities = [0 for _ in range(TARGET_COUNT)]
+
+        self.target_hit = [
+            False
+            for _ in range(TARGET_COUNT)
+        ]
+
+        self.target_quantities = [
+            0
+            for _ in range(TARGET_COUNT)
+        ]
+
         self.trade_started_at = None
         self.trade_id = None
+
         self.execution_uncertain = False
 
+    # ========================================================
+    # START BOT
+    # ========================================================
+
     def start_bot(self):
+
         with self.lock:
+
             try:
-                self.prepare_product()
-                exchange_position = self.client.position(self.product_id)
-                if as_int(exchange_position.get("size"), 0):
-                    self.adopt_exchange_position(exchange_position)
+
+                if not self.prepare_product():
+                    raise RuntimeError(
+                        "Unable to load XAUTUSD product."
+                    )
+
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0
+                )
+
+                if exchange_size:
+
+                    self.adopt_exchange_position(
+                        exchange_position
+                    )
+
+                    # Existing position must have
+                    # saved strategy state.
+                    if (
+                        self.stop_loss <= 0
+                        or self.entry_price is None
+                    ):
+                        self.execution_uncertain = True
+
+                        self.save()
+
+                        return {
+                            "success": False,
+                            "message": (
+                                "Existing exchange position "
+                                "found but saved trade state "
+                                "is incomplete. Trading stopped "
+                                "for safety."
+                            )
+                        }
+
                 self.bot_running = True
                 self.execution_uncertain = False
+
                 self.save()
-                return {"success": True, "bot_running": True, "message": "XAUTUSD bot started."}
+
+                return {
+                    "success": True,
+                    "bot_running": True,
+                    "message": (
+                        "XAUTUSD bot started."
+                    )
+                }
+
             except Exception as e:
+
                 self.bot_running = False
                 self.execution_uncertain = True
+
                 self.save()
-                return {"success": False, "message": "Exchange reconciliation failed.", "error": str(e)}
+
+                return {
+                    "success": False,
+                    "message": (
+                        "Exchange reconciliation failed."
+                    ),
+                    "error": str(e)
+                }
+
+    # ========================================================
+    # STOP BOT
+    # ========================================================
 
     def stop_bot(self):
-        with self.lock:
-            self.bot_running = False
-            try:
-                self.prepare_product()
-                position = self.client.position(self.product_id)
-                size = as_int(position.get("size"), 0)
-                if size:
-                    self.client.cancel_all_orders(self.product_id)
-                    self.client.reduce_only_market_close(self.product_id, size)
-                    if not self.wait_until_flat():
-                        self.execution_uncertain = True
-                        self.save()
-                        return {"success": False, "message": "Position close not confirmed."}
-                self.clear_position()
-                self.save()
-                return {"success": True, "bot_running": False, "message": "XAUTUSD bot stopped."}
-            except Exception as e:
-                self.execution_uncertain = True
-                self.save()
-                return {"success": False, "message": str(e)}
 
-    def calculate_liquidation_estimate(self, entry_price, leverage, direction):
-        entry = Decimal(str(entry_price))
-        lev = Decimal(str(leverage))
-        if entry <= 0 or lev <= 0:
+        with self.lock:
+
+            self.bot_running = False
+
+            try:
+
+                self.prepare_product()
+
+                position = self.client.position(
+                    self.product_id
+                )
+
+                size = as_int(
+                    position.get("size"),
+                    0
+                )
+
+                if size:
+
+                    self.client.cancel_all_orders(
+                        self.product_id
+                    )
+
+                    self.client.reduce_only_market_close(
+                        self.product_id,
+                        size
+                    )
+
+                    if not self.wait_until_flat():
+
+                        self.execution_uncertain = True
+
+                        self.save()
+
+                        return {
+                            "success": False,
+                            "message": (
+                                "Position close not confirmed."
+                            )
+                        }
+
+                self.clear_position()
+
+                self.save()
+
+                return {
+                    "success": True,
+                    "bot_running": False,
+                    "message": (
+                        "XAUTUSD bot stopped."
+                    )
+                }
+
+            except Exception as e:
+
+                self.execution_uncertain = True
+
+                self.save()
+
+                return {
+                    "success": False,
+                    "message": str(e)
+                }
+
+    # ========================================================
+    # LIQUIDATION ESTIMATE
+    # ========================================================
+
+    def calculate_liquidation_estimate(
+        self,
+        entry_price,
+        leverage,
+        direction
+    ):
+
+        entry = Decimal(
+            str(entry_price)
+        )
+
+        lev = Decimal(
+            str(leverage)
+        )
+
+        if (
+            entry <= 0
+            or lev <= 0
+        ):
             return None
-        maintenance, taker_fee = Decimal("0"), Decimal("0")
+
+        maintenance = Decimal("0")
+        taker_fee = Decimal("0")
+
         try:
-            maintenance = Decimal(str(self.product.get("maintenance_margin", 0))) / Decimal("100")
-            taker_fee = Decimal(str(self.product.get("taker_commission_rate", 0)))
+
+            maintenance = (
+                Decimal(
+                    str(
+                        self.product.get(
+                            "maintenance_margin",
+                            0
+                        )
+                    )
+                )
+                / Decimal("100")
+            )
+
+            taker_fee = Decimal(
+                str(
+                    self.product.get(
+                        "taker_commission_rate",
+                        0
+                    )
+                )
+            )
+
         except Exception:
             pass
-        effective = maintenance + taker_fee + Decimal("0.0010")
+
+        effective = (
+            maintenance
+            + taker_fee
+            + Decimal("0.0010")
+        )
+
         if direction == "LONG":
-            return entry * (Decimal("1") - Decimal("1") / lev + effective)
-        return entry * (Decimal("1") + Decimal("1") / lev - effective)
+
+            return (
+                entry
+                * (
+                    Decimal("1")
+                    - Decimal("1") / lev
+                    + effective
+                )
+            )
+
+        return (
+            entry
+            * (
+                Decimal("1")
+                + Decimal("1") / lev
+                - effective
+            )
+        )
+
+    # ========================================================
+    # LEVERAGE LADDER
+    # ========================================================
 
     def leverage_ladder(self):
-        return list(range(MAX_LEVERAGE, MIN_LEVERAGE - 1, -10))
 
-    def choose_safe_leverage(self, entry_price, stop_loss, direction):
+        return list(
+            range(
+                MAX_LEVERAGE,
+                MIN_LEVERAGE - 1,
+                -10
+            )
+        )
+
+    # ========================================================
+    # SAFE LEVERAGE
+    # ========================================================
+
+    def choose_safe_leverage(
+        self,
+        entry_price,
+        stop_loss,
+        direction
+    ):
+
         for leverage in self.leverage_ladder():
-            liquidation = self.calculate_liquidation_estimate(entry_price, leverage, direction)
+
+            liquidation = (
+                self.calculate_liquidation_estimate(
+                    entry_price,
+                    leverage,
+                    direction
+                )
+            )
+
             if liquidation is None:
                 continue
-            if direction == "LONG" and liquidation < Decimal(str(stop_loss)):
+
+            if (
+                direction == "LONG"
+                and liquidation < Decimal(
+                    str(stop_loss)
+                )
+            ):
                 return leverage
-            if direction == "SHORT" and liquidation > Decimal(str(stop_loss)):
+
+            if (
+                direction == "SHORT"
+                and liquidation > Decimal(
+                    str(stop_loss)
+                )
+            ):
                 return leverage
+
         return MIN_LEVERAGE
 
-    def split_into_ten_parts(self, total_size):
+    # ========================================================
+    # SPLIT INTO 10 TARGET PARTS
+    # ========================================================
+
+    def split_into_ten_parts(
+        self,
+        total_size
+    ):
+
         total_size = int(total_size)
-        base = total_size // TARGET_COUNT
-        remainder = total_size - (base * TARGET_COUNT)
-        quantities = [base for _ in range(TARGET_COUNT)]
+
+        if total_size <= 0:
+            return [0] * TARGET_COUNT
+
+        base = (
+            total_size
+            // TARGET_COUNT
+        )
+
+        remainder = (
+            total_size
+            - (
+                base
+                * TARGET_COUNT
+            )
+        )
+
+        quantities = [
+            base
+            for _ in range(TARGET_COUNT)
+        ]
+
+        # Remainder is added to final target.
         quantities[-1] += remainder
+
         return quantities
 
-    def enter_trade(self, direction, price, stop_loss):
-        if not self.bot_running or self.execution_uncertain or self.order_in_progress or is_weekend():
+    # ========================================================
+    # ENTER TRADE
+    # ========================================================
+
+    def enter_trade(
+        self,
+        direction,
+        price,
+        stop_loss
+    ):
+
+        if (
+            not self.bot_running
+            or self.execution_uncertain
+            or self.order_in_progress
+            or is_weekend()
+        ):
             return False
+
+        # Never enter if a position is already active.
+        try:
+
+            existing = self.client.position(
+                self.product_id
+            )
+
+            if as_int(
+                existing.get("size"),
+                0
+            ) != 0:
+                return False
+
+        except Exception:
+            return False
+
         with self.lock:
+
             self.order_in_progress = True
+
             try:
-                leverage = self.choose_safe_leverage(price, stop_loss, direction)
-                self.client.set_leverage(self.product_id, leverage)
-                size = self.client.calculate_order_size(self.product, price, leverage)
-                self.client.market_entry(self.product_id, direction, size)
-                confirmed = self.wait_for_position(expected_direction=direction)
+
+                leverage = (
+                    self.choose_safe_leverage(
+                        price,
+                        stop_loss,
+                        direction
+                    )
+                )
+
+                self.client.set_leverage(
+                    self.product_id,
+                    leverage
+                )
+
+                size = (
+                    self.client.calculate_order_size(
+                        self.product,
+                        price,
+                        leverage
+                    )
+                )
+
+                if size <= 0:
+                    raise RuntimeError(
+                        "Calculated order size is zero."
+                    )
+
+                self.client.market_entry(
+                    self.product_id,
+                    direction,
+                    size
+                )
+
+                confirmed = (
+                    self.wait_for_position(
+                        expected_direction=direction
+                    )
+                )
+
                 if confirmed is None:
+
                     self.execution_uncertain = True
+
                     self.save()
+
                     return False
-                confirmed_size = abs(as_int(confirmed.get("size"), 0))
+
+                confirmed_size = abs(
+                    as_int(
+                        confirmed.get("size"),
+                        0
+                    )
+                )
+
                 if confirmed_size <= 0:
+
                     self.execution_uncertain = True
+
                     self.save()
+
                     return False
+
                 self.position = direction
                 self.direction = direction
-                self.entry_price = confirmed.get("entry_price") or price
-                self.stop_loss = float(stop_loss)
-                self.original_size = confirmed_size
-                self.remaining_size = confirmed_size
-                self.leverage = as_int(confirmed.get("leverage"), leverage) or leverage
-                self.target_quantities = self.split_into_ten_parts(confirmed_size)
-                self.target_hit = [False for _ in range(TARGET_COUNT)]
-                self.trade_started_at = now_ist().strftime("%Y-%m-%d %H:%M:%S")
-                self.trade_id = f"xaut_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+                self.entry_price = (
+                    confirmed.get(
+                        "entry_price"
+                    )
+                    or price
+                )
+
+                # IMPORTANT:
+                # SL is frozen for this trade.
+                self.stop_loss = float(
+                    stop_loss
+                )
+
+                self.original_size = (
+                    confirmed_size
+                )
+
+                self.remaining_size = (
+                    confirmed_size
+                )
+
+                self.leverage = (
+                    as_int(
+                        confirmed.get(
+                            "leverage"
+                        ),
+                        leverage
+                    )
+                    or leverage
+                )
+
+                self.target_quantities = (
+                    self.split_into_ten_parts(
+                        confirmed_size
+                    )
+                )
+
+                self.target_hit = [
+                    quantity <= 0
+                    for quantity
+                    in self.target_quantities
+                ]
+
+                self.trade_started_at = (
+                    now_ist().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                )
+
+                self.trade_id = (
+                    f"xaut_"
+                    f"{int(time.time() * 1000)}_"
+                    f"{uuid.uuid4().hex[:8]}"
+                )
+
                 self.execution_uncertain = False
+
+                logging.info(
+                    "TRADE ENTRY | %s | Entry=%s | SL=%s | Size=%s | Lev=%sx",
+                    direction,
+                    self.entry_price,
+                    self.stop_loss,
+                    confirmed_size,
+                    self.leverage
+                )
+
                 self.save()
+
                 return True
-            except Exception:
+
+            except Exception as e:
+
+                logging.error(
+                    "ENTRY ERROR: %s",
+                    e
+                )
+
                 self.execution_uncertain = True
+
                 self.save()
+
                 return False
+
             finally:
+
                 self.order_in_progress = False
 
-    def calculate_target_price(self, target_index):
-        if self.entry_price is None or self.stop_loss <= 0:
+    # ========================================================
+    # TARGET PRICE
+    # ========================================================
+
+    def calculate_target_price(
+        self,
+        target_index
+    ):
+
+        if (
+            self.entry_price is None
+            or self.stop_loss <= 0
+        ):
             return None
-        risk = abs(Decimal(str(self.entry_price)) - Decimal(str(self.stop_loss)))
-        multiple = Decimal(str(target_index + 1))
+
+        risk = abs(
+            Decimal(
+                str(self.entry_price)
+            )
+            - Decimal(
+                str(self.stop_loss)
+            )
+        )
+
+        multiple = Decimal(
+            str(target_index + 1)
+        )
+
         if self.direction == "LONG":
-            return float(Decimal(str(self.entry_price)) + (risk * multiple))
+
+            return float(
+                Decimal(
+                    str(self.entry_price)
+                )
+                + (
+                    risk
+                    * multiple
+                )
+            )
+
         if self.direction == "SHORT":
-            return float(Decimal(str(self.entry_price)) - (risk * multiple))
+
+            return float(
+                Decimal(
+                    str(self.entry_price)
+                )
+                - (
+                    risk
+                    * multiple
+                )
+            )
+
         return None
 
-    def record_partial_trade(self, target_index, quantity, exit_price):
+    # ========================================================
+    # RECORD PARTIAL TARGET
+    # ========================================================
+
+    def record_partial_trade(
+        self,
+        target_index,
+        quantity,
+        exit_price
+    ):
+
         history = load_history()
-        history.append({
-            "id": f"{self.trade_id}_TARGET_{target_index + 1}_{int(time.time() * 1000)}",
-            "trade_id": self.trade_id,
-            "date": now_ist().strftime("%Y-%m-%d %H:%M"),
-            "symbol": SYMBOL,
-            "direction": self.direction,
-            "entry_price": self.entry_price,
-            "exit_price": float(exit_price),
-            "size": int(quantity),
-            "reason": f"TARGET_{target_index + 1}R",
-            "target": target_index + 1,
-            "leverage": self.leverage,
-        })
+
+        history.append(
+            {
+                "id": (
+                    f"{self.trade_id}"
+                    f"_TARGET_{target_index + 1}_"
+                    f"{int(time.time() * 1000)}"
+                ),
+
+                "trade_id": self.trade_id,
+
+                "date": now_ist().strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+
+                "symbol": SYMBOL,
+
+                "direction": self.direction,
+
+                "entry_price": self.entry_price,
+
+                "exit_price": float(
+                    exit_price
+                ),
+
+                "size": int(quantity),
+
+                "reason": (
+                    f"TARGET_{target_index + 1}R"
+                ),
+
+                "target": (
+                    target_index + 1
+                ),
+
+                "leverage": self.leverage,
+            }
+        )
+
         save_history(history)
 
-    def record_full_close(self, reason, exit_price):
+    # ========================================================
+    # RECORD FULL CLOSE
+    # ========================================================
+
+    def record_full_close(
+        self,
+        reason,
+        exit_price,
+        closed_size=None
+    ):
+
         history = load_history()
-        history.append({
-            "id": f"{self.trade_id}_CLOSE_{int(time.time() * 1000)}",
-            "trade_id": self.trade_id,
-            "date": now_ist().strftime("%Y-%m-%d %H:%M"),
-            "symbol": SYMBOL,
-            "direction": self.direction,
-            "entry_price": self.entry_price,
-            "exit_price": float(exit_price),
-            "size": self.original_size,
-            "reason": reason,
-            "trade_type": "TARGETS",
-            "leverage": self.leverage,
-        })
+
+        size = (
+            self.original_size
+            if closed_size is None
+            else int(closed_size)
+        )
+
+        history.append(
+            {
+                "id": (
+                    f"{self.trade_id}"
+                    f"_CLOSE_"
+                    f"{int(time.time() * 1000)}"
+                ),
+
+                "trade_id": self.trade_id,
+
+                "date": now_ist().strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+
+                "symbol": SYMBOL,
+
+                "direction": self.direction,
+
+                "entry_price": self.entry_price,
+
+                "exit_price": float(
+                    exit_price
+                ),
+
+                "size": size,
+
+                "reason": reason,
+
+                "trade_type": "TARGETS",
+
+                "leverage": self.leverage,
+            }
+        )
+
         save_history(history)
 
-    def close_partial(self, target_index, quantity, exit_price):
-        if quantity <= 0 or self.order_in_progress:
+    # ========================================================
+    # CLOSE PARTIAL TARGET
+    # ========================================================
+
+    def close_partial(
+        self,
+        target_index,
+        quantity,
+        exit_price
+    ):
+
+        if (
+            quantity <= 0
+            or self.order_in_progress
+            or not self.position
+        ):
             return False
+
         with self.lock:
+
             self.order_in_progress = True
+
             try:
-                exchange_position = self.client.position(self.product_id)
-                exchange_size = as_int(exchange_position.get("size"), 0)
+
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0
+                )
+
                 if exchange_size == 0:
+
                     self.clear_position()
+
                     self.save()
+
                     return True
-                quantity = min(int(quantity), abs(exchange_size))
-                signed_close_size = quantity if exchange_size > 0 else -quantity
-                self.client.reduce_only_market_close(self.product_id, signed_close_size)
-                self.wait_until_flat()
-                self.target_hit[target_index] = True
-                self.record_partial_trade(target_index, quantity, exit_price)
-                
-                # Agar saare 10 targets hit ho gaye hain toh position poori tarah close ho jayegi aur clear ho jayएगी
+
+                actual_quantity = min(
+                    int(quantity),
+                    abs(exchange_size)
+                )
+
+                if actual_quantity <= 0:
+                    return False
+
+                signed_close_size = (
+                    actual_quantity
+                    if exchange_size > 0
+                    else -actual_quantity
+                )
+
+                expected_remaining = (
+                    abs(exchange_size)
+                    - actual_quantity
+                )
+
+                self.client.reduce_only_market_close(
+                    self.product_id,
+                    signed_close_size
+                )
+
+                confirmed = (
+                    self.wait_for_remaining_size(
+                        expected_remaining
+                    )
+                )
+
+                if confirmed is None:
+
+                    self.execution_uncertain = True
+
+                    self.save()
+
+                    logging.error(
+                        "Partial close not confirmed. "
+                        "Target=%s",
+                        target_index + 1
+                    )
+
+                    return False
+
+                confirmed_remaining = abs(
+                    as_int(
+                        confirmed.get("size"),
+                        0
+                    )
+                )
+
+                # Partial close should leave the
+                # expected remaining position.
+                if confirmed_remaining > expected_remaining:
+
+                    self.execution_uncertain = True
+
+                    self.save()
+
+                    logging.error(
+                        "Unexpected remaining size "
+                        "after target."
+                    )
+
+                    return False
+
+                self.target_hit[
+                    target_index
+                ] = True
+
+                self.remaining_size = (
+                    confirmed_remaining
+                )
+
+                self.record_partial_trade(
+                    target_index,
+                    actual_quantity,
+                    exit_price
+                )
+
+                logging.info(
+                    "TARGET %s HIT | Close=%s | Remaining=%s",
+                    target_index + 1,
+                    actual_quantity,
+                    confirmed_remaining
+                )
+
+                # =================================================
+                # ALL 10 TARGETS COMPLETED
+                # =================================================
+
                 if all(self.target_hit):
-                    self.record_full_close("ALL_TARGETS_COMPLETED", exit_price)
+
+                    # Normally the last target should
+                    # have closed the remaining position.
+                    if confirmed_remaining != 0:
+
+                        final_position = (
+                            self.client.position(
+                                self.product_id
+                            )
+                        )
+
+                        final_size = as_int(
+                            final_position.get(
+                                "size"
+                            ),
+                            0
+                        )
+
+                        if final_size != 0:
+
+                            self.client.reduce_only_market_close(
+                                self.product_id,
+                                final_size
+                            )
+
+                            if not self.wait_until_flat():
+
+                                self.execution_uncertain = True
+
+                                self.save()
+
+                                return False
+
+                    self.record_full_close(
+                        "ALL_TARGETS_COMPLETED",
+                        exit_price,
+                        self.original_size
+                    )
+
+                    logging.info(
+                        "ALL 10 TARGETS COMPLETED -> FLAT"
+                    )
+
                     self.clear_position()
-                
+
                 self.save()
+
                 return True
-            except Exception:
+
+            except Exception as e:
+
+                logging.error(
+                    "PARTIAL CLOSE ERROR: %s",
+                    e
+                )
+
+                self.execution_uncertain = True
+
+                self.save()
+
                 return False
+
             finally:
+
                 self.order_in_progress = False
 
-    def close_all_at_stop(self, price):
+    # ========================================================
+    # FULL STOP LOSS CLOSE
+    # ========================================================
+
+    def close_all_at_stop(
+        self,
+        price
+    ):
+
         if self.order_in_progress:
             return False
+
         with self.lock:
+
             self.order_in_progress = True
+
             try:
-                exchange_position = self.client.position(self.product_id)
-                exchange_size = as_int(exchange_position.get("size"), 0)
+
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0
+                )
+
                 if exchange_size == 0:
+
                     self.clear_position()
+
                     self.save()
+
                     return True
-                self.client.cancel_all_orders(self.product_id)
-                self.client.reduce_only_market_close(self.product_id, exchange_size)
-                self.wait_until_flat()
-                self.record_full_close("DAY_EXTREME_SL", price)
+
+                close_size = abs(
+                    exchange_size
+                )
+
+                self.client.cancel_all_orders(
+                    self.product_id
+                )
+
+                self.client.reduce_only_market_close(
+                    self.product_id,
+                    exchange_size
+                )
+
+                if not self.wait_until_flat():
+
+                    self.execution_uncertain = True
+
+                    self.save()
+
+                    logging.error(
+                        "SL close not confirmed."
+                    )
+
+                    return False
+
+                self.record_full_close(
+                    "DAY_EXTREME_SL",
+                    price,
+                    close_size
+                )
+
+                logging.info(
+                    "STOP LOSS HIT -> FLAT | Price=%s",
+                    price
+                )
+
                 self.clear_position()
+
                 self.save()
+
                 return True
-            except Exception:
+
+            except Exception as e:
+
+                logging.error(
+                    "STOP CLOSE ERROR: %s",
+                    e
+                )
+
+                self.execution_uncertain = True
+
+                self.save()
+
                 return False
+
             finally:
+
                 self.order_in_progress = False
 
-    def check_stop(self, price):
-        if not self.position:
+    # ========================================================
+    # STOP CHECK
+    # ========================================================
+
+    def check_stop(
+        self,
+        price
+    ):
+
+        if (
+            not self.position
+            or self.stop_loss <= 0
+        ):
             return False
-        if self.direction == "LONG" and price <= self.stop_loss:
-            return self.close_all_at_stop(price)
-        if self.direction == "SHORT" and price >= self.stop_loss:
-            return self.close_all_at_stop(price)
+
+        if (
+            self.direction == "LONG"
+            and price <= self.stop_loss
+        ):
+
+            return self.close_all_at_stop(
+                price
+            )
+
+        if (
+            self.direction == "SHORT"
+            and price >= self.stop_loss
+        ):
+
+            return self.close_all_at_stop(
+                price
+            )
+
         return False
 
-    def check_targets(self, price):
-        if not self.position or self.entry_price is None:
+    # ========================================================
+    # TARGET CHECK
+    # ========================================================
+
+    def check_targets(
+        self,
+        price
+    ):
+
+        if (
+            not self.position
+            or self.entry_price is None
+        ):
             return
-        for index in range(TARGET_COUNT):
+
+        for index in range(
+            TARGET_COUNT
+        ):
+
             if self.target_hit[index]:
                 continue
-            target_price = self.calculate_target_price(index)
+
+            target_price = (
+                self.calculate_target_price(
+                    index
+                )
+            )
+
             if target_price is None:
                 return
-            reached = price >= target_price if self.direction == "LONG" else price <= target_price
+
+            reached = (
+                price >= target_price
+                if self.direction == "LONG"
+                else price <= target_price
+            )
+
             if not reached:
                 break
-            quantity = self.target_quantities[index]
-            if quantity > 0:
-                self.close_partial(index, quantity, price)
 
-    def reset_for_new_session(self, new_session):
+            quantity = (
+                self.target_quantities[index]
+            )
+
+            # Zero quantity target is already
+            # marked hit during entry setup.
+            if quantity <= 0:
+                self.target_hit[index] = True
+                continue
+
+            success = self.close_partial(
+                index,
+                quantity,
+                price
+            )
+
+            # Do not continue to next target if
+            # exchange confirmation failed.
+            if not success:
+                break
+
+            # If all targets cleared the position,
+            # stop processing immediately.
+            if not self.position:
+                break
+
+    # ========================================================
+    # RESET NEW SESSION
+    # ========================================================
+
+    def reset_for_new_session(
+        self,
+        new_session
+    ):
+
         with self.lock:
+
             try:
+
                 if self.product_id:
-                    exchange_position = self.client.position(self.product_id)
-                    exchange_size = as_int(exchange_position.get("size"), 0)
+
+                    exchange_position = (
+                        self.client.position(
+                            self.product_id
+                        )
+                    )
+
+                    exchange_size = as_int(
+                        exchange_position.get(
+                            "size"
+                        ),
+                        0
+                    )
+
                     if exchange_size:
-                        self.client.cancel_all_orders(self.product_id)
-                        self.client.reduce_only_market_close(self.product_id, exchange_size)
-                        self.wait_until_flat()
+
+                        self.client.cancel_all_orders(
+                            self.product_id
+                        )
+
+                        self.client.reduce_only_market_close(
+                            self.product_id,
+                            exchange_size
+                        )
+
+                        if not self.wait_until_flat():
+
+                            self.execution_uncertain = True
+
+                            self.save()
+
+                            return False
+
                 self.clear_position()
+
                 self.session = new_session
+
                 self.day_high = None
                 self.day_low = None
+
                 self.trading_armed = False
+
                 try:
-                    high, low = self.get_session_high_low(new_session)
-                    if high is not None and low is not None:
+
+                    high, low = (
+                        self.get_session_high_low(
+                            new_session
+                        )
+                    )
+
+                    if high is not None:
                         self.day_high = high
+
+                    if low is not None:
                         self.day_low = low
+
                 except Exception:
                     pass
+
+                logging.info(
+                    "NEW SESSION | %s | High=%s | Low=%s",
+                    new_session,
+                    self.day_high,
+                    self.day_low
+                )
+
                 self.save()
+
                 return True
-            except Exception:
+
+            except Exception as e:
+
+                logging.error(
+                    "Session reset error: %s",
+                    e
+                )
+
+                self.execution_uncertain = True
+
+                self.save()
+
                 return False
 
-    def evaluate(self, price):
+    # ========================================================
+    # UPDATE SESSION HIGH/LOW
+    # ========================================================
+
+    def update_session_extremes(
+        self,
+        price
+    ):
+
+        changed = False
+
+        price_decimal = Decimal(
+            str(price)
+        )
+
+        if (
+            self.day_high is None
+            or price_decimal > self.day_high
+        ):
+
+            self.day_high = price_decimal
+            changed = True
+
+        if (
+            self.day_low is None
+            or price_decimal < self.day_low
+        ):
+
+            self.day_low = price_decimal
+            changed = True
+
+        return changed
+
+    # ========================================================
+    # MAIN EVALUATE
+    # ========================================================
+
+    def evaluate(
+        self,
+        price
+    ):
+
         with self.lock:
-            if not self.bot_running or self.execution_uncertain:
+
+            if (
+                not self.bot_running
+                or self.execution_uncertain
+            ):
                 return
+
             current_time = now_ist()
-            if is_weekend(current_time):
+
+            if is_weekend(
+                current_time
+            ):
                 return
-            self.last_price = float(price)
+
+            try:
+                current_price = float(price)
+            except Exception:
+                return
+
+            if current_price <= 0:
+                return
+
+            self.last_price = current_price
+
             if not self.prepare_product():
                 return
-            current_session = current_session_start(current_time)
+
+            current_session = (
+                current_session_start(
+                    current_time
+                )
+            )
+
+            # ------------------------------------------------
+            # NEW SESSION
+            # ------------------------------------------------
+
             if self.session != current_session:
-                self.reset_for_new_session(current_session)
-            if self.day_high is None or self.day_low is None:
-                high, low = self.get_session_high_low(self.session)
-                if high: self.day_high = high
-                if low: self.day_low = low
+
+                if not self.reset_for_new_session(
+                    current_session
+                ):
+                    return
+
+            # ------------------------------------------------
+            # INITIAL SESSION HIGH / LOW
+            # ------------------------------------------------
+
+            if (
+                self.day_high is None
+                or self.day_low is None
+            ):
+
+                high, low = (
+                    self.get_session_high_low(
+                        self.session
+                    )
+                )
+
+                if high is not None:
+                    self.day_high = high
+
+                if low is not None:
+                    self.day_low = low
+
+                # If API candle history isn't available,
+                # initialize from current price.
+                if self.day_high is None:
+                    self.day_high = Decimal(
+                        str(current_price)
+                    )
+
+                if self.day_low is None:
+                    self.day_low = Decimal(
+                        str(current_price)
+                    )
+
                 self.save()
-            if current_time.time() < TRADING_START:
+
+            # ------------------------------------------------
+            # BEFORE 5:45
+            # ------------------------------------------------
+
+            if (
+                current_time.time()
+                < TRADING_START
+            ):
+
+                # Keep updating session extremes.
+                if self.update_session_extremes(
+                    current_price
+                ):
+                    self.save()
+
                 self.trading_armed = False
-                return
-            if not self.trading_armed:
-                self.trading_armed = True
-                self.save()
+
                 return
 
-            exchange_position = self.client.position(self.product_id)
-            exchange_size = as_int(exchange_position.get("size"), 0)
+            # ------------------------------------------------
+            # ARMING
+            # ------------------------------------------------
+
+            if not self.trading_armed:
+
+                self.trading_armed = True
+
+                # Current price can become the new session
+                # extreme, but there is no immediate trade.
+                self.update_session_extremes(
+                    current_price
+                )
+
+                self.save()
+
+                return
+
+            # ------------------------------------------------
+            # EXCHANGE POSITION
+            # ------------------------------------------------
+
+            exchange_position = (
+                self.client.position(
+                    self.product_id
+                )
+            )
+
+            exchange_size = as_int(
+                exchange_position.get(
+                    "size"
+                ),
+                0
+            )
+
+            # =================================================
+            # ACTIVE POSITION
+            # =================================================
 
             if self.position:
+
+                # If exchange says position is gone,
+                # reconcile local state to FLAT.
                 if exchange_size == 0:
+
+                    logging.warning(
+                        "Exchange position is FLAT "
+                        "while local position was %s.",
+                        self.direction
+                    )
+
                     self.clear_position()
+
+                    # Continue. No immediate entry is allowed
+                    # from the same tick.
+                    self.update_session_extremes(
+                        current_price
+                    )
+
                     self.save()
+
                     return
-                if self.check_stop(float(price)):
+
+                # ------------------------------------------------
+                # STOP FIRST
+                # ------------------------------------------------
+
+                if self.check_stop(
+                    current_price
+                ):
+
+                    # After SL we are FLAT.
+                    # IMPORTANT:
+                    # No reversal is taken here.
+                    #
+                    # We return immediately.
+                    # The next websocket price must break
+                    # a fresh Day High / Day Low.
+                    #
+                    # Session extremes are updated below
+                    # on the next tick.
                     return
-                self.check_targets(float(price))
+
+                # ------------------------------------------------
+                # TARGETS
+                # ------------------------------------------------
+
+                self.check_targets(
+                    current_price
+                )
+
+                # ------------------------------------------------
+                # SESSION EXTREMES CONTINUE TO UPDATE
+                # EVEN WHILE POSITION IS ACTIVE.
+                #
+                # These do NOT change the trade's frozen SL.
+                # They are only used for the next breakout
+                # after the position becomes FLAT.
+                # ------------------------------------------------
+
+                changed = (
+                    self.update_session_extremes(
+                        current_price
+                    )
+                )
+
+                if changed:
+                    self.save()
+
                 return
 
+            # =================================================
+            # NO LOCAL POSITION
+            # =================================================
+
+            # If exchange has an unexpected open position,
+            # adopt it instead of opening another trade.
             if exchange_size:
-                self.adopt_exchange_position(exchange_position)
+
+                self.adopt_exchange_position(
+                    exchange_position
+                )
+
                 self.save()
+
                 return
 
-            high = float(self.day_high) if self.day_high else float(price)
-            low = float(self.day_low) if self.day_low else float(price)
-            current_price = float(price)
+            # =================================================
+            # FLAT STATE
+            #
+            # IMPORTANT:
+            # NO REVERSAL.
+            #
+            # Only a Day High / Day Low BREAKOUT can create
+            # a new trade.
+            # =================================================
 
-            # Jab position flat ho chuki ho (SL ya Targets hit hone ke baad), 
-            # toh bot sirf naye fresh high ya low ke break hone par hi naya trade lega:
-            if current_price > high:
-                stop_loss = low
-                self.day_high = Decimal(str(current_price))
+            previous_high = (
+                float(self.day_high)
+                if self.day_high is not None
+                else current_price
+            )
+
+            previous_low = (
+                float(self.day_low)
+                if self.day_low is not None
+                else current_price
+            )
+
+            # ------------------------------------------------
+            # DAY HIGH BREAK -> LONG
+            #
+            # SL = Day Low at the moment of breakout.
+            # ------------------------------------------------
+
+            if current_price > previous_high:
+
+                stop_loss = previous_low
+
+                # First update the new session high.
+                self.day_high = Decimal(
+                    str(current_price)
+                )
+
                 self.save()
-                self.enter_trade("LONG", current_price, stop_loss)
+
+                logging.info(
+                    "DAY HIGH BREAK -> LONG | "
+                    "Price=%s | DayHigh=%s | SL=%s",
+                    current_price,
+                    previous_high,
+                    stop_loss
+                )
+
+                self.enter_trade(
+                    "LONG",
+                    current_price,
+                    stop_loss
+                )
+
                 return
 
-            if current_price < low:
-                stop_loss = high
-                self.day_low = Decimal(str(current_price))
+            # ------------------------------------------------
+            # DAY LOW BREAK -> SHORT
+            #
+            # SL = Day High at the moment of breakout.
+            # ------------------------------------------------
+
+            if current_price < previous_low:
+
+                stop_loss = previous_high
+
+                # First update the new session low.
+                self.day_low = Decimal(
+                    str(current_price)
+                )
+
                 self.save()
-                self.enter_trade("SHORT", current_price, stop_loss)
+
+                logging.info(
+                    "DAY LOW BREAK -> SHORT | "
+                    "Price=%s | DayLow=%s | SL=%s",
+                    current_price,
+                    previous_low,
+                    stop_loss
+                )
+
+                self.enter_trade(
+                    "SHORT",
+                    current_price,
+                    stop_loss
+                )
+
                 return
 
-            if current_price > high:
-                self.day_high = Decimal(str(current_price))
+            # ------------------------------------------------
+            # NO BREAKOUT
+            #
+            # Just update session extremes.
+            #
+            # NO TRADE.
+            # ------------------------------------------------
+
+            if self.update_session_extremes(
+                current_price
+            ):
                 self.save()
-            if current_price < low:
-                self.day_low = Decimal(str(current_price))
-                self.save()
+
+    # ========================================================
+    # DASHBOARD DATA
+    # ========================================================
 
     def dashboard_data(self):
-        position_data = {"size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0, "leverage": 10, "margin": 0.0}
+
+        position_data = {
+            "size": 0,
+            "entry_price": 0.0,
+            "stop_loss": 0.0,
+            "unrealized_pnl": 0.0,
+            "leverage": 10,
+            "margin": 0.0,
+        }
+
         try:
+
             if self.product_id:
-                res_pos = self.client.position(self.product_id)
+
+                res_pos = self.client.position(
+                    self.product_id
+                )
+
                 if res_pos:
-                    position_data.update(res_pos)
+                    position_data.update(
+                        res_pos
+                    )
+
         except Exception:
             pass
 
-        exchange_size = as_int(position_data.get("size"), 0)
-        direction = "LONG" if exchange_size > 0 else ("SHORT" if exchange_size < 0 else "FLAT")
+        exchange_size = as_int(
+            position_data.get("size"),
+            0
+        )
+
+        direction = (
+            "LONG"
+            if exchange_size > 0
+            else (
+                "SHORT"
+                if exchange_size < 0
+                else "FLAT"
+            )
+        )
 
         balance_val = 0.0
+
         try:
-            balance_val = float(self.client.balance())
+
+            balance_val = float(
+                self.client.balance()
+            )
+
         except Exception:
             balance_val = 0.0
 
         active_target = "None"
+
         if self.position:
-            for idx, hit in enumerate(self.target_hit):
+
+            for idx, hit in enumerate(
+                self.target_hit
+            ):
+
                 if not hit:
-                    active_target = f"T{idx + 1} ({self.calculate_target_price(idx):.2f})"
+
+                    target_price = (
+                        self.calculate_target_price(
+                            idx
+                        )
+                    )
+
+                    if target_price is not None:
+
+                        active_target = (
+                            f"T{idx + 1} "
+                            f"({target_price:.2f})"
+                        )
+
                     break
 
         history = load_history()
+
         bot_obj = {
+
             "id": ACCOUNT_ID,
+
             "account_name": ACCOUNT_NAME,
+
             "symbol": SYMBOL,
+
             "bot_enabled": self.bot_running,
+
             "balance": balance_val,
-            "last_price": self.last_price or 0.0,
-            "local_position": direction if direction != "FLAT" else None,
-            "size": abs(exchange_size),
-            "entry_price": position_data.get("entry_price") or self.entry_price or 0.0,
-            "stop_loss": self.stop_loss or position_data.get("stop_loss") or 0.0,
-            "leverage": position_data.get("leverage") or self.leverage,
-            "margin": position_data.get("margin") or 0.0,
-            "unrealized_pnl": position_data.get("unrealized_pnl", 0.0) or 0.0,
-            "day_high": float(self.day_high) if self.day_high is not None else 0.0,
-            "day_low": float(self.day_low) if self.day_low is not None else 0.0,
+
+            "last_price": (
+                self.last_price
+                or 0.0
+            ),
+
+            "local_position": (
+                direction
+                if direction != "FLAT"
+                else None
+            ),
+
+            "size": abs(
+                exchange_size
+            ),
+
+            "entry_price": (
+                position_data.get(
+                    "entry_price"
+                )
+                or self.entry_price
+                or 0.0
+            ),
+
+            "stop_loss": (
+                self.stop_loss
+                or position_data.get(
+                    "stop_loss"
+                )
+                or 0.0
+            ),
+
+            "leverage": (
+                position_data.get(
+                    "leverage"
+                )
+                or self.leverage
+            ),
+
+            "margin": (
+                position_data.get(
+                    "margin"
+                )
+                or 0.0
+            ),
+
+            "unrealized_pnl": (
+                position_data.get(
+                    "unrealized_pnl",
+                    0.0
+                )
+                or 0.0
+            ),
+
+            "day_high": (
+                float(self.day_high)
+                if self.day_high is not None
+                else 0.0
+            ),
+
+            "day_low": (
+                float(self.day_low)
+                if self.day_low is not None
+                else 0.0
+            ),
+
             "active_target": active_target,
+
             "stats": {
-                "today": {"total_trades": len(history), "pnl": 0.0}
-            }
+                "today": {
+                    "total_trades": len(history),
+                    "pnl": 0.0
+                }
+            },
+
+            # Extra useful dashboard information.
+            "trade_id": self.trade_id,
+
+            "remaining_size": (
+                self.remaining_size
+            ),
+
+            "original_size": (
+                self.original_size
+            ),
+
+            "target_hit": (
+                self.target_hit
+            ),
+
+            "target_quantities": (
+                self.target_quantities
+            ),
+
+            "trading_armed": (
+                self.trading_armed
+            ),
+
+            "execution_uncertain": (
+                self.execution_uncertain
+            ),
         }
 
         return {
+
             "success": True,
+
             "server_ip": get_public_ip(),
-            "bots": [bot_obj],
-            "trades": history[-50:]
+
+            "bots": [
+                bot_obj
+            ],
+
+            "trades": history[-50:],
         }
 
+
+# ============================================================
+# GLOBAL BOT
+# ============================================================
 
 BOT = XAUTTargetBot()
 
 
-class DashboardHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=BASE_DIR, **kwargs)
+# ============================================================
+# DASHBOARD HTTP SERVER
+# ============================================================
 
-    def log_message(self, format_string, *args):
+class DashboardHandler(
+    SimpleHTTPRequestHandler
+):
+
+    def __init__(
+        self,
+        *args,
+        **kwargs
+    ):
+
+        super().__init__(
+            *args,
+            directory=BASE_DIR,
+            **kwargs
+        )
+
+    def log_message(
+        self,
+        format_string,
+        *args
+    ):
         pass
 
-    def send_json(self, payload, status=200):
+    # --------------------------------------------------------
+    # SEND JSON
+    # --------------------------------------------------------
+
+    def send_json(
+        self,
+        payload,
+        status=200
+    ):
+
         try:
-            raw = json.dumps(payload, default=str).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(raw)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Access-Control-Allow-Origin", "*")
+
+            raw = json.dumps(
+                payload,
+                default=str
+            ).encode("utf-8")
+
+            self.send_response(
+                status
+            )
+
+            self.send_header(
+                "Content-Type",
+                "application/json; charset=utf-8"
+            )
+
+            self.send_header(
+                "Content-Length",
+                str(len(raw))
+            )
+
+            self.send_header(
+                "Cache-Control",
+                "no-store"
+            )
+
+            self.send_header(
+                "Access-Control-Allow-Origin",
+                "*"
+            )
+
             self.end_headers()
+
             self.wfile.write(raw)
+
         except Exception:
             pass
 
+    # --------------------------------------------------------
+    # GET
+    # --------------------------------------------------------
+
     def do_GET(self):
-        parsed = urlparse(self.path)
+
+        parsed = urlparse(
+            self.path
+        )
+
         path = parsed.path
+
         if path == "/api/health":
-            self.send_json({"success": True, "online": True, "time": now_ist().isoformat(), "server_ip": get_public_ip()})
+
+            self.send_json(
+                {
+                    "success": True,
+                    "online": True,
+                    "time": now_ist().isoformat(),
+                    "server_ip": get_public_ip(),
+                }
+            )
+
             return
-        if path in ("/api/dashboard", "/api/state", "/api/accounts"):
-            self.send_json(BOT.dashboard_data())
+
+        if path in (
+            "/api/dashboard",
+            "/api/state",
+            "/api/accounts"
+        ):
+
+            self.send_json(
+                BOT.dashboard_data()
+            )
+
             return
+
         if path == "/api/history":
-            self.send_json({"success": True, "history": load_history()})
+
+            self.send_json(
+                {
+                    "success": True,
+                    "history": load_history()
+                }
+            )
+
             return
+
         super().do_GET()
 
+    # --------------------------------------------------------
+    # POST
+    # --------------------------------------------------------
+
     def do_POST(self):
+
         if self.path == "/api/start":
-            self.send_json(BOT.start_bot())
+
+            self.send_json(
+                BOT.start_bot()
+            )
+
             return
+
         if self.path == "/api/stop":
-            self.send_json(BOT.stop_bot())
+
+            self.send_json(
+                BOT.stop_bot()
+            )
+
             return
+
         if self.path == "/api/client/add":
-            self.send_json({"success": True, "message": "Client added successfully."})
+
+            self.send_json(
+                {
+                    "success": True,
+                    "message": (
+                        "Client added successfully."
+                    )
+                }
+            )
+
             return
-        self.send_json({"success": False, "message": "Unknown endpoint."}, 404)
+
+        self.send_json(
+            {
+                "success": False,
+                "message": (
+                    "Unknown endpoint."
+                )
+            },
+            404
+        )
+
+    # --------------------------------------------------------
+    # OPTIONS
+    # --------------------------------------------------------
 
     def do_OPTIONS(self):
+
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+        self.send_header(
+            "Access-Control-Allow-Origin",
+            "*"
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Methods",
+            "GET,POST,OPTIONS"
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type"
+        )
+
         self.end_headers()
 
 
+# ============================================================
+# WEBSOCKET MESSAGE PARSER
+# ============================================================
+
 def extract_trade(message):
+
     try:
-        data = json.loads(message)
+
+        data = json.loads(
+            message
+        )
+
     except Exception:
+
         return None, None
-    candidates = [data]
-    if isinstance(data.get("payload"), dict):
-        candidates.append(data["payload"])
-    if isinstance(data.get("data"), dict):
-        candidates.append(data["data"])
+
+    if not isinstance(data, dict):
+        return None, None
+
+    candidates = [
+        data
+    ]
+
+    if isinstance(
+        data.get("payload"),
+        dict
+    ):
+        candidates.append(
+            data["payload"]
+        )
+
+    if isinstance(
+        data.get("data"),
+        dict
+    ):
+        candidates.append(
+            data["data"]
+        )
+
     for item in candidates:
-        if not isinstance(item, dict):
+
+        if not isinstance(
+            item,
+            dict
+        ):
             continue
-        symbol = item.get("symbol") or item.get("product_symbol") or item.get("sy") or item.get("s")
-        price = item.get("price") or item.get("last_price") or item.get("close") or item.get("p")
-        if symbol and price is not None:
+
+        symbol = (
+            item.get("symbol")
+            or item.get("product_symbol")
+            or item.get("sy")
+            or item.get("s")
+        )
+
+        price = (
+            item.get("price")
+            or item.get("last_price")
+            or item.get("close")
+            or item.get("p")
+        )
+
+        if (
+            symbol
+            and price is not None
+        ):
+
             try:
-                return str(symbol).upper(), float(price)
+
+                return (
+                    str(symbol).upper(),
+                    float(price)
+                )
+
             except Exception:
+
                 return None, None
+
     return None, None
 
 
+# ============================================================
+# WEBSOCKET CALLBACKS
+# ============================================================
+
 def websocket_on_open(ws):
-    payload = {"type": "subscribe", "payload": {"channels": [{"name": "trades", "symbols": [SYMBOL]}]}}
-    ws.send(json.dumps(payload))
-    logging.info("Websocket connected")
+
+    payload = {
+        "type": "subscribe",
+        "payload": {
+            "channels": [
+                {
+                    "name": "trades",
+                    "symbols": [
+                        SYMBOL
+                    ]
+                }
+            ]
+        }
+    }
+
+    ws.send(
+        json.dumps(payload)
+    )
+
+    logging.info(
+        "XAUTUSD websocket connected."
+    )
 
 
-def websocket_on_message(ws, message):
-    symbol, price = extract_trade(message)
+def websocket_on_message(
+    ws,
+    message
+):
+
+    symbol, price = extract_trade(
+        message
+    )
+
     if symbol != SYMBOL:
         return
+
     try:
-        BOT.evaluate(price)
-    except Exception:
-        pass
+
+        BOT.evaluate(
+            price
+        )
+
+    except Exception as e:
+
+        logging.error(
+            "Evaluate error: %s",
+            e
+        )
 
 
-def websocket_on_error(ws, error):
-    pass
+def websocket_on_error(
+    ws,
+    error
+):
+
+    logging.warning(
+        "Websocket error: %s",
+        error
+    )
 
 
-def websocket_on_close(ws, code, message):
-    pass
+def websocket_on_close(
+    ws,
+    code,
+    message
+):
 
+    logging.warning(
+        "Websocket closed: %s %s",
+        code,
+        message
+    )
+
+
+# ============================================================
+# WEBSOCKET LOOP
+# ============================================================
 
 def websocket_loop():
+
     while True:
+
         try:
+
             ws = websocket.WebSocketApp(
+
                 WS_URL,
+
                 on_open=websocket_on_open,
+
                 on_message=websocket_on_message,
+
                 on_error=websocket_on_error,
+
                 on_close=websocket_on_close,
             )
-            ws.run_forever(ping_interval=20, ping_timeout=10)
-        except Exception:
-            pass
-        time.sleep(RECONNECT_SECONDS)
 
+            ws.run_forever(
+                ping_interval=20,
+                ping_timeout=10
+            )
+
+        except Exception as e:
+
+            logging.error(
+                "Websocket loop error: %s",
+                e
+            )
+
+        time.sleep(
+            RECONNECT_SECONDS
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
 
 def main():
+
     if not acquire_single_process_lock():
+
+        logging.error(
+            "Another bot process is already running."
+        )
+
         return
+
     get_public_ip()
+
     try:
+
         BOT.prepare_product()
-        BOT.start_bot()
-    except Exception:
+
+        result = BOT.start_bot()
+
+        logging.info(
+            "BOT START RESULT --> %s",
+            result
+        )
+
+    except Exception as e:
+
+        logging.error(
+            "Startup error: %s",
+            e
+        )
+
         BOT.bot_running = False
+
         BOT.save()
 
-    websocket_thread = threading.Thread(target=websocket_loop, name="xaut-public-websocket", daemon=True)
+    websocket_thread = threading.Thread(
+        target=websocket_loop,
+        name="xaut-public-websocket",
+        daemon=True
+    )
+
     websocket_thread.start()
 
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), DashboardHandler)
+    server = ThreadingHTTPServer(
+        ("0.0.0.0", PORT),
+        DashboardHandler
+    )
+
+    logging.info(
+        "Dashboard running on port %s",
+        PORT
+    )
+
     try:
+
         server.serve_forever()
+
     except KeyboardInterrupt:
+
         pass
+
     finally:
+
         server.server_close()
 
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
     main()
