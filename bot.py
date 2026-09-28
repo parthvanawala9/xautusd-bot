@@ -676,6 +676,11 @@ class BreakoutSARBot:
         self.size = 0
         self.is_reversal_position = False
         self.base_breakout_ready = True
+        # When a reversal has completed, the next main trade must be
+        # taken only from the opposite day extreme. Example: LONG main
+        # -> SHORT reversal -> after reversal SL, wait ONLY for Day Low
+        # breakout. This prevents a new main trade in the middle of the range.
+        self.required_breakout_direction = None
         self.last_checked_candle_time = 0
         self.lock = threading.RLock()
         self.order_in_progress = False
@@ -752,6 +757,13 @@ class BreakoutSARBot:
             self.base_breakout_ready = bool(
                 state.get("base_breakout_ready", True)
             )
+            required_direction = state.get(
+                "required_breakout_direction"
+            )
+            if required_direction in ("LONG", "SHORT"):
+                self.required_breakout_direction = required_direction
+            else:
+                self.required_breakout_direction = None
             self.execution_uncertain = bool(
                 state.get("execution_uncertain", False)
             )
@@ -798,6 +810,7 @@ class BreakoutSARBot:
             "trading_armed": self.trading_armed,
             "is_reversal_position": self.is_reversal_position,
             "base_breakout_ready": self.base_breakout_ready,
+            "required_breakout_direction": self.required_breakout_direction,
             "execution_uncertain": self.execution_uncertain,
         }
         atomic_write_json(
@@ -1116,6 +1129,7 @@ class BreakoutSARBot:
                         self.stop_loss = 0.0
                         self.is_reversal_position = False
                         self.base_breakout_ready = True
+                        self.required_breakout_direction = None
                         self.execution_uncertain = False
                         self.execution_unknown_since = None
                     else:
@@ -1257,6 +1271,7 @@ class BreakoutSARBot:
         self.stop_loss = 0.0
         self.is_reversal_position = False
         self.base_breakout_ready = True
+        self.required_breakout_direction = None
         self.manual_squareoff_flag = False
         self.ready = False
         self.trading_armed = False
@@ -1779,14 +1794,28 @@ class BreakoutSARBot:
                 or price_decimal < self.day_low
             ):
                 self.day_low = price_decimal
+            # Reversal is the only allowed reversal in this trade cycle.
+            # After the reversal SL, the next MAIN trade must come only
+            # from the same side as the reversal direction:
+            #   LONG main -> SHORT reversal -> wait for Day Low break.
+            #   SHORT main -> LONG reversal -> wait for Day High break.
+            self.required_breakout_direction = (
+                "SHORT" if old_direction == "SHORT" else "LONG"
+            )
             self.base_breakout_ready = True
             self.last_strategy_price = float(price)
             self.save()
+            required_extreme = (
+                "DAY LOW"
+                if self.required_breakout_direction == "SHORT"
+                else "DAY HIGH"
+            )
             logging.info(
                 "[%s] REVERSAL COMPLETE -> FLAT | "
-                "WAITING FOR NEW CURRENT HIGH/LOW BREAK | "
+                "NO MID-RANGE ENTRY | WAITING ONLY FOR %s BREAK | "
                 "High=%s | Low=%s",
                 self.symbol,
+                required_extreme,
                 self.day_high,
                 self.day_low,
             )
@@ -1922,6 +1951,7 @@ class BreakoutSARBot:
                         self.stop_loss = 0.0
                         self.is_reversal_position = False
                         self.base_breakout_ready = True
+                        self.required_breakout_direction = None
                         self.execution_uncertain = False
                         self.execution_unknown_since = None
                         self.save()
@@ -2118,7 +2148,27 @@ class BreakoutSARBot:
                 return
             current_high = float(self.day_high)
             current_low = float(self.day_low)
-            if new_price > current_high:
+
+            # After a reversal SL, NEVER take a main trade from the
+            # opposite side or from the middle of the range. The next
+            # main entry is locked to the required day extreme.
+            if (
+                self.required_breakout_direction is not None
+                and self.required_breakout_direction != "LONG"
+            ):
+                allow_long_breakout = False
+            else:
+                allow_long_breakout = True
+
+            if (
+                self.required_breakout_direction is not None
+                and self.required_breakout_direction != "SHORT"
+            ):
+                allow_short_breakout = False
+            else:
+                allow_short_breakout = True
+
+            if allow_long_breakout and new_price > current_high:
                 initial_sl = float(prev_candle["low"])
                 self.day_high = Decimal(str(new_price))
                 self.save()
@@ -2139,9 +2189,10 @@ class BreakoutSARBot:
                 if success:
                     self.base_breakout_ready = False
                     self.is_reversal_position = False
+                    self.required_breakout_direction = None
                     self.save()
                 return
-            if new_price < current_low:
+            if allow_short_breakout and new_price < current_low:
                 initial_sl = float(prev_candle["high"])
                 self.day_low = Decimal(str(new_price))
                 self.save()
@@ -2162,6 +2213,7 @@ class BreakoutSARBot:
                 if success:
                     self.base_breakout_ready = False
                     self.is_reversal_position = False
+                    self.required_breakout_direction = None
                     self.save()
                 return
             changed = False
@@ -2343,6 +2395,7 @@ def serialize_bot(bot):
         "margin": position.get("margin"),
         "is_reversal_position": bot.is_reversal_position,
         "base_breakout_ready": bot.base_breakout_ready,
+        "required_breakout_direction": bot.required_breakout_direction,
         "execution_uncertain": bot.execution_uncertain,
         "order_in_progress": bot.order_in_progress,
         "stop_reason": bot.stop_reason,
@@ -2885,4 +2938,3 @@ def main():
         server.server_close()
 if __name__ == "__main__":
     main()
-
