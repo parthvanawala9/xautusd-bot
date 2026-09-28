@@ -1,347 +1,3193 @@
-import os,time,json,hmac,hashlib,logging,threading,uuid,atexit
-from decimal import Decimal,ROUND_DOWN
-from datetime import datetime,timedelta,time as dtime
+import os
+import time
+import json
+import hmac
+import hashlib
+import logging
+import threading
+import uuid
+import atexit
+from decimal import Decimal, ROUND_DOWN
+from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
-from urllib.parse import urlencode,parse_qs,urlparse
-from http.server import ThreadingHTTPServer,SimpleHTTPRequestHandler
-import requests,websocket
+from urllib.parse import urlencode, urlparse
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
+
+import requests
+import websocket
 from dotenv import load_dotenv
-try: import fcntl
-except ImportError: fcntl=None
+
 load_dotenv()
-IST=ZoneInfo('Asia/Kolkata'); BASE_DIR=os.path.dirname(os.path.abspath(__file__))
-DATA=os.getenv('RAILWAY_VOLUME_MOUNT_PATH',BASE_DIR); BASE=os.getenv('DELTA_BASE_URL','https://api.india.delta.exchange').rstrip('/'); WS=os.getenv('DELTA_PUBLIC_WS_URL','wss://public-socket.india.delta.exchange'); PORT=int(os.getenv('PORT') or os.getenv('DASHBOARD_PORT') or 8000)
-STATE=os.path.join(DATA,'account_states'); HIST=os.path.join(DATA,'account_history'); CLIENTS=os.path.join(DATA,'clients_config.json'); LOCK=os.path.join(DATA,'delta_bot_process.lock'); os.makedirs(STATE,exist_ok=True); os.makedirs(HIST,exist_ok=True)
-SYMBOL='XAUTUSD'; SESSION=dtime(5,30); START=dtime(5,45); LEVS=range(100,9,-10); PARTS=10; FRACTION=Decimal('0.10'); RECONNECT=5
-logging.basicConfig(level=logging.INFO,format='%(asctime)s | %(levelname)s | %(message)s',force=True); LOCK_HANDLE=None; SERVER_IP='Detecting...'
-def now(): return datetime.now(IST)
-def weekend(t=None):
- t=t or now(); return (t.weekday()==5 and t.time()>=SESSION) or t.weekday()==6 or (t.weekday()==0 and t.time()<SESSION)
-def sess(t=None):
- t=t or now(); x=t.replace(hour=5,minute=30,second=0,microsecond=0); return x if t.time()>=SESSION else x-timedelta(days=1)
-def af(v,d=None):
- try:return float(v)
- except:return d
-def ai(v,d=0):
- try:return int(v)
- except:return d
-def sf(v): return ''.join(c if c.isalnum() or c in '-_' else '_' for c in str(v)) or 'account'
-def sfile(i):return os.path.join(STATE,sf(i)+'.json')
-def hfile(i):return os.path.join(HIST,sf(i)+'.json')
-def writej(p,d):
- q=p+'.tmp'; open(q,'w',encoding='utf8').write(json.dumps(d,indent=2,default=str)); os.replace(q,p)
-def clients():
- try:return json.load(open(CLIENTS,encoding='utf8')) if os.path.exists(CLIENTS) else {}
- except:return {}
-def ip():
- global SERVER_IP
- try: SERVER_IP=requests.get('https://api.ipify.org?format=json',timeout=5).json().get('ip') or SERVER_IP; logging.warning('RAILWAY OUTBOUND IP --> %s',SERVER_IP)
- except Exception as e:logging.warning('IP ERROR %s',e)
-def lock():
- global LOCK_HANDLE
- if fcntl is None:return True
- LOCK_HANDLE=open(LOCK,'w');
- try:fcntl.flock(LOCK_HANDLE.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
- except BlockingIOError: logging.critical('ANOTHER BOT PROCESS IS RUNNING'); LOCK_HANDLE.close(); LOCK_HANDLE=None; return False
- LOCK_HANDLE.write(str(os.getpid()));LOCK_HANDLE.flush();atexit.register(unlock);return True
-def unlock():
- global LOCK_HANDLE
- if LOCK_HANDLE:
-  try:fcntl.flock(LOCK_HANDLE.fileno(),fcntl.LOCK_UN)
-  except:pass
-  try:LOCK_HANDLE.close()
-  except:pass
-  LOCK_HANDLE=None
-class Delta:
- def __init__(self,key,secret,name):
-  self.key=key;self.secret=secret;self.name=name;self.s=requests.Session();self.s.headers.update({'Content-Type':'application/json','Accept':'application/json','User-Agent':'MultiBot/100.0'})
- def api(self,m,path,params=None,body=None,auth=False):
-  bt=json.dumps(body,separators=(',',':')) if body is not None else ''; q='?'+urlencode(params,doseq=True) if params else ''; ts=str(int(time.time())); h={}
-  if auth:
-   sig=hmac.new(self.secret.encode(),(m.upper()+ts+path+q+bt).encode(),hashlib.sha256).hexdigest();h={'api-key':self.key,'signature':sig,'timestamp':ts,'User-Agent':'MultiBot/100.0'}
-  r=self.s.request(m.upper(),BASE+path,params=params,data=bt if body is not None else None,headers=h,timeout=(3,8));r.raise_for_status();d=r.json()
-  if d.get('success') is False:raise RuntimeError(d)
-  return d
- def product(self):return self.api('GET',f'/v2/products/{SYMBOL}').get('result')
- def pos(self,pid):
-  r=self.api('GET','/v2/positions',{'product_id':int(pid)},auth=True).get('result',{}); p=r if isinstance(r,dict) else next((x for x in r if isinstance(x,dict) and ai(x.get('product_id'))==int(pid)),{})
-  return {'size':ai(p.get('size')),'entry_price':af(p.get('entry_price') or p.get('avg_price')),'leverage':ai(p.get('leverage') or p.get('user_leverage'),0) or None,'liquidation_price':af(p.get('liquidation_price')),'mark_price':af(p.get('mark_price')),'margin':af(p.get('margin')),'unrealized_pnl':af(p.get('unrealized_pnl'),0)}
- def balance(self):
-  r=self.api('GET','/v2/wallet/balances',auth=True).get('result',[]);r=[r] if isinstance(r,dict) else r
-  for x in r:
-   if str(x.get('asset_symbol','')).upper() in ('USD','USDT'):return Decimal(str(x.get('available_balance') or x.get('balance')))
-  raise RuntimeError('USD/USDT balance not found')
- def lev(self,pid,x):return self.api('POST',f'/v2/products/{pid}/orders/leverage',body={'leverage':str(x)},auth=True)
- def size(self,p,price,lev):
-  cv=Decimal(str(p.get('contract_value') or p.get('contract_value_usd') or '0.001'));inc=Decimal(str(p.get('lot_size') or p.get('order_size_increment') or '1'));mn=Decimal(str(p.get('min_order_size') or p.get('minimum_order_size') or inc));raw=self.balance()*FRACTION*lev/price/cv;n=(raw/inc).to_integral_value(rounding=ROUND_DOWN)*inc;return max(int(n),int(mn))
- def oid(self,x):return f'{x}_{int(time.time()*1000)}_{uuid.uuid4().hex[:8]}'[-32:]
- def market(self,pid,side,size,reduce=False):return self.api('POST','/v2/orders',body={'product_id':int(pid),'product_symbol':SYMBOL,'size':int(abs(size)),'side':side,'order_type':'market_order','reduce_only':reduce,'client_order_id':self.oid('ord')},auth=True)
- def cancel(self,pid):
-  try:return self.api('DELETE','/v2/orders/all',body={'product_id':int(pid)},auth=True)
-  except:return None
- def ticker(self):
-  try:return Decimal(str(self.api('GET',f'/v2/tickers/{SYMBOL}').get('result',{}).get('close')))
-  except:return None
- def hl(self,start):
-  try:
-   d=self.api('GET','/v2/history/candles',{'resolution':'1m','symbol':SYMBOL,'start':int(start.timestamp()),'end':int(now().timestamp())}).get('result',[]);hi=lo=None
-   for c in d:
-    if isinstance(c,dict):h=af(c.get('high'));l=af(c.get('low'))
-    elif isinstance(c,list) and len(c)>=4:h=af(c[2]);l=af(c[3])
-    else:continue
-    if h is not None:hi=Decimal(str(h)) if hi is None or h>float(hi) else hi
-    if l is not None:lo=Decimal(str(l)) if lo is None or l<float(lo) else lo
-   return hi,lo
-  except Exception:return None,None
-class Bot:
- def __init__(self,aid,name,typ,key,secret,sub=None):
-  self.aid=aid;self.name=name;self.typ=typ;self.sub=sub or {};self.id=f'{aid}_{SYMBOL}_breakout_targets';self.client=Delta(key,secret,name);self.product=None;self.pid=0;self.session=None;self.high=None;self.low=None;self.enabled=False;self.armed=False;self.pos=None;self.entry=None;self.sizev=0;self.remaining=0;self.sl=0.;self.risk=0.;self.lev=100;self.targets=[0.]*PARTS;self.hit=[False]*PARTS;self.parts=[0]*PARTS;self.fresh=False;self.old_high=None;self.old_low=None;self.uncertain=False;self.order=False;self.last_recon=0;self.stop_reason=None;self.load();self.save()
- def expired(self):
-  e=self.sub.get('expiry');
-  try:return self.typ!='primary' and e and now().date()>datetime.strptime(e,'%Y-%m-%d').date()
-  except:return False
- def load(self):
-  if not os.path.exists(sfile(self.id)):return
-  try:
-   d=json.load(open(sfile(self.id),encoding='utf8'));self.session=datetime.fromisoformat(d['session']) if d.get('session') else None;self.high=Decimal(str(d['high'])) if d.get('high') is not None else None;self.low=Decimal(str(d['low'])) if d.get('low') is not None else None;self.pos=d.get('pos');self.entry=d.get('entry');self.sizev=ai(d.get('size'));self.remaining=ai(d.get('remaining'));self.sl=af(d.get('sl'),0);self.risk=af(d.get('risk'),0);self.lev=ai(d.get('lev'),100);self.targets=[af(x,0) for x in d.get('targets',[0]*PARTS)][:PARTS];self.targets+= [0.]*(PARTS-len(self.targets));self.hit=[bool(x) for x in d.get('hit',[False]*PARTS)][:PARTS];self.hit += [False]*(PARTS-len(self.hit));self.parts=[ai(x) for x in d.get('parts',[0]*PARTS)][:PARTS];self.parts += [0]*(PARTS-len(self.parts));self.fresh=bool(d.get('fresh'));self.old_high=Decimal(str(d['old_high'])) if d.get('old_high') is not None else None;self.old_low=Decimal(str(d['old_low'])) if d.get('old_low') is not None else None;self.enabled=bool(d.get('enabled'));self.armed=bool(d.get('armed'));self.uncertain=bool(d.get('uncertain'))
-  except Exception as e:logging.warning('[%s] STATE LOAD %s',SYMBOL,e)
- def save(self):writej(sfile(self.id),{'session':self.session.isoformat() if self.session else None,'high':str(self.high) if self.high is not None else None,'low':str(self.low) if self.low is not None else None,'pos':self.pos,'entry':self.entry,'size':self.sizev,'remaining':self.remaining,'sl':self.sl,'risk':self.risk,'lev':self.lev,'targets':self.targets,'hit':self.hit,'parts':self.parts,'fresh':self.fresh,'old_high':str(self.old_high) if self.old_high is not None else None,'old_low':str(self.old_low) if self.old_low is not None else None,'enabled':self.enabled,'armed':self.armed,'uncertain':self.uncertain})
- def product_ready(self):
-  if self.pid:return True
-  try:self.product=self.client.product();self.pid=int(self.product['id']);return True
-  except Exception as e:logging.error('[%s] PRODUCT %s',SYMBOL,e);return False
- def reconcile(self):
-  if not self.product_ready():return False
-  try:p=self.client.pos(self.pid)
-  except:self.uncertain=True;self.save();return False
-  if p['size']:
-   self.pos='LONG' if p['size']>0 else 'SHORT';self.sizev=abs(p['size']);self.remaining=self.sizev;self.entry=p['entry_price'] or self.entry;self.uncertain=False
-  else:
-   self.pos=None;self.entry=None;self.sizev=0;self.remaining=0;self.uncertain=False
-  self.last_recon=time.time();self.save();return True
- def start(self):
-  if self.expired():return {'success':False,'message':'Subscription expired.'}
-  if not self.product_ready() or not self.reconcile():self.enabled=False;return {'success':False,'message':'Exchange reconciliation failed.'}
-  self.enabled=True;self.stop_reason=None;self.save();return {'success':True,'bot_enabled':True,'message':'XAUTUSD Bot Started.'}
- def waitflat(self):
-  end=time.time()+10
-  while time.time()<end:
-   try:
-    if self.client.pos(self.pid)['size']==0:return True
-   except:pass
-   time.sleep(.25)
-  return False
- def stop(self):
-  self.enabled=False;self.stop_reason='MANUAL STOP'
-  try:
-   if self.product_ready():
-    p=self.client.pos(self.pid)
-    if p['size']:
-     self.client.cancel(self.pid);self.client.market(self.pid,'sell' if p['size']>0 else 'buy',abs(p['size']),True)
-     if not self.waitflat():self.uncertain=True;self.save();return {'success':False,'message':'Exchange did not confirm flat.'}
-   self.pos=None;self.entry=None;self.sizev=0;self.remaining=0;self.sl=0;self.save();return {'success':True,'bot_enabled':False,'message':'XAUTUSD Bot Stopped.'}
-  except Exception as e:self.uncertain=True;self.save();return {'success':False,'message':str(e)}
- def session_change(self,t):
-  s=sess(t)
-  if self.session==s:return True
-  if self.product_ready():
-   try:
-    p=self.client.pos(self.pid)
-    if p['size']:
-     self.client.cancel(self.pid);self.client.market(self.pid,'sell' if p['size']>0 else 'buy',abs(p['size']),True)
-     if not self.waitflat():self.uncertain=True;self.save();return False
-   except:self.uncertain=True;self.save();return False
-  self.session=s;self.high,self.low=self.client.hl(s);self.pos=None;self.entry=None;self.sizev=0;self.remaining=0;self.sl=0;self.risk=0;self.targets=[0.]*PARTS;self.hit=[False]*PARTS;self.parts=[0]*PARTS;self.fresh=False;self.old_high=None;self.old_low=None;self.armed=False;self.uncertain=False;self.save();return True
- def liq(self,entry,lev,direction):
-  mm=Decimal(str(self.product.get('maintenance_margin',0) or 0))/100;fee=Decimal(str(self.product.get('taker_commission_rate',0) or 0));mm+=fee+Decimal('.0010');e=Decimal(str(entry));l=Decimal(str(lev));return e*(1-1/l+mm) if direction=='LONG' else e*(1+1/l-mm)
- def chooselev(self,entry,sl,direction):
-  for x in LEVS:
-   q=self.liq(entry,x,direction)
-   if (direction=='LONG' and q<Decimal(str(sl))) or (direction=='SHORT' and q>Decimal(str(sl))):return x,q
-  return None,None
- def targets_for(self,d,e,sl):
-  e=Decimal(str(e));sl=Decimal(str(sl));r=e-sl if d=='LONG' else sl-e
-  if r<=0:return None,None
-  return float(r),[float(e+r*i) if d=='LONG' else float(e-r*i) for i in range(1,PARTS+1)]
- def enter(self,d,price,sl):
-  if self.order or self.uncertain:return False
-  if (d=='LONG' and sl>=price) or (d=='SHORT' and sl<=price):return False
-  try:
-   if self.client.pos(self.pid)['size']:self.reconcile();return False
-   risk,targets=self.targets_for(d,price,sl);lev,liq=self.chooselev(price,sl,d)
-   if lev is None:logging.warning('[%s] NO SAFE LEVERAGE 100x-10x',SYMBOL);return False
-   self.order=True;self.client.lev(self.pid,lev);sz=self.client.size(self.product,Decimal(str(price)),Decimal(str(lev)));self.client.market(self.pid,'buy' if d=='LONG' else 'sell',sz);end=time.time()+10;p=None
-   while time.time()<end:
-    p=self.client.pos(self.pid)
-    if (d=='LONG' and p['size']>0) or (d=='SHORT' and p['size']<0):break
-    time.sleep(.25)
-   if not p or (d=='LONG' and p['size']<=0) or (d=='SHORT' and p['size']>=0):self.uncertain=True;self.save();return False
-   actual=p['entry_price'] or price;risk,targets=self.targets_for(d,actual,sl);self.pos=d;self.entry=actual;self.sizev=abs(p['size']);self.remaining=self.sizev;self.sl=float(sl);self.risk=risk;self.lev=lev;self.targets=targets;self.hit=[False]*PARTS;base=self.sizev//PARTS;rem=self.sizev%PARTS;self.parts=[base+(1 if i<rem else 0) for i in range(PARTS)];self.fresh=False;self.old_high=None;self.old_low=None;self.save();logging.info('[%s] ENTRY %s Entry=%s Size=%s Lev=%sx SL=%s Liq=%s',SYMBOL,d,self.entry,self.sizev,self.lev,self.sl,liq);return True
-  except Exception as e:logging.error('[%s] ENTRY %s',SYMBOL,e);return False
-  finally:self.order=False
- def record(self,reason,exit_price,size):
-  if not self.entry:return
-  cv=Decimal(str(self.product.get('contract_value') or self.product.get('contract_value_usd') or '.001'));p=(Decimal(str(exit_price))-Decimal(str(self.entry)))*Decimal(size)*cv if self.pos=='LONG' else (Decimal(str(self.entry))-Decimal(str(exit_price)))*Decimal(size)*cv;h=json.load(open(hfile(self.id),encoding='utf8')) if os.path.exists(hfile(self.id)) else [];h.append({'id':uuid.uuid4().hex,'date':now().strftime('%Y-%m-%d %H:%M'),'account':self.name,'symbol':SYMBOL,'direction':self.pos,'entry_price':self.entry,'exit_price':float(exit_price),'size':int(size),'pnl':float(p),'reason':reason,'leverage':self.lev});writej(hfile(self.id),h)
- def target(self,i,price):
-  if self.hit[i] or self.remaining<=0 or self.order:return False
-  close=self.remaining if i==PARTS-1 else min(self.parts[i],self.remaining)
-  if close<=0:self.hit[i]=True;self.save();return False
-  self.order=True
-  try:
-   self.client.market(self.pid,'sell' if self.pos=='LONG' else 'buy',close,True);end=time.time()+10;new=None
-   while time.time()<end:
-    new=abs(self.client.pos(self.pid)['size'])
-    if new<=self.remaining-close:break
-    time.sleep(.25)
-   if new is None or new>self.remaining-close:self.uncertain=True;self.save();return False
-   self.hit[i]=True;closed=self.remaining-new;self.remaining=new;self.sizev=new;self.record(f'TARGET_{i+1}',price,closed)
-   if new==0:self.flat('ALL_TARGETS_HIT',price)
-   self.save();return True
-  except Exception as e:self.uncertain=True;self.save();logging.error('[%s] TARGET %s %s',SYMBOL,i+1,e);return False
-  finally:self.order=False
- def flat(self,reason,price):
-  old=self.pos;old_entry=self.entry;old_size=self.sizev
-  if old and old_entry and reason not in [f'TARGET_{i}' for i in range(1,11)]:self.record(reason,price,old_size)
-  self.pos=None;self.entry=None;self.sizev=0;self.remaining=0;self.sl=0;self.risk=0;self.targets=[0.]*PARTS;self.hit=[False]*PARTS;self.parts=[0]*PARTS
-  self.fresh=True;self.old_high=self.high;self.old_low=self.low;self.save();logging.info('[%s] FLAT -> WAIT FOR NEW HIGH/LOW BEYOND OLD RANGE | High=%s Low=%s',SYMBOL,self.old_high,self.old_low)
- def slcheck(self,price):
-  if self.pos=='LONG' and price<=self.sl:return self.closeall('DAY_LOW_SL',price)
-  if self.pos=='SHORT' and price>=self.sl:return self.closeall('DAY_HIGH_SL',price)
-  return False
- def closeall(self,reason,price):
-  if not self.pos or self.order:return False
-  self.order=True
-  try:
-   p=self.client.pos(self.pid)
-   if p['size']:
-    self.client.cancel(self.pid);self.client.market(self.pid,'sell' if p['size']>0 else 'buy',abs(p['size']),True)
-    if not self.waitflat():self.uncertain=True;self.save();return False
-   self.record(reason,price,self.remaining);self.flat(reason,price);return True
-  except Exception as e:self.uncertain=True;self.save();logging.error('[%s] SL CLOSE %s',SYMBOL,e);return False
-  finally:self.order=False
- def eval(self,price):
-  with threading.RLock():
-   if not self.enabled or self.expired():return
-   t=now()
-   if weekend():
-    if self.pos:self.closeall('WEEKEND_CLOSE',price)
-    return
-   if self.uncertain:
-    if time.time()-self.last_recon>=5:self.reconcile()
-    return
-   if not self.session_change(t):return
-   if self.high is None or self.low is None:return
-   if t.time()<START:self.armed=False;return
-   if not self.armed:self.armed=True;self.save();return
-   price=float(price)
-   if self.pos:
-    if self.slcheck(price):return
-    if self.pos=='LONG':
-     for i in range(PARTS):
-      if not self.hit[i] and price>=self.targets[i]:self.target(i,price);break
-    else:
-     for i in range(PARTS):
-      if not self.hit[i] and price<=self.targets[i]:self.target(i,price);break
-    return
-   # No old breakout reuse after a completed trade.
-   if self.fresh:
-    oh=float(self.old_high if self.old_high is not None else self.high);ol=float(self.old_low if self.old_low is not None else self.low)
-    if price>oh:
-     self.high=Decimal(str(price));self.enter('LONG',price,float(self.low));return
-    if price<ol:
-     self.low=Decimal(str(price));self.enter('SHORT',price,float(self.high));return
-    return
-   if price>float(self.high):self.high=Decimal(str(price));self.enter('LONG',price,float(self.low));return
-   if price<float(self.low):self.low=Decimal(str(price));self.enter('SHORT',price,float(self.high));return
-   if price>float(self.high):self.high=Decimal(str(price))
-   if price<float(self.low):self.low=Decimal(str(price))
-   self.save()
- def data(self):
-  try:p=self.client.pos(self.pid)
-  except:p={'size':self.sizev,'entry_price':self.entry,'leverage':self.lev,'liquidation_price':None,'mark_price':None,'margin':None,'unrealized_pnl':0}
-  h=json.load(open(hfile(self.id),encoding='utf8')) if os.path.exists(hfile(self.id)) else []
-  return {'id':self.id,'account_id':self.aid,'account_name':self.name,'symbol':SYMBOL,'strategy':'Day High/Low Breakout + 10 Targets','bot_enabled':self.enabled,'session_start':self.session.isoformat() if self.session else None,'day_high':float(self.high) if self.high is not None else None,'day_low':float(self.low) if self.low is not None else None,'position':'LONG' if p['size']>0 else ('SHORT' if p['size']<0 else None),'position_size':abs(p['size']),'entry_price':p.get('entry_price'),'strategy_stop_loss':self.sl,'leverage':p.get('leverage') or self.lev,'liquidation_price':p.get('liquidation_price'),'mark_price':p.get('mark_price'),'margin':p.get('margin'),'unrealized_pnl':p.get('unrealized_pnl',0),'trade_risk':self.risk,'remaining_size':self.remaining,'waiting_for_fresh_range':self.fresh,'targets':[{'number':i+1,'rr':f'1:{i+1}','price':self.targets[i],'hit':self.hit[i],'part_size':self.parts[i]} for i in range(PARTS)],'execution_uncertain':self.uncertain,'server_ip':SERVER_IP,'history':h[-100:]}
-BOTS={};BL=threading.RLock()
-def loadbots():
- global BOTS
- x={};key=os.getenv('DELTA_API_KEY','').strip();sec=os.getenv('DELTA_API_SECRET','').strip()
- if key and sec:
-  b=Bot(os.getenv('ACCOUNT_ID','primary'),os.getenv('ACCOUNT_NAME','Primary Account'),'primary',key,sec);x[b.id]=b
- for aid,c in clients().items():
-  if isinstance(c,dict) and c.get('api_key') and c.get('api_secret'):
-   b=Bot(aid,c.get('name','Client'),'client',c['api_key'],c['api_secret'],{'expiry':c.get('subscription_expiry')});x[b.id]=b
- with BL:BOTS=x
-def getbot(i):
- with BL:return BOTS.get(i)
-def startall():
- with BL:bs=list(BOTS.values())
- for b in bs:
-  try:r=b.start();logging.info('[%s] AUTO START %s',SYMBOL,r)
-  except Exception:logging.exception('AUTO START')
-class Handler(SimpleHTTPRequestHandler):
- def __init__(self,*a,**k):super().__init__(*a,directory=BASE_DIR,**k)
- def log_message(self,f,*a):logging.info('HTTP | '+f,*a)
- def js(self,d,s=200):
-  raw=json.dumps(d,default=str).encode();self.send_response(s);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','no-store');self.send_header('Access-Control-Allow-Origin','*');self.end_headers();self.wfile.write(raw)
- def body(self):
-  try:return json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))).decode())
-  except:return {}
- def do_GET(self):
-  p=urlparse(self.path);q=parse_qs(p.query)
-  if p.path=='/api/health':return self.js({'success':True,'online':True,'time':now().isoformat(),'server_ip':SERVER_IP})
-  if p.path in ('/api/dashboard','/api/accounts'):
-   with BL:bs=list(BOTS.values())
-   if p.path=='/api/accounts':return self.js({'success':True,'accounts':[{'id':b.id,'account_id':b.aid,'name':b.name,'symbol':SYMBOL,'enabled':b.enabled} for b in bs]})
-   return self.js({'success':True,'time':now().isoformat(),'bots':[b.data() for b in bs]})
-  bid=q.get('id',[None])[0];b=getbot(bid) if bid else (next(iter(BOTS.values())) if BOTS else None)
-  if p.path=='/api/state':return self.js({'success':bool(b),'bot':b.data() if b else None},200 if b else 404)
-  if p.path=='/api/history':
-   if not b:return self.js({'success':False,'message':'Bot not found'},404)
-   try:h=json.load(open(hfile(b.id),encoding='utf8'))
-   except:h=[]
-   return self.js({'success':True,'history':h})
-  return super().do_GET()
- def do_POST(self):
-  p=urlparse(self.path);d=self.body();b=getbot(d.get('id') or d.get('unique_id'))
-  if p.path=='/api/start':return self.js(b.start() if b else {'success':False,'message':'Bot not found'},200 if b else 404)
-  if p.path=='/api/stop':return self.js(b.stop() if b else {'success':False,'message':'Bot not found'},200 if b else 404)
-  if p.path=='/api/reconcile':
-   if not b:return self.js({'success':False,'message':'Bot not found'},404)
-   ok=b.reconcile();return self.js({'success':ok,'bot':b.data()})
-  if p.path=='/api/reload':loadbots();return self.js({'success':True,'message':'Accounts reloaded'})
-  if p.path=='/api/settings':return self.js({'success':True,'message':'Leverage is automatic 100x to 10x based on Day SL. Margin 10%.'})
-  return self.js({'success':False,'message':'Unknown API endpoint'},404)
- def do_OPTIONS(self):self.send_response(204);self.send_header('Access-Control-Allow-Origin','*');self.send_header('Access-Control-Allow-Methods','GET,POST,OPTIONS');self.send_header('Access-Control-Allow-Headers','Content-Type');self.end_headers()
-def wsopen(ws):ws.send(json.dumps({'type':'subscribe','payload':{'channels':[{'name':'trades','symbols':[SYMBOL]}]}}));logging.info('WEBSOCKET SUBSCRIBED | %s',SYMBOL)
-def trade(msg):
- try:d=json.loads(msg)
- except:return None,None
- a=[d];
- if isinstance(d.get('payload'),dict):a.append(d['payload'])
- if isinstance(d.get('data'),dict):a.append(d['data'])
- for x in a:
-  if isinstance(x,dict):
-   s=x.get('sy') or x.get('symbol') or x.get('product_symbol') or x.get('s');p=x.get('p') or x.get('price') or x.get('last_price') or x.get('close')
-   if s and p:
-    try:return str(s).upper(),float(p)
-    except:return None,None
- return None,None
-def wsmsg(ws,msg):
- s,p=trade(msg)
- if s!=SYMBOL:return
- with BL:bs=[b for b in BOTS.values() if b.enabled]
- for b in bs:
-  try:b.eval(p)
-  except Exception:logging.exception('[%s] EVAL',SYMBOL)
-def wsloop():
- while True:
-  try:websocket.WebSocketApp(WS,on_open=wsopen,on_message=wsmsg,on_error=lambda w,e:logging.error('WS %s',e),on_close=lambda w,c,m:logging.warning('WS CLOSED %s %s',c,m)).run_forever(ping_interval=20,ping_timeout=10)
-  except Exception as e:logging.error('WS LOOP %s',e)
-  time.sleep(RECONNECT)
+
+IST = ZoneInfo("Asia/Kolkata")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", BASE_DIR)
+BASE_URL = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange").rstrip("/")
+WS_URL = os.getenv("DELTA_PUBLIC_WS_URL", "wss://public-socket.india.delta.exchange")
+PORT = int(os.getenv("PORT") or os.getenv("DASHBOARD_PORT") or "8080")
+
+API_KEY = os.getenv("DELTA_API_KEY", "").strip()
+API_SECRET = os.getenv("DELTA_API_SECRET", "").strip()
+ACCOUNT_NAME = os.getenv("ACCOUNT_NAME", "Main").strip()
+ACCOUNT_ID = os.getenv("ACCOUNT_ID", "primary").strip()
+
+SYMBOL = "XAUTUSD"
+SESSION_START = dtime(5, 30)
+TRADING_START = dtime(5, 45)
+
+# 10% of balance is margin, then leverage is selected automatically.
+MARGIN_FRACTION = Decimal("0.10")
+MAX_LEVERAGE = 100
+MIN_LEVERAGE = 10
+
+TARGET_COUNT = 10
+RECONNECT_SECONDS = 5
+ENTRY_CONFIRM_TIMEOUT = 10
+CLOSE_CONFIRM_TIMEOUT = 10
+POLL_INTERVAL = 0.25
+
+STATE_FILE = os.path.join(DATA_DIR, "xautusd_bot_state.json")
+HISTORY_FILE = os.path.join(DATA_DIR, "xautusd_trade_history.json")
+LOCK_FILE = os.path.join(DATA_DIR, "xautusd_bot.lock")
+
+LOCK_HANDLE = None
+PUBLIC_IP = "Loading..."
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    force=True,
+)
+
+
+def now_ist():
+    return datetime.now(IST)
+
+
+def atomic_write(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, default=str)
+    os.replace(tmp, path)
+
+
+def load_json(path, default):
+    try:
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+
+def load_history():
+    data = load_json(HISTORY_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def save_history(history):
+    atomic_write(HISTORY_FILE, history)
+
+
+def as_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def as_float(value, default=None):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def current_session_start(dt=None):
+    dt = dt or now_ist()
+    base = dt.replace(hour=5, minute=30, second=0, microsecond=0)
+    if dt.time() >= SESSION_START:
+        return base
+    return base - timedelta(days=1)
+
+
+def is_weekend(dt=None):
+    dt = dt or now_ist()
+
+    if dt.weekday() == 5 and dt.time() >= SESSION_START:
+        return True
+
+    if dt.weekday() == 6:
+        return True
+
+    if dt.weekday() == 0 and dt.time() < SESSION_START:
+        return True
+
+    return False
+
+
+def acquire_single_process_lock():
+    global LOCK_HANDLE
+
+    try:
+        import fcntl
+    except ImportError:
+        logging.warning("fcntl unavailable; process lock disabled.")
+        return True
+
+    try:
+        LOCK_HANDLE = open(LOCK_FILE, "w", encoding="utf-8")
+        fcntl.flock(
+            LOCK_HANDLE.fileno(),
+            fcntl.LOCK_EX | fcntl.LOCK_NB,
+        )
+    except BlockingIOError:
+        logging.critical(
+            "ANOTHER XAUTUSD BOT PROCESS IS ALREADY RUNNING. "
+            "THIS PROCESS WILL NOT START."
+        )
+        try:
+            LOCK_HANDLE.close()
+        except Exception:
+            pass
+        LOCK_HANDLE = None
+        return False
+    except Exception as e:
+        logging.error("PROCESS LOCK ERROR: %s", e)
+        return False
+
+    LOCK_HANDLE.write(str(os.getpid()))
+    LOCK_HANDLE.flush()
+    atexit.register(release_single_process_lock)
+
+    logging.info("SINGLE PROCESS LOCK ACQUIRED | PID=%s", os.getpid())
+    return True
+
+
+def release_single_process_lock():
+    global LOCK_HANDLE
+
+    if LOCK_HANDLE is None:
+        return
+
+    try:
+        import fcntl
+        fcntl.flock(LOCK_HANDLE.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        pass
+
+    try:
+        LOCK_HANDLE.close()
+    except Exception:
+        pass
+
+    LOCK_HANDLE = None
+
+
+def get_public_ip():
+    global PUBLIC_IP
+
+    if PUBLIC_IP != "Loading...":
+        return PUBLIC_IP
+
+    try:
+        response = requests.get(
+            "https://api.ipify.org?format=json",
+            timeout=5,
+        )
+        ip = response.json().get("ip")
+
+        if ip:
+            PUBLIC_IP = ip
+            logging.warning("==================================================")
+            logging.warning("RAILWAY OUTBOUND IP --> %s", ip)
+            logging.warning("WHITELIST THIS IP IN DELTA EXCHANGE API SETTINGS")
+            logging.warning("==================================================")
+    except Exception as e:
+        PUBLIC_IP = "Unknown"
+        logging.warning("PUBLIC IP FETCH ERROR: %s", e)
+
+    return PUBLIC_IP
+
+
+class DeltaClient:
+    def __init__(self):
+        self.session = requests.Session()
+        self.session.headers.update(
+            {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "XAUTUSD-Target-Bot/1.0",
+            }
+        )
+
+    def sign(self, method, path, query="", body=""):
+        timestamp = str(int(time.time()))
+
+        message = (
+            method.upper()
+            + timestamp
+            + path
+            + query
+            + body
+        )
+
+        signature = hmac.new(
+            API_SECRET.encode(),
+            message.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+
+        return {
+            "api-key": API_KEY,
+            "signature": signature,
+            "timestamp": timestamp,
+            "User-Agent": "XAUTUSD-Target-Bot/1.0",
+        }
+
+    def api(
+        self,
+        method,
+        path,
+        params=None,
+        body=None,
+        auth=False,
+    ):
+        params = params or {}
+
+        body_text = (
+            json.dumps(body, separators=(",", ":"))
+            if body is not None
+            else ""
+        )
+
+        query = (
+            "?" + urlencode(params, doseq=True)
+            if params
+            else ""
+        )
+
+        headers = (
+            self.sign(
+                method,
+                path,
+                query,
+                body_text,
+            )
+            if auth
+            else {}
+        )
+
+        response = self.session.request(
+            method.upper(),
+            BASE_URL + path,
+            params=params,
+            data=body_text if body is not None else None,
+            headers=headers,
+            timeout=(4, 12),
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if data.get("success") is False:
+            raise RuntimeError(
+                f"Delta API error: {data}"
+            )
+
+        return data
+
+    def product(self):
+        data = self.api(
+            "GET",
+            f"/v2/products/{SYMBOL}",
+        )
+
+        result = data.get("result")
+
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"Invalid product response: {data}"
+            )
+
+        return result
+
+    def position(self, product_id):
+        data = self.api(
+            "GET",
+            "/v2/positions",
+            params={
+                "product_id": int(product_id),
+            },
+            auth=True,
+        )
+
+        result = data.get("result", {})
+
+        position = {}
+
+        if isinstance(result, dict):
+            position = result
+
+        elif isinstance(result, list):
+            for item in result:
+                if not isinstance(item, dict):
+                    continue
+
+                if (
+                    as_int(item.get("product_id"), 0)
+                    == int(product_id)
+                ):
+                    position = item
+                    break
+
+            if (
+                not position
+                and result
+                and isinstance(result[0], dict)
+            ):
+                position = result[0]
+
+        return {
+            "size": as_int(
+                position.get("size"),
+                0,
+            ),
+            "entry_price": as_float(
+                position.get("entry_price")
+                or position.get("avg_price")
+                or position.get("average_price")
+            ),
+            "stop_loss": as_float(
+                position.get("stop_loss")
+            ),
+            "liquidation_price": as_float(
+                position.get("liquidation_price")
+            ),
+            "mark_price": as_float(
+                position.get("mark_price")
+            ),
+            "unrealized_pnl": as_float(
+                position.get("unrealized_pnl"),
+                0.0,
+            )
+            or 0.0,
+            "leverage": (
+                as_int(
+                    position.get("leverage")
+                    or position.get("user_leverage"),
+                    0,
+                )
+                or None
+            ),
+            "margin": as_float(
+                position.get("margin")
+            ),
+        }
+
+    def balance(self):
+        data = self.api(
+            "GET",
+            "/v2/wallet/balances",
+            auth=True,
+        )
+
+        result = data.get("result", [])
+
+        if isinstance(result, dict):
+            result = [result]
+
+        for wallet in result:
+            if not isinstance(wallet, dict):
+                continue
+
+            asset = str(
+                wallet.get("asset_symbol", "")
+            ).upper()
+
+            if asset not in ("USD", "USDT"):
+                continue
+
+            value = (
+                wallet.get("available_balance")
+                if wallet.get("available_balance") is not None
+                else wallet.get("balance")
+            )
+
+            if value is not None:
+                return Decimal(str(value))
+
+        return Decimal("0")
+
+    def set_leverage(
+        self,
+        product_id,
+        leverage,
+    ):
+        return self.api(
+            "POST",
+            f"/v2/products/{product_id}/orders/leverage",
+            body={
+                "leverage": str(int(leverage)),
+            },
+            auth=True,
+        )
+
+    def calculate_order_size(
+        self,
+        product,
+        price,
+        leverage,
+    ):
+        balance = self.balance()
+
+        if balance <= 0:
+            raise RuntimeError(
+                "USD/USDT available balance is zero."
+            )
+
+        margin = (
+            balance
+            * MARGIN_FRACTION
+        )
+
+        notional = (
+            margin
+            * Decimal(str(leverage))
+        )
+
+        contract_value = Decimal(
+            str(
+                product.get("contract_value")
+                or product.get("contract_value_usd")
+                or "0.001"
+            )
+        )
+
+        if contract_value <= 0:
+            contract_value = Decimal("0.001")
+
+        raw_size = (
+            notional
+            / Decimal(str(price))
+            / contract_value
+        )
+
+        increment = Decimal(
+            str(
+                product.get("lot_size")
+                or product.get("order_size_increment")
+                or "1"
+            )
+        )
+
+        minimum = Decimal(
+            str(
+                product.get("min_order_size")
+                or product.get("minimum_order_size")
+                or increment
+            )
+        )
+
+        if increment <= 0:
+            increment = Decimal("1")
+
+        size_decimal = (
+            raw_size / increment
+        ).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * increment
+
+        if size_decimal < minimum:
+            size_decimal = minimum
+
+        size = int(size_decimal)
+
+        if size <= 0:
+            raise RuntimeError(
+                "Calculated order size is zero."
+            )
+
+        return size
+
+    def market_entry(
+        self,
+        product_id,
+        direction,
+        size,
+    ):
+        side = (
+            "buy"
+            if direction == "LONG"
+            else "sell"
+        )
+
+        body = {
+            "product_id": int(product_id),
+            "product_symbol": SYMBOL,
+            "size": int(size),
+            "side": side,
+            "order_type": "market_order",
+            "client_order_id": self.make_client_id(
+                "entry"
+            ),
+        }
+
+        return self.api(
+            "POST",
+            "/v2/orders",
+            body=body,
+            auth=True,
+        )
+
+    def reduce_only_market_close(
+        self,
+        product_id,
+        signed_size,
+    ):
+        if signed_size == 0:
+            return None
+
+        side = (
+            "sell"
+            if signed_size > 0
+            else "buy"
+        )
+
+        body = {
+            "product_id": int(product_id),
+            "product_symbol": SYMBOL,
+            "size": abs(int(signed_size)),
+            "side": side,
+            "order_type": "market_order",
+            "reduce_only": True,
+            "client_order_id": self.make_client_id(
+                "close"
+            ),
+        }
+
+        return self.api(
+            "POST",
+            "/v2/orders",
+            body=body,
+            auth=True,
+        )
+
+    def cancel_all_orders(self, product_id):
+        try:
+            return self.api(
+                "DELETE",
+                "/v2/orders/all",
+                body={
+                    "product_id": int(product_id),
+                },
+                auth=True,
+            )
+        except Exception as e:
+            logging.warning(
+                "Cancel orders failed: %s",
+                e,
+            )
+            return None
+
+    def make_client_id(self, prefix):
+        return (
+            f"{prefix}_"
+            f"{int(time.time() * 1000)}_"
+            f"{uuid.uuid4().hex[:8]}"
+        )[-32:]
+
+    def ticker(self):
+        data = self.api(
+            "GET",
+            f"/v2/tickers/{SYMBOL}",
+        )
+
+        result = data.get("result", {})
+
+        if isinstance(result, dict):
+            price = (
+                result.get("close")
+                or result.get("last_price")
+                or result.get("spot_price")
+                or result.get("ltp")
+            )
+
+            if price is not None:
+                return Decimal(str(price))
+
+        return None
+
+    def candles(
+        self,
+        resolution,
+        start_ts,
+        end_ts,
+    ):
+        data = self.api(
+            "GET",
+            "/v2/history/candles",
+            params={
+                "resolution": resolution,
+                "symbol": SYMBOL,
+                "start": int(start_ts),
+                "end": int(end_ts),
+            },
+        )
+
+        result = data.get("result", [])
+
+        return (
+            result
+            if isinstance(result, list)
+            else []
+        )
+
+
+class XAUTTargetBot:
+    def __init__(self):
+        self.client = DeltaClient()
+
+        self.product = None
+        self.product_id = 0
+
+        self.session = None
+        self.day_high = None
+        self.day_low = None
+
+        self.last_price = None
+
+        self.bot_running = False
+        self.trading_armed = False
+
+        self.position = None
+        self.direction = None
+
+        self.entry_price = None
+        self.stop_loss = 0.0
+
+        self.original_size = 0
+        self.remaining_size = 0
+
+        self.leverage = 10
+
+        self.target_hit = [
+            False
+            for _ in range(TARGET_COUNT)
+        ]
+
+        self.target_quantities = [
+            0
+            for _ in range(TARGET_COUNT)
+        ]
+
+        self.trade_started_at = None
+        self.trade_id = None
+
+        self.execution_uncertain = False
+        self.order_in_progress = False
+
+        self.lock = threading.RLock()
+
+        self.load_state()
+
+    def save(self):
+        atomic_write(
+            STATE_FILE,
+            {
+                "session": (
+                    self.session.isoformat()
+                    if self.session
+                    else None
+                ),
+                "day_high": (
+                    str(self.day_high)
+                    if self.day_high is not None
+                    else None
+                ),
+                "day_low": (
+                    str(self.day_low)
+                    if self.day_low is not None
+                    else None
+                ),
+                "last_price": self.last_price,
+                "bot_running": self.bot_running,
+                "trading_armed": self.trading_armed,
+                "position": self.position,
+                "direction": self.direction,
+                "entry_price": self.entry_price,
+                "stop_loss": self.stop_loss,
+                "original_size": self.original_size,
+                "remaining_size": self.remaining_size,
+                "leverage": self.leverage,
+                "target_hit": self.target_hit,
+                "target_quantities": self.target_quantities,
+                "trade_started_at": self.trade_started_at,
+                "trade_id": self.trade_id,
+                "execution_uncertain": self.execution_uncertain,
+            },
+        )
+
+    def load_state(self):
+        state = load_json(
+            STATE_FILE,
+            {},
+        )
+
+        try:
+            if state.get("session"):
+                self.session = datetime.fromisoformat(
+                    state["session"]
+                )
+
+            if state.get("day_high") is not None:
+                self.day_high = Decimal(
+                    str(state["day_high"])
+                )
+
+            if state.get("day_low") is not None:
+                self.day_low = Decimal(
+                    str(state["day_low"])
+                )
+
+            self.last_price = as_float(
+                state.get("last_price")
+            )
+
+            self.bot_running = bool(
+                state.get(
+                    "bot_running",
+                    False,
+                )
+            )
+
+            self.trading_armed = bool(
+                state.get(
+                    "trading_armed",
+                    False,
+                )
+            )
+
+            self.position = state.get(
+                "position"
+            )
+
+            self.direction = state.get(
+                "direction"
+            )
+
+            self.entry_price = as_float(
+                state.get("entry_price")
+            )
+
+            self.stop_loss = as_float(
+                state.get("stop_loss"),
+                0.0,
+            ) or 0.0
+
+            self.original_size = as_int(
+                state.get("original_size"),
+                0,
+            )
+
+            self.remaining_size = as_int(
+                state.get("remaining_size"),
+                0,
+            )
+
+            self.leverage = (
+                as_int(
+                    state.get("leverage"),
+                    10,
+                )
+                or 10
+            )
+
+            hits = state.get(
+                "target_hit"
+            )
+
+            if (
+                isinstance(hits, list)
+                and len(hits) == TARGET_COUNT
+            ):
+                self.target_hit = [
+                    bool(x)
+                    for x in hits
+                ]
+
+            quantities = state.get(
+                "target_quantities"
+            )
+
+            if (
+                isinstance(quantities, list)
+                and len(quantities) == TARGET_COUNT
+            ):
+                self.target_quantities = [
+                    as_int(x)
+                    for x in quantities
+                ]
+
+            self.trade_started_at = state.get(
+                "trade_started_at"
+            )
+
+            self.trade_id = state.get(
+                "trade_id"
+            )
+
+            self.execution_uncertain = bool(
+                state.get(
+                    "execution_uncertain",
+                    False,
+                )
+            )
+
+        except Exception as e:
+            logging.warning(
+                "STATE LOAD ERROR | %s",
+                e,
+            )
+
+    def prepare_product(self):
+        if self.product_id:
+            return True
+
+        self.product = self.client.product()
+
+        self.product_id = int(
+            self.product["id"]
+        )
+
+        return True
+
+    def get_session_high_low(
+        self,
+        session_start,
+    ):
+        candles = self.client.candles(
+            "1m",
+            int(session_start.timestamp()),
+            int(now_ist().timestamp()),
+        )
+
+        highest = None
+        lowest = None
+
+        for candle in candles:
+            try:
+                if isinstance(candle, dict):
+                    high = Decimal(
+                        str(candle.get("high"))
+                    )
+                    low = Decimal(
+                        str(candle.get("low"))
+                    )
+
+                elif (
+                    isinstance(candle, list)
+                    and len(candle) >= 4
+                ):
+                    high = Decimal(
+                        str(candle[2])
+                    )
+                    low = Decimal(
+                        str(candle[3])
+                    )
+
+                else:
+                    continue
+
+                if (
+                    highest is None
+                    or high > highest
+                ):
+                    highest = high
+
+                if (
+                    lowest is None
+                    or low < lowest
+                ):
+                    lowest = low
+
+            except Exception:
+                continue
+
+        return highest, lowest
+
+    def wait_for_position(
+        self,
+        expected_direction=None,
+        timeout=ENTRY_CONFIRM_TIMEOUT,
+    ):
+        deadline = (
+            time.time()
+            + timeout
+        )
+
+        while time.time() < deadline:
+            try:
+                position = self.client.position(
+                    self.product_id
+                )
+
+                size = as_int(
+                    position.get("size"),
+                    0,
+                )
+
+                if size == 0:
+                    time.sleep(
+                        POLL_INTERVAL
+                    )
+                    continue
+
+                if (
+                    expected_direction == "LONG"
+                    and size > 0
+                ):
+                    return position
+
+                if (
+                    expected_direction == "SHORT"
+                    and size < 0
+                ):
+                    return position
+
+                if expected_direction is None:
+                    return position
+
+            except Exception as e:
+                logging.warning(
+                    "POSITION CONFIRM ERROR | %s",
+                    e,
+                )
+
+            time.sleep(
+                POLL_INTERVAL
+            )
+
+        return None
+
+    def wait_until_flat(
+        self,
+        timeout=CLOSE_CONFIRM_TIMEOUT,
+    ):
+        deadline = (
+            time.time()
+            + timeout
+        )
+
+        while time.time() < deadline:
+            try:
+                position = self.client.position(
+                    self.product_id
+                )
+
+                if (
+                    as_int(
+                        position.get("size"),
+                        0,
+                    )
+                    == 0
+                ):
+                    return True
+
+            except Exception as e:
+                logging.warning(
+                    "FLAT CONFIRM ERROR | %s",
+                    e,
+                )
+
+            time.sleep(
+                POLL_INTERVAL
+            )
+
+        return False
+
+    def adopt_exchange_position(
+        self,
+        position,
+    ):
+        size = as_int(
+            position.get("size"),
+            0,
+        )
+
+        if size == 0:
+            return
+
+        self.direction = (
+            "LONG"
+            if size > 0
+            else "SHORT"
+        )
+
+        self.position = self.direction
+
+        self.remaining_size = abs(size)
+
+        if self.original_size <= 0:
+            self.original_size = abs(size)
+
+        exchange_entry = position.get(
+            "entry_price"
+        )
+
+        if exchange_entry is not None:
+            self.entry_price = float(
+                exchange_entry
+            )
+
+        exchange_leverage = position.get(
+            "leverage"
+        )
+
+        if exchange_leverage:
+            self.leverage = int(
+                exchange_leverage
+            )
+
+        self.execution_uncertain = False
+
+        logging.warning(
+            "[%s] ADOPTED EXCHANGE POSITION | "
+            "Direction=%s | Size=%s | Entry=%s | Leverage=%sx",
+            SYMBOL,
+            self.direction,
+            abs(size),
+            self.entry_price,
+            self.leverage,
+        )
+
+    def clear_position(self):
+        self.position = None
+        self.direction = None
+        self.entry_price = None
+        self.stop_loss = 0.0
+
+        self.original_size = 0
+        self.remaining_size = 0
+
+        self.target_hit = [
+            False
+            for _ in range(TARGET_COUNT)
+        ]
+
+        self.target_quantities = [
+            0
+            for _ in range(TARGET_COUNT)
+        ]
+
+        self.trade_started_at = None
+        self.trade_id = None
+
+        self.execution_uncertain = False
+
+    def start_bot(self):
+        with self.lock:
+            try:
+                self.prepare_product()
+
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0,
+                )
+
+                if exchange_size:
+                    self.adopt_exchange_position(
+                        exchange_position
+                    )
+
+                self.bot_running = True
+                self.execution_uncertain = False
+                self.save()
+
+                return {
+                    "success": True,
+                    "bot_running": True,
+                    "message": (
+                        "XAUTUSD bot started."
+                    ),
+                }
+
+            except Exception as e:
+                logging.error(
+                    "START / RECONCILIATION ERROR | %s",
+                    e,
+                )
+
+                self.bot_running = False
+                self.execution_uncertain = True
+                self.save()
+
+                return {
+                    "success": False,
+                    "message": (
+                        "Exchange reconciliation failed."
+                    ),
+                    "error": str(e),
+                }
+
+    def stop_bot(self):
+        with self.lock:
+            self.bot_running = False
+
+            try:
+                self.prepare_product()
+
+                position = self.client.position(
+                    self.product_id
+                )
+
+                size = as_int(
+                    position.get("size"),
+                    0,
+                )
+
+                if size:
+                    self.client.cancel_all_orders(
+                        self.product_id
+                    )
+
+                    self.client.reduce_only_market_close(
+                        self.product_id,
+                        size,
+                    )
+
+                    if not self.wait_until_flat():
+                        self.execution_uncertain = True
+                        self.save()
+
+                        return {
+                            "success": False,
+                            "message": (
+                                "Position close "
+                                "was not confirmed."
+                            ),
+                        }
+
+                self.clear_position()
+                self.save()
+
+                return {
+                    "success": True,
+                    "bot_running": False,
+                    "message": (
+                        "XAUTUSD bot stopped."
+                    ),
+                }
+
+            except Exception as e:
+                self.execution_uncertain = True
+                self.save()
+
+                return {
+                    "success": False,
+                    "message": str(e),
+                }
+
+    def calculate_liquidation_estimate(
+        self,
+        entry_price,
+        leverage,
+        direction,
+    ):
+        entry = Decimal(
+            str(entry_price)
+        )
+
+        lev = Decimal(
+            str(leverage)
+        )
+
+        if (
+            entry <= 0
+            or lev <= 0
+        ):
+            return None
+
+        maintenance = Decimal("0")
+
+        try:
+            maintenance = (
+                Decimal(
+                    str(
+                        self.product.get(
+                            "maintenance_margin",
+                            0,
+                        )
+                    )
+                )
+                / Decimal("100")
+            )
+        except Exception:
+            pass
+
+        taker_fee = Decimal("0")
+
+        try:
+            taker_fee = Decimal(
+                str(
+                    self.product.get(
+                        "taker_commission_rate",
+                        0,
+                    )
+                )
+            )
+        except Exception:
+            pass
+
+        safety_buffer = Decimal(
+            "0.0010"
+        )
+
+        effective = (
+            maintenance
+            + taker_fee
+            + safety_buffer
+        )
+
+        if direction == "LONG":
+            return (
+                entry
+                * (
+                    Decimal("1")
+                    - Decimal("1") / lev
+                    + effective
+                )
+            )
+
+        return (
+            entry
+            * (
+                Decimal("1")
+                + Decimal("1") / lev
+                - effective
+            )
+        )
+
+    def leverage_ladder(self):
+        return list(
+            range(
+                MAX_LEVERAGE,
+                MIN_LEVERAGE - 1,
+                -10,
+            )
+        )
+
+    def choose_safe_leverage(
+        self,
+        entry_price,
+        stop_loss,
+        direction,
+    ):
+        """
+        Try 100x, then 90x ... down to 10x.
+        The first leverage whose estimated liquidation price
+        stays beyond the requested Day High/Day Low SL is used.
+        """
+
+        for leverage in self.leverage_ladder():
+            liquidation = (
+                self.calculate_liquidation_estimate(
+                    entry_price,
+                    leverage,
+                    direction,
+                )
+            )
+
+            if liquidation is None:
+                continue
+
+            if (
+                direction == "LONG"
+                and liquidation < Decimal(
+                    str(stop_loss)
+                )
+            ):
+                logging.info(
+                    "[%s] LEVERAGE SELECTED | %sx | "
+                    "Estimated LIQ=%s | LONG SL=%s",
+                    SYMBOL,
+                    leverage,
+                    liquidation,
+                    stop_loss,
+                )
+
+                return leverage
+
+            if (
+                direction == "SHORT"
+                and liquidation > Decimal(
+                    str(stop_loss)
+                )
+            ):
+                logging.info(
+                    "[%s] LEVERAGE SELECTED | %sx | "
+                    "Estimated LIQ=%s | SHORT SL=%s",
+                    SYMBOL,
+                    leverage,
+                    liquidation,
+                    stop_loss,
+                )
+
+                return leverage
+
+        logging.warning(
+            "[%s] No leverage 100x-20x passed SL safety check. "
+            "Using minimum 10x.",
+            SYMBOL,
+        )
+
+        return MIN_LEVERAGE
+
+    def split_into_ten_parts(
+        self,
+        total_size,
+    ):
+        """
+        Divide the actual exchange lot into 10 parts.
+        The remainder is added to the 10th part so that
+        all parts together equal the original position size.
+        """
+
+        total_size = int(total_size)
+
+        base = (
+            total_size
+            // TARGET_COUNT
+        )
+
+        remainder = (
+            total_size
+            - (
+                base
+                * TARGET_COUNT
+            )
+        )
+
+        quantities = [
+            base
+            for _ in range(
+                TARGET_COUNT
+            )
+        ]
+
+        quantities[-1] += remainder
+
+        return quantities
+
+    def enter_trade(
+        self,
+        direction,
+        price,
+        stop_loss,
+    ):
+        if (
+            not self.bot_running
+            or self.execution_uncertain
+            or self.order_in_progress
+            or is_weekend()
+        ):
+            return False
+
+        with self.lock:
+            self.order_in_progress = True
+
+            try:
+                # FINAL exchange-side safety check.
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0,
+                )
+
+                if exchange_size:
+                    self.adopt_exchange_position(
+                        exchange_position
+                    )
+
+                    self.save()
+
+                    logging.warning(
+                        "[%s] ENTRY BLOCKED | "
+                        "EXCHANGE POSITION ALREADY OPEN.",
+                        SYMBOL,
+                    )
+
+                    return False
+
+                leverage = (
+                    self.choose_safe_leverage(
+                        price,
+                        stop_loss,
+                        direction,
+                    )
+                )
+
+                self.client.set_leverage(
+                    self.product_id,
+                    leverage,
+                )
+
+                size = (
+                    self.client.calculate_order_size(
+                        self.product,
+                        price,
+                        leverage,
+                    )
+                )
+
+                logging.info(
+                    "[%s] ENTRY PREPARED | "
+                    "%s | Price=%s | SL=%s | "
+                    "Leverage=%sx | Size=%s",
+                    SYMBOL,
+                    direction,
+                    price,
+                    stop_loss,
+                    leverage,
+                    size,
+                )
+
+                self.client.market_entry(
+                    self.product_id,
+                    direction,
+                    size,
+                )
+
+                confirmed = (
+                    self.wait_for_position(
+                        expected_direction=direction
+                    )
+                )
+
+                if confirmed is None:
+                    self.execution_uncertain = True
+                    self.save()
+
+                    logging.error(
+                        "[%s] ENTRY EXECUTION UNKNOWN. "
+                        "NO SECOND ORDER WILL BE SENT.",
+                        SYMBOL,
+                    )
+
+                    return False
+
+                confirmed_size = abs(
+                    as_int(
+                        confirmed.get(
+                            "size"
+                        ),
+                        0,
+                    )
+                )
+
+                if confirmed_size <= 0:
+                    self.execution_uncertain = True
+                    self.save()
+                    return False
+
+                self.position = direction
+                self.direction = direction
+
+                self.entry_price = (
+                    confirmed.get(
+                        "entry_price"
+                    )
+                    or price
+                )
+
+                self.stop_loss = float(
+                    stop_loss
+                )
+
+                self.original_size = (
+                    confirmed_size
+                )
+
+                self.remaining_size = (
+                    confirmed_size
+                )
+
+                self.leverage = (
+                    as_int(
+                        confirmed.get(
+                            "leverage"
+                        ),
+                        leverage,
+                    )
+                    or leverage
+                )
+
+                self.target_quantities = (
+                    self.split_into_ten_parts(
+                        confirmed_size
+                    )
+                )
+
+                self.target_hit = [
+                    False
+                    for _ in range(
+                        TARGET_COUNT
+                    )
+                ]
+
+                self.trade_started_at = (
+                    now_ist().strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                )
+
+                self.trade_id = (
+                    f"xaut_"
+                    f"{int(time.time() * 1000)}_"
+                    f"{uuid.uuid4().hex[:8]}"
+                )
+
+                self.execution_uncertain = False
+                self.save()
+
+                logging.info(
+                    "[%s] ENTRY CONFIRMED | "
+                    "%s | Entry=%s | Size=%s | "
+                    "Leverage=%sx | SL=%s",
+                    SYMBOL,
+                    direction,
+                    self.entry_price,
+                    self.original_size,
+                    self.leverage,
+                    self.stop_loss,
+                )
+
+                logging.info(
+                    "[%s] TARGET PARTS | %s",
+                    SYMBOL,
+                    self.target_quantities,
+                )
+
+                return True
+
+            except Exception as e:
+                logging.error(
+                    "[%s] ENTRY ERROR | %s",
+                    SYMBOL,
+                    e,
+                )
+
+                try:
+                    check = self.client.position(
+                        self.product_id
+                    )
+
+                    if as_int(
+                        check.get("size"),
+                        0,
+                    ):
+                        self.adopt_exchange_position(
+                            check
+                        )
+
+                    else:
+                        self.execution_uncertain = True
+
+                except Exception:
+                    self.execution_uncertain = True
+
+                self.save()
+
+                return False
+
+            finally:
+                self.order_in_progress = False
+
+    def calculate_target_price(
+        self,
+        target_index,
+    ):
+        if (
+            self.entry_price is None
+            or self.stop_loss <= 0
+        ):
+            return None
+
+        risk = abs(
+            Decimal(
+                str(
+                    self.entry_price
+                )
+            )
+            - Decimal(
+                str(
+                    self.stop_loss
+                )
+            )
+        )
+
+        multiple = Decimal(
+            str(
+                target_index + 1
+            )
+        )
+
+        if self.direction == "LONG":
+            return float(
+                Decimal(
+                    str(
+                        self.entry_price
+                    )
+                )
+                + (
+                    risk
+                    * multiple
+                )
+            )
+
+        if self.direction == "SHORT":
+            return float(
+                Decimal(
+                    str(
+                        self.entry_price
+                    )
+                )
+                - (
+                    risk
+                    * multiple
+                )
+            )
+
+        return None
+
+    def record_partial_trade(
+        self,
+        target_index,
+        quantity,
+        exit_price,
+    ):
+        history = load_history()
+
+        history.append(
+            {
+                "id": (
+                    f"{self.trade_id}_"
+                    f"TARGET_{target_index + 1}_"
+                    f"{int(time.time() * 1000)}"
+                ),
+                "trade_id": self.trade_id,
+                "date": now_ist().strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+                "symbol": SYMBOL,
+                "direction": self.direction,
+                "entry_price": self.entry_price,
+                "exit_price": float(
+                    exit_price
+                ),
+                "size": int(
+                    quantity
+                ),
+                "reason": (
+                    f"TARGET_{target_index + 1}R"
+                ),
+                "target": (
+                    target_index + 1
+                ),
+                "leverage": self.leverage,
+            }
+        )
+
+        save_history(history)
+
+    def record_full_close(
+        self,
+        reason,
+        exit_price,
+    ):
+        history = load_history()
+
+        history.append(
+            {
+                "id": (
+                    f"{self.trade_id}_"
+                    f"CLOSE_"
+                    f"{int(time.time() * 1000)}"
+                ),
+                "trade_id": self.trade_id,
+                "date": now_ist().strftime(
+                    "%Y-%m-%d %H:%M"
+                ),
+                "symbol": SYMBOL,
+                "direction": self.direction,
+                "entry_price": self.entry_price,
+                "exit_price": float(
+                    exit_price
+                ),
+                "size": self.original_size,
+                "reason": reason,
+                "trade_type": "TARGETS",
+                "leverage": self.leverage,
+            }
+        )
+
+        save_history(history)
+
+    def close_partial(
+        self,
+        target_index,
+        quantity,
+        exit_price,
+    ):
+        if (
+            quantity <= 0
+            or self.order_in_progress
+        ):
+            return False
+
+        with self.lock:
+            self.order_in_progress = True
+
+            try:
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0,
+                )
+
+                if exchange_size == 0:
+                    self.clear_position()
+                    self.save()
+                    return True
+
+                quantity = min(
+                    int(quantity),
+                    abs(exchange_size),
+                )
+
+                if quantity <= 0:
+                    self.target_hit[
+                        target_index
+                    ] = True
+
+                    self.save()
+
+                    return True
+
+                signed_close_size = (
+                    quantity
+                    if exchange_size > 0
+                    else -quantity
+                )
+
+                self.client.reduce_only_market_close(
+                    self.product_id,
+                    signed_close_size,
+                )
+
+                deadline = (
+                    time.time()
+                    + CLOSE_CONFIRM_TIMEOUT
+                )
+
+                confirmed_new_size = None
+
+                while time.time() < deadline:
+                    check = (
+                        self.client.position(
+                            self.product_id
+                        )
+                    )
+
+                    new_size = abs(
+                        as_int(
+                            check.get(
+                                "size"
+                            ),
+                            0,
+                        )
+                    )
+
+                    if new_size < abs(
+                        exchange_size
+                    ):
+                        confirmed_new_size = (
+                            new_size
+                        )
+                        break
+
+                    time.sleep(
+                        POLL_INTERVAL
+                    )
+
+                if confirmed_new_size is None:
+                    self.execution_uncertain = True
+                    self.save()
+
+                    logging.error(
+                        "[%s] TARGET CLOSE NOT CONFIRMED.",
+                        SYMBOL,
+                    )
+
+                    return False
+
+                closed_quantity = (
+                    abs(exchange_size)
+                    - confirmed_new_size
+                )
+
+                self.target_hit[
+                    target_index
+                ] = True
+
+                self.remaining_size = (
+                    confirmed_new_size
+                )
+
+                if closed_quantity > 0:
+                    self.record_partial_trade(
+                        target_index,
+                        closed_quantity,
+                        exit_price,
+                    )
+
+                self.execution_uncertain = False
+
+                if confirmed_new_size == 0:
+                    self.record_full_close(
+                        f"TARGET_{target_index + 1}R_FINAL",
+                        exit_price,
+                    )
+
+                    self.clear_position()
+
+                self.save()
+
+                logging.info(
+                    "[%s] TARGET %sR BOOKED | "
+                    "Quantity=%s | Remaining=%s",
+                    SYMBOL,
+                    target_index + 1,
+                    closed_quantity,
+                    confirmed_new_size,
+                )
+
+                return True
+
+            except Exception as e:
+                logging.error(
+                    "[%s] TARGET CLOSE ERROR | %s",
+                    SYMBOL,
+                    e,
+                )
+
+                self.execution_uncertain = True
+                self.save()
+
+                return False
+
+            finally:
+                self.order_in_progress = False
+
+    def close_all_at_stop(
+        self,
+        price,
+    ):
+        if self.order_in_progress:
+            return False
+
+        with self.lock:
+            self.order_in_progress = True
+
+            try:
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0,
+                )
+
+                if exchange_size == 0:
+                    self.clear_position()
+                    self.save()
+                    return True
+
+                self.client.cancel_all_orders(
+                    self.product_id
+                )
+
+                self.client.reduce_only_market_close(
+                    self.product_id,
+                    exchange_size,
+                )
+
+                if not self.wait_until_flat():
+                    self.execution_uncertain = True
+                    self.save()
+
+                    logging.error(
+                        "[%s] DAY EXTREME SL CLOSE "
+                        "NOT CONFIRMED.",
+                        SYMBOL,
+                    )
+
+                    return False
+
+                self.record_full_close(
+                    "DAY_EXTREME_SL",
+                    price,
+                )
+
+                logging.info(
+                    "[%s] DAY EXTREME SL HIT | "
+                    "ALL REMAINING PARTS CLOSED | "
+                    "Price=%s | SL=%s",
+                    SYMBOL,
+                    price,
+                    self.stop_loss,
+                )
+
+                self.clear_position()
+                self.save()
+
+                return True
+
+            except Exception as e:
+                logging.error(
+                    "[%s] STOP LOSS CLOSE ERROR | %s",
+                    SYMBOL,
+                    e,
+                )
+
+                self.execution_uncertain = True
+                self.save()
+
+                return False
+
+            finally:
+                self.order_in_progress = False
+
+    def check_stop(self, price):
+        if not self.position:
+            return False
+
+        if (
+            self.direction == "LONG"
+            and price <= self.stop_loss
+        ):
+            return self.close_all_at_stop(
+                price
+            )
+
+        if (
+            self.direction == "SHORT"
+            and price >= self.stop_loss
+        ):
+            return self.close_all_at_stop(
+                price
+            )
+
+        return False
+
+    def check_targets(self, price):
+        if (
+            not self.position
+            or self.entry_price is None
+        ):
+            return
+
+        for index in range(
+            TARGET_COUNT
+        ):
+            if self.target_hit[index]:
+                continue
+
+            target_price = (
+                self.calculate_target_price(
+                    index
+                )
+            )
+
+            if target_price is None:
+                return
+
+            reached = (
+                price >= target_price
+                if self.direction == "LONG"
+                else price <= target_price
+            )
+
+            if not reached:
+                # Targets are sequential.
+                break
+
+            quantity = (
+                self.target_quantities[
+                    index
+                ]
+            )
+
+            if quantity <= 0:
+                self.target_hit[
+                    index
+                ] = True
+
+                self.save()
+
+                continue
+
+            success = self.close_partial(
+                index,
+                quantity,
+                price,
+            )
+
+            if not success:
+                return
+
+            if not self.position:
+                return
+
+    def reset_for_new_session(
+        self,
+        new_session,
+    ):
+        with self.lock:
+            try:
+                if self.product_id:
+                    exchange_position = (
+                        self.client.position(
+                            self.product_id
+                        )
+                    )
+
+                    exchange_size = as_int(
+                        exchange_position.get(
+                            "size"
+                        ),
+                        0,
+                    )
+
+                    if exchange_size:
+                        logging.warning(
+                            "[%s] NEW SESSION | "
+                            "CLOSING OLD POSITION %s",
+                            SYMBOL,
+                            exchange_size,
+                        )
+
+                        self.client.cancel_all_orders(
+                            self.product_id
+                        )
+
+                        self.client.reduce_only_market_close(
+                            self.product_id,
+                            exchange_size,
+                        )
+
+                        if not self.wait_until_flat():
+                            self.execution_uncertain = True
+                            self.save()
+                            return False
+
+                self.clear_position()
+
+                self.session = new_session
+                self.day_high = None
+                self.day_low = None
+                self.trading_armed = False
+
+                try:
+                    high, low = (
+                        self.get_session_high_low(
+                            new_session
+                        )
+                    )
+
+                    if (
+                        high is not None
+                        and low is not None
+                    ):
+                        self.day_high = high
+                        self.day_low = low
+
+                except Exception as e:
+                    logging.warning(
+                        "[%s] Session H/L fetch failed | %s",
+                        SYMBOL,
+                        e,
+                    )
+
+                self.save()
+
+                logging.info(
+                    "[%s] NEW SESSION | "
+                    "START=%s | HIGH=%s | LOW=%s",
+                    SYMBOL,
+                    new_session,
+                    self.day_high,
+                    self.day_low,
+                )
+
+                return True
+
+            except Exception as e:
+                logging.error(
+                    "[%s] SESSION RESET ERROR | %s",
+                    SYMBOL,
+                    e,
+                )
+
+                self.execution_uncertain = True
+                self.save()
+
+                return False
+
+    def evaluate(self, price):
+        with self.lock:
+            if not self.bot_running:
+                return
+
+            if self.execution_uncertain:
+                return
+
+            current_time = now_ist()
+
+            if is_weekend(
+                current_time
+            ):
+                return
+
+            self.last_price = float(
+                price
+            )
+
+            try:
+                self.prepare_product()
+
+            except Exception as e:
+                logging.error(
+                    "[%s] PRODUCT PREPARE ERROR | %s",
+                    SYMBOL,
+                    e,
+                )
+                return
+
+            current_session = (
+                current_session_start(
+                    current_time
+                )
+            )
+
+            if self.session != current_session:
+                if not self.reset_for_new_session(
+                    current_session
+                ):
+                    return
+
+            if (
+                self.day_high is None
+                or self.day_low is None
+            ):
+                try:
+                    high, low = (
+                        self.get_session_high_low(
+                            self.session
+                        )
+                    )
+
+                    if high is not None:
+                        self.day_high = high
+
+                    if low is not None:
+                        self.day_low = low
+
+                    self.save()
+
+                except Exception:
+                    return
+
+            if current_time.time() < TRADING_START:
+                self.trading_armed = False
+                return
+
+            if not self.trading_armed:
+                self.trading_armed = True
+                self.save()
+
+                logging.info(
+                    "[%s] TRADING ARMED | "
+                    "HIGH=%s | LOW=%s",
+                    SYMBOL,
+                    self.day_high,
+                    self.day_low,
+                )
+
+                return
+
+            # ---------------------------------------------------------
+            # EXCHANGE POSITION IS ALWAYS THE SOURCE OF TRUTH.
+            # ---------------------------------------------------------
+            try:
+                exchange_position = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+
+                exchange_size = as_int(
+                    exchange_position.get(
+                        "size"
+                    ),
+                    0,
+                )
+
+            except Exception as e:
+                logging.error(
+                    "[%s] POSITION CHECK FAILED | "
+                    "NO NEW ENTRY ALLOWED | %s",
+                    SYMBOL,
+                    e,
+                )
+
+                self.execution_uncertain = True
+                self.save()
+
+                return
+
+            if self.position:
+                if exchange_size == 0:
+                    logging.warning(
+                        "[%s] EXCHANGE FLAT WHILE LOCAL TRADE "
+                        "EXISTS. RESETTING LOCAL POSITION.",
+                        SYMBOL,
+                    )
+
+                    self.clear_position()
+                    self.save()
+
+                    return
+
+                exchange_direction = (
+                    "LONG"
+                    if exchange_size > 0
+                    else "SHORT"
+                )
+
+                if (
+                    exchange_direction
+                    != self.direction
+                ):
+                    logging.error(
+                        "[%s] DIRECTION MISMATCH. "
+                        "ENTRY/TRADING BLOCKED.",
+                        SYMBOL,
+                    )
+
+                    self.execution_uncertain = True
+                    self.save()
+
+                    return
+
+                # Position active:
+                # SL is always checked before targets.
+                if self.check_stop(
+                    float(price)
+                ):
+                    return
+
+                self.check_targets(
+                    float(price)
+                )
+
+                return
+
+            # Local FLAT but exchange has position.
+            if exchange_size:
+                self.adopt_exchange_position(
+                    exchange_position
+                )
+
+                self.save()
+
+                return
+
+            # ---------------------------------------------------------
+            # FLAT STATE:
+            #
+            # The stored day_high/day_low are the last known extremes.
+            # Breakout is checked BEFORE updating them.
+            #
+            # Therefore:
+            # First trade:
+            #   old day high -> new high = LONG
+            #   old day low  -> new low  = SHORT
+            #
+            # After the trade becomes FLAT:
+            #   the old breakout level remains stored.
+            #   The next trade needs a NEW high above that stored high
+            #   or a NEW low below that stored low.
+            #
+            # The old breakout cannot be reused.
+            # ---------------------------------------------------------
+
+            high = float(
+                self.day_high
+            )
+
+            low = float(
+                self.day_low
+            )
+
+            current_price = float(
+                price
+            )
+
+            # NEW DAY HIGH -> LONG
+            if current_price > high:
+                stop_loss = low
+
+                self.day_high = Decimal(
+                    str(current_price)
+                )
+
+                self.save()
+
+                logging.info(
+                    "[%s] NEW DAY HIGH BREAK | "
+                    "OldHigh=%s | Break=%s | "
+                    "LONG | SL=DAY LOW %s",
+                    SYMBOL,
+                    high,
+                    current_price,
+                    stop_loss,
+                )
+
+                self.enter_trade(
+                    "LONG",
+                    current_price,
+                    stop_loss,
+                )
+
+                return
+
+            # NEW DAY LOW -> SHORT
+            if current_price < low:
+                stop_loss = high
+
+                self.day_low = Decimal(
+                    str(current_price)
+                )
+
+                self.save()
+
+                logging.info(
+                    "[%s] NEW DAY LOW BREAK | "
+                    "OldLow=%s | Break=%s | "
+                    "SHORT | SL=DAY HIGH %s",
+                    SYMBOL,
+                    low,
+                    current_price,
+                    stop_loss,
+                )
+
+                self.enter_trade(
+                    "SHORT",
+                    current_price,
+                    stop_loss,
+                )
+
+                return
+
+            # Flat and still inside range:
+            # Update day extremes only when price makes a new extreme.
+            changed = False
+
+            if (
+                current_price
+                > float(self.day_high)
+            ):
+                self.day_high = Decimal(
+                    str(current_price)
+                )
+                changed = True
+
+            if (
+                current_price
+                < float(self.day_low)
+            ):
+                self.day_low = Decimal(
+                    str(current_price)
+                )
+                changed = True
+
+            if changed:
+                self.save()
+
+    def calculate_statistics(self):
+        history = load_history()
+
+        # A trade is counted when a full close row exists.
+        closes = [
+            item
+            for item in history
+            if str(
+                item.get("reason", "")
+            ).endswith(
+                "FINAL"
+            )
+            or item.get("reason")
+            in (
+                "DAY_EXTREME_SL",
+            )
+        ]
+
+        return {
+            "total_trades": len(
+                closes
+            ),
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "win_rate": 0.0,
+        }
+
+    def dashboard_data(self):
+        position_data = {
+            "size": 0,
+            "entry_price": self.entry_price,
+            "stop_loss": self.stop_loss,
+            "unrealized_pnl": 0.0,
+            "leverage": self.leverage,
+            "liquidation_price": None,
+            "margin": None,
+            "mark_price": self.last_price,
+        }
+
+        try:
+            if self.product_id:
+                position_data = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+        except Exception:
+            pass
+
+        exchange_size = as_int(
+            position_data.get(
+                "size"
+            ),
+            0,
+        )
+
+        if exchange_size > 0:
+            direction = "LONG"
+
+        elif exchange_size < 0:
+            direction = "SHORT"
+
+        else:
+            direction = "FLAT"
+
+        history = load_history()
+
+        # Keep the response compatible with the existing dashboard:
+        # success, bot_running, current_price, balance, total_pnl,
+        # today_pnl, position, statistics, trades.
+        return {
+            "success": True,
+            "bot_running": self.bot_running,
+            "current_price": (
+                self.last_price
+                or 0.0
+            ),
+            "balance": (
+                float(
+                    self.client.balance()
+                )
+                if API_KEY
+                and API_SECRET
+                else 0.0
+            ),
+            "total_pnl": 0.0,
+            "today_pnl": 0.0,
+
+            "day_high": (
+                float(self.day_high)
+                if self.day_high is not None
+                else 0.0
+            ),
+
+            "day_low": (
+                float(self.day_low)
+                if self.day_low is not None
+                else 0.0
+            ),
+
+            "session_start": (
+                self.session.isoformat()
+                if self.session
+                else None
+            ),
+
+            "trading_start": "05:45",
+
+            "position": {
+                "direction": direction,
+                "size": abs(
+                    exchange_size
+                ),
+                "entry_price": (
+                    position_data.get(
+                        "entry_price"
+                    )
+                    or self.entry_price
+                    or 0.0
+                ),
+                "stop_loss": (
+                    self.stop_loss
+                ),
+                "unrealized_pnl": (
+                    position_data.get(
+                        "unrealized_pnl",
+                        0.0,
+                    )
+                    or 0.0
+                ),
+                "leverage": (
+                    position_data.get(
+                        "leverage"
+                    )
+                    or self.leverage
+                ),
+                "margin": (
+                    position_data.get(
+                        "margin"
+                    )
+                ),
+                "liquidation_price": (
+                    position_data.get(
+                        "liquidation_price"
+                    )
+                ),
+                "mark_price": (
+                    position_data.get(
+                        "mark_price"
+                    )
+                    or self.last_price
+                ),
+                "remaining_size": (
+                    abs(exchange_size)
+                ),
+                "original_size": (
+                    self.original_size
+                ),
+            },
+
+            "targets": [
+                {
+                    "r": index + 1,
+                    "price": (
+                        self.calculate_target_price(
+                            index
+                        )
+                        if self.position
+                        else 0.0
+                    ),
+                    "hit": (
+                        self.target_hit[index]
+                    ),
+                    "quantity": (
+                        self.target_quantities[
+                            index
+                        ]
+                    ),
+                }
+                for index in range(
+                    TARGET_COUNT
+                )
+            ],
+
+            "statistics": (
+                self.calculate_statistics()
+            ),
+
+            "trades": history[-50:],
+
+            "execution_uncertain": (
+                self.execution_uncertain
+            ),
+
+            "server_ip": get_public_ip(),
+        }
+
+
+BOT = XAUTTargetBot()
+
+
+class DashboardHandler(
+    SimpleHTTPRequestHandler
+):
+    def __init__(
+        self,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(
+            *args,
+            directory=BASE_DIR,
+            **kwargs,
+        )
+
+    def log_message(
+        self,
+        format_string,
+        *args,
+    ):
+        logging.info(
+            "HTTP | " + format_string,
+            *args,
+        )
+
+    def send_json(
+        self,
+        payload,
+        status=200,
+    ):
+        raw = json.dumps(
+            payload,
+            default=str,
+        ).encode(
+            "utf-8"
+        )
+
+        self.send_response(
+            status
+        )
+
+        self.send_header(
+            "Content-Type",
+            "application/json; charset=utf-8",
+        )
+
+        self.send_header(
+            "Content-Length",
+            str(len(raw)),
+        )
+
+        self.send_header(
+            "Cache-Control",
+            "no-store",
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Origin",
+            "*",
+        )
+
+        self.end_headers()
+
+        self.wfile.write(raw)
+
+    def read_json_body(self):
+        try:
+            length = int(
+                self.headers.get(
+                    "Content-Length",
+                    "0",
+                )
+            )
+
+            if length <= 0:
+                return {}
+
+            raw = self.rfile.read(
+                length
+            )
+
+            return json.loads(
+                raw.decode(
+                    "utf-8"
+                )
+            )
+
+        except Exception:
+            return {}
+
+    def do_GET(self):
+        parsed = urlparse(
+            self.path
+        )
+
+        path = parsed.path
+
+        if path == "/api/health":
+            self.send_json(
+                {
+                    "success": True,
+                    "online": True,
+                    "time": now_ist().isoformat(),
+                    "server_ip": get_public_ip(),
+                }
+            )
+            return
+
+        if path in (
+            "/api/dashboard",
+            "/api/state",
+        ):
+            self.send_json(
+                BOT.dashboard_data()
+            )
+            return
+
+        if path == "/api/accounts":
+            self.send_json(
+                {
+                    "success": True,
+                    "accounts": [
+                        {
+                            "id": ACCOUNT_ID,
+                            "account_id": ACCOUNT_ID,
+                            "name": ACCOUNT_NAME,
+                            "symbol": SYMBOL,
+                            "type": "primary",
+                            "enabled": BOT.bot_running,
+                        }
+                    ],
+                }
+            )
+            return
+
+        if path == "/api/history":
+            history = load_history()
+
+            self.send_json(
+                {
+                    "success": True,
+                    "history": history,
+                    "stats": (
+                        BOT.calculate_statistics()
+                    ),
+                }
+            )
+            return
+
+        super().do_GET()
+
+    def do_POST(self):
+        body = (
+            self.read_json_body()
+        )
+
+        if self.path == "/api/start":
+            self.send_json(
+                BOT.start_bot()
+            )
+            return
+
+        if self.path == "/api/stop":
+            self.send_json(
+                BOT.stop_bot()
+            )
+            return
+
+        if self.path == "/api/reconcile":
+            try:
+                BOT.prepare_product()
+
+                position = (
+                    BOT.client.position(
+                        BOT.product_id
+                    )
+                )
+
+                if as_int(
+                    position.get(
+                        "size"
+                    ),
+                    0,
+                ):
+                    BOT.adopt_exchange_position(
+                        position
+                    )
+
+                else:
+                    BOT.clear_position()
+
+                BOT.execution_uncertain = False
+                BOT.save()
+
+                self.send_json(
+                    {
+                        "success": True,
+                        "bot": (
+                            BOT.dashboard_data()
+                        ),
+                    }
+                )
+
+            except Exception as e:
+                self.send_json(
+                    {
+                        "success": False,
+                        "message": str(e),
+                    },
+                    500,
+                )
+
+            return
+
+        self.send_json(
+            {
+                "success": False,
+                "message": (
+                    "Unknown endpoint."
+                ),
+            },
+            404,
+        )
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+
+        self.send_header(
+            "Access-Control-Allow-Origin",
+            "*",
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Methods",
+            "GET,POST,OPTIONS",
+        )
+
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type",
+        )
+
+        self.end_headers()
+
+
+def extract_trade(message):
+    try:
+        data = json.loads(
+            message
+        )
+    except Exception:
+        return None, None
+
+    candidates = [data]
+
+    if isinstance(
+        data.get("payload"),
+        dict,
+    ):
+        candidates.append(
+            data["payload"]
+        )
+
+    if isinstance(
+        data.get("data"),
+        dict,
+    ):
+        candidates.append(
+            data["data"]
+        )
+
+    for item in candidates:
+        if not isinstance(
+            item,
+            dict,
+        ):
+            continue
+
+        symbol = (
+            item.get("symbol")
+            or item.get("product_symbol")
+            or item.get("sy")
+            or item.get("s")
+        )
+
+        price = (
+            item.get("price")
+            or item.get("last_price")
+            or item.get("close")
+            or item.get("p")
+        )
+
+        if (
+            symbol
+            and price is not None
+        ):
+            try:
+                return (
+                    str(symbol).upper(),
+                    float(price),
+                )
+            except Exception:
+                return None, None
+
+    return None, None
+
+
+def websocket_on_open(ws):
+    payload = {
+        "type": "subscribe",
+        "payload": {
+            "channels": [
+                {
+                    "name": "trades",
+                    "symbols": [
+                        SYMBOL
+                    ],
+                }
+            ]
+        },
+    }
+
+    ws.send(
+        json.dumps(payload)
+    )
+
+    logging.info(
+        "WEBSOCKET SUBSCRIBED | %s",
+        SYMBOL,
+    )
+
+
+def websocket_on_message(
+    ws,
+    message,
+):
+    symbol, price = (
+        extract_trade(
+            message
+        )
+    )
+
+    if symbol != SYMBOL:
+        return
+
+    try:
+        BOT.evaluate(
+            price
+        )
+
+    except Exception:
+        logging.exception(
+            "[%s] EVALUATION ERROR",
+            SYMBOL,
+        )
+
+
+def websocket_on_error(
+    ws,
+    error,
+):
+    logging.error(
+        "WEBSOCKET ERROR | %s",
+        error,
+    )
+
+
+def websocket_on_close(
+    ws,
+    code,
+    message,
+):
+    logging.warning(
+        "WEBSOCKET CLOSED | code=%s | msg=%s",
+        code,
+        message,
+    )
+
+
+def websocket_loop():
+    while True:
+        try:
+            ws = websocket.WebSocketApp(
+                WS_URL,
+                on_open=websocket_on_open,
+                on_message=websocket_on_message,
+                on_error=websocket_on_error,
+                on_close=websocket_on_close,
+            )
+
+            logging.info(
+                "CONNECTING WEBSOCKET | %s",
+                WS_URL,
+            )
+
+            ws.run_forever(
+                ping_interval=20,
+                ping_timeout=10,
+            )
+
+        except Exception as e:
+            logging.error(
+                "WEBSOCKET LOOP ERROR | %s",
+                e,
+            )
+
+        logging.info(
+            "WEBSOCKET RECONNECT IN %s SECONDS",
+            RECONNECT_SECONDS,
+        )
+
+        time.sleep(
+            RECONNECT_SECONDS
+        )
+
+
 def main():
- if not lock():return
- logging.info('==================================================');logging.info(' XAUTUSD BREAKOUT TARGET BOT');logging.info(' SESSION 05:30 | TRADING 05:45');logging.info(' HIGH BREAK = LONG | LOW BREAK = SHORT');logging.info(' LONG SL = DAY LOW | SHORT SL = DAY HIGH');logging.info(' LEVERAGE AUTO 100x -> 10x | MARGIN 10%%');logging.info(' 10 PARTS | TARGETS 1:1 TO 1:10 | NO REVERSAL');logging.info(' AFTER FLAT: MUST BREAK NEW HIGH/LOW, OLD BREAKOUT REUSED NEVER');logging.info('==================================================');ip();loadbots();startall();threading.Thread(target=wsloop,daemon=True).start();server=ThreadingHTTPServer(('0.0.0.0',PORT),Handler);logging.info('DASHBOARD PORT %s',PORT)
- try:server.serve_forever()
- except KeyboardInterrupt:pass
- finally:server.server_close()
-if __name__=='__main__':main()
+    if not acquire_single_process_lock():
+        return
+
+    logging.info(
+        "=================================================="
+    )
+    logging.info(
+        " XAUTUSD BREAKOUT TARGET BOT"
+    )
+    logging.info(
+        " SESSION 05:30 | TRADING 05:45"
+    )
+    logging.info(
+        " HIGH BREAK = LONG | LOW BREAK = SHORT"
+    )
+    logging.info(
+        " LONG SL = DAY LOW | SHORT SL = DAY HIGH"
+    )
+    logging.info(
+        " LEVERAGE AUTO 100x -> 10x | MARGIN 10%%"
+    )
+    logging.info(
+        " 10 PARTS | TARGETS 1:1 TO 1:10 | NO REVERSAL"
+    )
+    logging.info(
+        " AFTER FLAT: MUST BREAK NEW HIGH/LOW"
+    )
+    logging.info(
+        " DASHBOARD API COMPATIBLE"
+    )
+    logging.info(
+        "=================================================="
+    )
+
+    get_public_ip()
+
+    try:
+        BOT.prepare_product()
+
+        # Startup reconciliation is attempted but must NOT kill
+        # the dashboard if Delta temporarily rejects the request.
+        try:
+            position = BOT.client.position(
+                BOT.product_id
+            )
+
+            if as_int(
+                position.get(
+                    "size"
+                ),
+                0,
+            ):
+                BOT.adopt_exchange_position(
+                    position
+                )
+
+            BOT.execution_uncertain = False
+
+        except Exception as e:
+            logging.error(
+                "STARTUP RECONCILIATION ERROR | %s",
+                e,
+            )
+
+            BOT.execution_uncertain = True
+            BOT.save()
+
+        result = BOT.start_bot()
+
+        logging.info(
+            "AUTO START %s",
+            result,
+        )
+
+    except Exception as e:
+        logging.exception(
+            "BOT STARTUP ERROR | %s",
+            e,
+        )
+
+        BOT.bot_running = False
+        BOT.save()
+
+    websocket_thread = threading.Thread(
+        target=websocket_loop,
+        name="xaut-public-websocket",
+        daemon=True,
+    )
+
+    websocket_thread.start()
+
+    server = ThreadingHTTPServer(
+        (
+            "0.0.0.0",
+            PORT,
+        ),
+        DashboardHandler,
+    )
+
+    logging.info(
+        "DASHBOARD PORT %s",
+        PORT,
+    )
+
+    try:
+        server.serve_forever()
+
+    except KeyboardInterrupt:
+        logging.info(
+            "Shutdown requested."
+        )
+
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
