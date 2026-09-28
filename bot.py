@@ -115,7 +115,6 @@ def current_session_start(dt=None):
 
 def is_weekend(dt=None):
     dt = dt or now_ist()
-    # Saturday (5) anytime or Sunday (6) anytime
     if dt.weekday() == 5 or dt.weekday() == 6:
         return True
     return False
@@ -708,6 +707,12 @@ class XAUTTargetBot:
                 self.wait_until_flat()
                 self.target_hit[target_index] = True
                 self.record_partial_trade(target_index, quantity, exit_price)
+                
+                # Agar saare 10 targets hit ho gaye hain toh position poori tarah close ho jayegi aur clear ho jayएगी
+                if all(self.target_hit):
+                    self.record_full_close("ALL_TARGETS_COMPLETED", exit_price)
+                    self.clear_position()
+                
                 self.save()
                 return True
             except Exception:
@@ -796,7 +801,6 @@ class XAUTTargetBot:
             if not self.bot_running or self.execution_uncertain:
                 return
             current_time = now_ist()
-            # Weekend check: do not trade on Saturday or Sunday
             if is_weekend(current_time):
                 return
             self.last_price = float(price)
@@ -840,8 +844,8 @@ class XAUTTargetBot:
             low = float(self.day_low) if self.day_low else float(price)
             current_price = float(price)
 
-            # SL hit hone ke bad position flat ho jati hai, aur yahan se bot wapas 
-            # Day High ya Day Low ke break hone ka wait karega aur naya trade lega:
+            # Jab position flat ho chuki ho (SL ya Targets hit hone ke baad), 
+            # toh bot sirf naye fresh high ya low ke break hone par hi naya trade lega:
             if current_price > high:
                 stop_loss = low
                 self.day_high = Decimal(str(current_price))
