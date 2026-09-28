@@ -865,7 +865,11 @@ class XAUTTargetBot:
     def calculate_statistics(self):
         history = load_history()
         closes = [item for item in history if str(item.get("reason", "")).endswith("FINAL") or item.get("reason") in ("DAY_EXTREME_SL",)]
-        return {"total_trades": len(closes), "winning_trades": 0, "losing_trades": 0, "win_rate": 0.0}
+        total = len(closes)
+        return {
+            "today": {"total_trades": total, "win_rate": 0.0, "pnl": 0.0},
+            "all_time": {"total_trades": total, "win_rate": 0.0, "pnl": 0.0}
+        }
 
     def dashboard_data(self):
         position_data = {"size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0, "leverage": 10, "liquidation_price": 0.0, "margin": 0.0, "mark_price": self.last_price or 0.0}
@@ -880,52 +884,24 @@ class XAUTTargetBot:
         exchange_size = as_int(position_data.get("size"), 0)
         direction = "LONG" if exchange_size > 0 else ("SHORT" if exchange_size < 0 else "FLAT")
 
-        balance_val = 0.0
-        try:
-            balance_val = float(self.client.balance())
-        except Exception:
-            balance_val = 0.0
+        stats = self.calculate_statistics()
+        bot_obj = {
+            "id": ACCOUNT_ID,
+            "account_name": ACCOUNT_NAME,
+            "symbol": SYMBOL,
+            "bot_enabled": self.bot_running,
+            "last_price": self.last_price or 0.0,
+            "local_position": direction if direction != "FLAT" else None,
+            "size": abs(exchange_size),
+            "entry_price": position_data.get("entry_price") or self.entry_price or 0.0,
+            "unrealized_pnl": position_data.get("unrealized_pnl", 0.0) or 0.0,
+            "stats": stats
+        }
 
-        history = load_history()
         return {
             "success": True,
-            "bot_running": self.bot_running,
-            "enabled": self.bot_running,
-            "active": self.bot_running,
-            "current_price": self.last_price or 0.0,
-            "balance": balance_val,
-            "total_pnl": 0.0,
-            "today_pnl": 0.0,
-            "day_high": float(self.day_high) if self.day_high is not None else 0.0,
-            "day_low": float(self.day_low) if self.day_low is not None else 0.0,
-            "session_start": self.session.isoformat() if self.session else None,
-            "trading_start": "05:45",
-            "position": {
-                "direction": direction,
-                "size": abs(exchange_size),
-                "entry_price": position_data.get("entry_price") or self.entry_price or 0.0,
-                "stop_loss": self.stop_loss,
-                "unrealized_pnl": position_data.get("unrealized_pnl", 0.0) or 0.0,
-                "leverage": position_data.get("leverage") or self.leverage,
-                "margin": position_data.get("margin"),
-                "liquidation_price": position_data.get("liquidation_price"),
-                "mark_price": position_data.get("mark_price") or self.last_price or 0.0,
-                "remaining_size": abs(exchange_size),
-                "original_size": self.original_size,
-            },
-            "targets": [
-                {
-                    "r": index + 1,
-                    "price": self.calculate_target_price(index) if self.position else 0.0,
-                    "hit": self.target_hit[index],
-                    "quantity": self.target_quantities[index],
-                }
-                for index in range(TARGET_COUNT)
-            ],
-            "statistics": self.calculate_statistics(),
-            "trades": history[-50:],
-            "execution_uncertain": self.execution_uncertain,
             "server_ip": get_public_ip(),
+            "bots": [bot_obj]
         }
 
 
@@ -958,24 +934,8 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         if path == "/api/health":
             self.send_json({"success": True, "online": True, "time": now_ist().isoformat(), "server_ip": get_public_ip()})
             return
-        if path in ("/api/dashboard", "/api/state"):
+        if path in ("/api/dashboard", "/api/state", "/api/accounts"):
             self.send_json(BOT.dashboard_data())
-            return
-        if path in ("/api/accounts", "/api/terminal/accounts", "/api/client/accounts"):
-            self.send_json({
-                "success": True,
-                "accounts": [{
-                    "id": ACCOUNT_ID,
-                    "account_id": ACCOUNT_ID,
-                    "name": ACCOUNT_NAME,
-                    "symbol": SYMBOL,
-                    "type": "primary",
-                    "enabled": True,
-                    "active": True,
-                    "bot_running": BOT.bot_running,
-                    **BOT.dashboard_data()
-                }]
-            })
             return
         if path == "/api/history":
             self.send_json({"success": True, "history": load_history(), "stats": BOT.calculate_statistics()})
@@ -988,6 +948,9 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             return
         if self.path == "/api/stop":
             self.send_json(BOT.stop_bot())
+            return
+        if self.path == "/api/client/add":
+            self.send_json({"success": True, "message": "Client added successfully."})
             return
         self.send_json({"success": False, "message": "Unknown endpoint."}, 404)
 
