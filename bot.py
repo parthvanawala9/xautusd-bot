@@ -255,11 +255,11 @@ class DeltaClient:
                 "liquidation_price": as_float(position.get("liquidation_price")),
                 "mark_price": as_float(position.get("mark_price")),
                 "unrealized_pnl": as_float(position.get("unrealized_pnl"), 0.0) or 0.0,
-                "leverage": as_int(position.get("leverage") or position.get("user_leverage"), 0) or None,
-                "margin": as_float(position.get("margin")),
+                "leverage": as_int(position.get("leverage") or position.get("user_leverage"), 10) or 10,
+                "margin": as_float(position.get("margin"), 0.0) or 0.0,
             }
         except Exception:
-            return {"size": 0, "unrealized_pnl": 0.0, "leverage": 10}
+            return {"size": 0, "unrealized_pnl": 0.0, "leverage": 10, "margin": 0.0}
 
     def balance(self):
         try:
@@ -710,6 +710,7 @@ class XAUTTargetBot:
                 self.client.reduce_only_market_close(self.product_id, signed_close_size)
                 self.wait_until_flat()
                 self.target_hit[target_index] = True
+                self.record_partial_trade(target_index, quantity, exit_price)
                 self.save()
                 return True
             except Exception:
@@ -862,17 +863,8 @@ class XAUTTargetBot:
                 self.day_low = Decimal(str(current_price))
                 self.save()
 
-    def calculate_statistics(self):
-        history = load_history()
-        closes = [item for item in history if str(item.get("reason", "")).endswith("FINAL") or item.get("reason") in ("DAY_EXTREME_SL",)]
-        total = len(closes)
-        return {
-            "today": {"total_trades": total, "win_rate": 0.0, "pnl": 0.0},
-            "all_time": {"total_trades": total, "win_rate": 0.0, "pnl": 0.0}
-        }
-
     def dashboard_data(self):
-        position_data = {"size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0, "leverage": 10, "liquidation_price": 0.0, "margin": 0.0, "mark_price": self.last_price or 0.0}
+        position_data = {"size": 0, "entry_price": 0.0, "stop_loss": 0.0, "unrealized_pnl": 0.0, "leverage": 10, "margin": 0.0}
         try:
             if self.product_id:
                 res_pos = self.client.position(self.product_id)
@@ -884,24 +876,47 @@ class XAUTTargetBot:
         exchange_size = as_int(position_data.get("size"), 0)
         direction = "LONG" if exchange_size > 0 else ("SHORT" if exchange_size < 0 else "FLAT")
 
-        stats = self.calculate_statistics()
+        balance_val = 0.0
+        try:
+            balance_val = float(self.client.balance())
+        except Exception:
+            balance_val = 0.0
+
+        active_target = "None"
+        if self.position:
+            for idx, hit in enumerate(self.target_hit):
+                if not hit:
+                    active_target = f"T{idx + 1} ({self.calculate_target_price(idx):.2f})"
+                    break
+
+        history = load_history()
         bot_obj = {
             "id": ACCOUNT_ID,
             "account_name": ACCOUNT_NAME,
             "symbol": SYMBOL,
             "bot_enabled": self.bot_running,
+            "balance": balance_val,
             "last_price": self.last_price or 0.0,
             "local_position": direction if direction != "FLAT" else None,
             "size": abs(exchange_size),
             "entry_price": position_data.get("entry_price") or self.entry_price or 0.0,
+            "stop_loss": self.stop_loss or position_data.get("stop_loss") or 0.0,
+            "leverage": position_data.get("leverage") or self.leverage,
+            "margin": position_data.get("margin") or 0.0,
             "unrealized_pnl": position_data.get("unrealized_pnl", 0.0) or 0.0,
-            "stats": stats
+            "day_high": float(self.day_high) if self.day_high is not None else 0.0,
+            "day_low": float(self.day_low) if self.day_low is not None else 0.0,
+            "active_target": active_target,
+            "stats": {
+                "today": {"total_trades": len(history), "pnl": 0.0}
+            }
         }
 
         return {
             "success": True,
             "server_ip": get_public_ip(),
-            "bots": [bot_obj]
+            "bots": [bot_obj],
+            "trades": history[-50:]
         }
 
 
@@ -938,7 +953,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             self.send_json(BOT.dashboard_data())
             return
         if path == "/api/history":
-            self.send_json({"success": True, "history": load_history(), "stats": BOT.calculate_statistics()})
+            self.send_json({"success": True, "history": load_history()})
             return
         super().do_GET()
 
