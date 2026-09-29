@@ -1837,6 +1837,77 @@ class XAUTTargetBot:
         self.execution_uncertain = False
 
     # ========================================================
+    # RECOVER FROZEN STRATEGY STATE
+    #
+    # A live exchange position does not necessarily contain the
+    # bot's strategy SL because the strategy uses a local/frozen
+    # day-extreme stop. If an older state file lost that value,
+    # recover it ONCE from the current session extreme, only when
+    # that extreme is on the correct side of the entry. Then save
+    # it so future restarts keep the same frozen SL.
+    # ========================================================
+
+    def recover_missing_strategy_state(self):
+
+        if not self.position or self.entry_price is None:
+            return False
+
+        changed = False
+
+        # Rebuild original size / target quantities if needed.
+        if self.original_size <= 0 and self.remaining_size > 0:
+            self.original_size = self.remaining_size
+            changed = True
+
+        if (
+            sum(self.target_quantities) <= 0
+            and self.original_size > 0
+        ):
+            self.target_quantities = self.split_into_ten_parts(
+                self.original_size
+            )
+            self.target_hit = [
+                quantity <= 0
+                for quantity in self.target_quantities
+            ]
+            changed = True
+
+        # Recover the frozen strategy stop only if it can be
+        # reconstructed safely from the current session extreme.
+        if self.stop_loss <= 0:
+
+            if self.day_high is None or self.day_low is None:
+                try:
+                    high, low = self.get_session_high_low(self.session)
+                    if high is not None:
+                        self.day_high = high
+                        changed = True
+                    if low is not None:
+                        self.day_low = low
+                        changed = True
+                except Exception:
+                    pass
+
+            entry = Decimal(str(self.entry_price))
+
+            if self.direction == "LONG" and self.day_low is not None:
+                candidate = Decimal(str(self.day_low))
+                if candidate > 0 and candidate < entry:
+                    self.stop_loss = float(candidate)
+                    changed = True
+
+            elif self.direction == "SHORT" and self.day_high is not None:
+                candidate = Decimal(str(self.day_high))
+                if candidate > entry:
+                    self.stop_loss = float(candidate)
+                    changed = True
+
+        if changed:
+            self.save()
+
+        return self.stop_loss > 0
+
+    # ========================================================
     # START BOT
     #
     # IMPORTANT:
@@ -1875,18 +1946,18 @@ class XAUTTargetBot:
                         exchange_position
                     )
 
-                    # If saved strategy state has entry + SL,
-                    # continue the active trade.
-                    #
-                    # If it does not, NEVER close the live
-                    # exchange position. Just mark state
-                    # uncertain so no new automated order is
-                    # placed until the state is recoverable.
+                    # Recover missing frozen SL / target state once
+                    # without closing or changing the exchange position.
+                    self.recover_missing_strategy_state()
+
                     if (
                         self.entry_price is None
                         or self.stop_loss <= 0
                     ):
 
+                        # We still never close the live position.
+                        # Automated entries/stops remain blocked until
+                        # strategy state is recoverable.
                         self.execution_uncertain = True
 
                         self.save()
@@ -1895,10 +1966,9 @@ class XAUTTargetBot:
                             "success": True,
                             "bot_running": True,
                             "message": (
-                                "Existing live position "
-                                "adopted. Position was "
-                                "NOT closed, but saved "
-                                "strategy state is incomplete."
+                                "Existing live position adopted. "
+                                "Position was NOT closed, but frozen "
+                                "strategy state could not be reconstructed."
                             )
                         }
 
@@ -3731,6 +3801,12 @@ class XAUTTargetBot:
 
             if self.position:
 
+                # If an older/restarted state is missing the frozen
+                # strategy SL or target quantities, reconstruct them
+                # before risk management / target checks.
+                if self.stop_loss <= 0:
+                    self.recover_missing_strategy_state()
+
                 if exchange_size == 0:
 
                     logging.warning(
@@ -4028,6 +4104,28 @@ class XAUTTargetBot:
             self.direction
             if self.direction
             else direction
+        )
+
+        # Keep dashboard values useful even if an older state file
+        # lost the frozen SL/target state. This only reconstructs
+        # local strategy state; it does NOT place or close orders.
+        if exchange_size and not self.position:
+            self.adopt_exchange_position(position_data)
+
+        if exchange_size and self.stop_loss <= 0:
+            self.recover_missing_strategy_state()
+
+        # Rebuild targets after any recovery.
+        targets = (
+            self.build_targets()
+            if exchange_size and self.position
+            else targets
+        )
+
+        active_target = (
+            self.active_target_data()
+            if exchange_size and self.position
+            else active_target
         )
 
         bot_obj = {
