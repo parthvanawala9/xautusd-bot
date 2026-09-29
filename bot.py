@@ -74,11 +74,14 @@ SYMBOL = "XAUTUSD"
 
 
 # ============================================================
-# SESSION
+# 12-HOUR DUAL SESSIONS CONFIGURATION
 # ============================================================
 
-SESSION_START = dtime(5, 30)
-TRADING_START = dtime(5, 45)
+MORNING_SESSION_START = dtime(5, 30)
+MORNING_TRADING_START = dtime(5, 45)
+
+EVENING_SESSION_START = dtime(17, 30)
+EVENING_TRADING_START = dtime(17, 45)
 
 
 # ============================================================
@@ -246,20 +249,17 @@ def as_float(value, default=None):
 
 def current_session_start(dt=None):
     dt = dt or now_ist()
+    t = dt.time()
 
-    base = dt.replace(
-        hour=5,
-        minute=30,
-        second=0,
-        microsecond=0
-    )
+    morning_base = dt.replace(hour=5, minute=30, second=0, microsecond=0)
+    evening_base = dt.replace(hour=17, minute=30, second=0, microsecond=0)
 
-    if dt.time() >= SESSION_START:
-        return base
-
-    return base - timedelta(
-        days=1
-    )
+    if dtime(5, 30) <= t < dtime(17, 30):
+        return morning_base
+    elif t >= dtime(17, 30):
+        return evening_base
+    else:
+        return evening_base - timedelta(days=1)
 
 
 def is_weekend(dt=None):
@@ -3004,7 +3004,7 @@ class XAUTTargetBot:
                 break
 
     # ========================================================
-    # NEW SESSION (UPDATED: 5:30 AM EXIT PENDING POSITION)
+    # DUAL SESSION RESET (05:30 AM & 05:30 PM)
     # ========================================================
 
     def reset_for_new_session(
@@ -3016,8 +3016,6 @@ class XAUTTargetBot:
 
             try:
 
-                # सुबह 5:30 बजे नया सेशन शुरू होने पर यदि कोई खुली पोजीशन या पेंडिंग ऑर्डर है, 
-                # तो उसे अनिवार्य रूप से बंद (Square Off) कर दिया जाएगा।
                 exchange_position = (
                     self.client.position(
                         self.product_id
@@ -3033,7 +3031,7 @@ class XAUTTargetBot:
 
                 if exchange_size != 0:
                     logging.info(
-                        "5:30 AM NEW SESSION | Closing existing live position of size: %s",
+                        "SESSION CHANGE (05:30) | Closing existing live position of size: %s",
                         exchange_size
                     )
                     self.client.cancel_all_orders(
@@ -3070,7 +3068,7 @@ class XAUTTargetBot:
                     pass
 
                 logging.info(
-                    "NEW SESSION INITIALIZED | %s | High=%s | Low=%s",
+                    "NEW 12H DUAL SESSION INITIALIZED | %s | High=%s | Low=%s",
                     new_session,
                     self.day_high,
                     self.day_low
@@ -3270,8 +3268,6 @@ class XAUTTargetBot:
 
             current_time = now_ist()
 
-            # वीकेंड (शनिवार और रविवार) पर बोट पूरी तरह से फ्लैट रहेगा और ट्रेड नहीं लेगा।
-            # यदि शनिवार सुबह 5:30 बजे भी कोई पोजीशन होगी तो वह reset_for_new_session में बंद हो चुकी होगी।
             if is_weekend(
                 current_time
             ):
@@ -3343,12 +3339,12 @@ class XAUTTargetBot:
 
                 self.save()
 
-            # 05:45 IST से पहले ट्रेडिंग बोट आर्म (Arm) नहीं होगा और ट्रेड नहीं लेगा
-            if (
-                current_time.time()
-                < TRADING_START
-            ):
+            # 12-hour dual sessions trading start buffer (05:30 - 05:45 AM/PM)
+            t = current_time.time()
+            in_morning_buffer = dtime(5, 30) <= t < dtime(5, 45)
+            in_evening_buffer = dtime(17, 30) <= t < dtime(17, 45)
 
+            if in_morning_buffer or in_evening_buffer:
                 if self.update_session_extremes(
                     current_price
                 ):
