@@ -1377,15 +1377,13 @@ class XAUTTargetBot:
         self,
         session_start
     ):
+        start_timestamp = int(session_start.timestamp())
+        current_timestamp = int(now_ist().timestamp())
 
         candles = self.client.candles(
             "1m",
-            int(
-                session_start.timestamp()
-            ),
-            int(
-                now_ist().timestamp()
-            )
+            start_timestamp,
+            current_timestamp
         )
 
         highest = None
@@ -1399,6 +1397,9 @@ class XAUTTargetBot:
                     candle,
                     dict
                 ):
+                    c_time = as_int(candle.get("time") or candle.get("t"), 0)
+                    if c_time > 0 and c_time < start_timestamp:
+                        continue
 
                     high = Decimal(
                         str(
@@ -1423,6 +1424,9 @@ class XAUTTargetBot:
                     )
                     and len(candle) >= 4
                 ):
+                    c_time = as_int(candle[0], 0)
+                    if c_time > 0 and c_time < start_timestamp:
+                        continue
 
                     high = Decimal(
                         str(
