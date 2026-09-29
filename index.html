@@ -2,41 +2,96 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
   <title>Delta Pro AutoTrader | Professional Terminal</title>
+
   <style>
     :root {
       --bg-app: #050811;
       --bg-card: #0b1120;
+      --bg-card-2: #030712;
       --border-color: #1e293b;
+
       --accent-gold: #f59e0b;
       --accent-green: #10b981;
       --accent-red: #ef4444;
+      --accent-blue: #38bdf8;
+      --accent-purple: #a78bfa;
+
       --text-main: #f8fafc;
       --text-muted: #94a3b8;
     }
 
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html {
+      background: var(--bg-app);
+    }
 
     body {
       background-color: var(--bg-app);
       color: var(--text-main);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        Arial,
+        sans-serif;
+
       padding: 20px;
+      min-height: 100vh;
     }
 
-    .terminal-container { max-width: 1600px; margin: 0 auto; }
+    button,
+    input {
+      font-family: inherit;
+    }
+
+    button {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .terminal-container {
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+
+    /* ======================================================
+       HEADER
+       ====================================================== */
 
     .terminal-header {
-      background: linear-gradient(135deg, #0b1120 0%, #111827 100%);
+      background:
+        linear-gradient(
+          135deg,
+          #0b1120 0%,
+          #111827 100%
+        );
+
       border: 1px solid var(--border-color);
       border-radius: 16px;
+
       padding: 24px;
+
       display: flex;
       justify-content: space-between;
       align-items: center;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+
+      box-shadow:
+        0 10px 30px rgba(0, 0, 0, 0.5);
+
       margin-bottom: 20px;
+
+      gap: 20px;
     }
 
     .header-title h1 {
@@ -47,269 +102,2579 @@
     }
 
     .server-badge {
-      background: rgba(56, 189, 248, 0.1);
-      border: 1px solid rgba(56, 189, 248, 0.3);
-      color: #38bdf8;
-      padding: 6px 14px;
+      background:
+        rgba(56, 189, 248, 0.1);
+
+      border: 1px solid
+        rgba(56, 189, 248, 0.3);
+
+      color: var(--accent-blue);
+
+      padding: 8px 14px;
+
       border-radius: 8px;
+
       font-size: 12px;
+
       font-family: monospace;
+
       font-weight: bold;
+
+      white-space: nowrap;
     }
+
+    /* ======================================================
+       MANAGEMENT
+       ====================================================== */
 
     .management-panel {
       background: var(--bg-card);
+
       border: 1px solid var(--border-color);
+
       border-radius: 16px;
-      padding: 24px;
+
+      padding: 20px;
+
       margin-bottom: 25px;
     }
 
     .management-top {
       display: flex;
+
       justify-content: space-between;
+
       align-items: center;
+
       flex-wrap: wrap;
+
       gap: 15px;
     }
 
+    .section-title {
+      color: var(--accent-gold);
+
+      font-size: 17px;
+
+      font-weight: 800;
+    }
+
+    .section-subtitle {
+      color: var(--text-muted);
+
+      font-size: 12px;
+
+      margin-top: 4px;
+    }
+
     .btn-gold {
-      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      background:
+        linear-gradient(
+          135deg,
+          #f59e0b 0%,
+          #d97706 100%
+        );
+
       color: white;
+
       border: none;
-      padding: 12px 20px;
+
+      padding: 11px 18px;
+
       border-radius: 10px;
+
       font-weight: 700;
+
       cursor: pointer;
+
       font-size: 13px;
     }
 
+    .btn-gold:hover {
+      opacity: 0.92;
+    }
+
+    /* ======================================================
+       ACCOUNTS
+       ====================================================== */
+
     #accounts-container {
       display: grid;
+
       grid-template-columns: 1fr;
+
       gap: 20px;
     }
-    @media (min-width: 900px) {
-      #accounts-container { grid-template-columns: repeat(2, 1fr); }
+
+    @media (min-width: 1100px) {
+      #accounts-container {
+        grid-template-columns:
+          repeat(2, minmax(0, 1fr));
+      }
     }
 
     .account-card {
       background: var(--bg-card);
+
       border: 1px solid var(--border-color);
+
       border-radius: 16px;
+
       padding: 20px;
-      box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+
+      box-shadow:
+        0 8px 20px
+        rgba(0, 0, 0, 0.3);
+
+      min-width: 0;
+    }
+
+    .account-header {
+      display: flex;
+
+      justify-content: space-between;
+
+      align-items: center;
+
+      margin-bottom: 12px;
+
+      gap: 10px;
+    }
+
+    .account-name {
+      font-size: 17px;
+
+      font-weight: 800;
+    }
+
+    .symbol-badge {
+      font-size: 11px;
+
+      font-family: monospace;
+
+      background: #1e293b;
+
+      padding: 5px 9px;
+
+      border-radius: 6px;
+
+      color: var(--accent-gold);
+
+      white-space: nowrap;
+    }
+
+    .status-line {
+      font-size: 12px;
+
+      color: var(--text-muted);
+
+      margin-bottom: 12px;
+
+      line-height: 1.7;
+    }
+
+    .status-active {
+      color: var(--accent-green);
+
+      font-weight: 800;
+    }
+
+    .status-inactive {
+      color: var(--accent-red);
+
+      font-weight: 800;
     }
 
     .btn-action {
-      padding: 10px 18px;
+      padding: 11px 18px;
+
       border: none;
+
       border-radius: 8px;
+
       font-weight: 800;
+
       cursor: pointer;
-      margin-top: 15px;
+
+      margin-top: 5px;
+
       width: 100%;
+
+      font-size: 13px;
     }
-    .btn-start { background: var(--accent-green); color: white; }
-    .btn-stop { background: var(--accent-red); color: white; }
+
+    .btn-start {
+      background:
+        var(--accent-green);
+
+      color: white;
+    }
+
+    .btn-stop {
+      background:
+        var(--accent-red);
+
+      color: white;
+    }
+
+    .btn-action:disabled {
+      opacity: 0.6;
+
+      cursor: wait;
+    }
+
+    /* ======================================================
+       LIVE / SESSION GRID
+       ====================================================== */
 
     .segment-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+
+      grid-template-columns:
+        repeat(2, minmax(0, 1fr));
+
       gap: 10px;
+
       margin-top: 15px;
     }
+
     .segment-box {
-      background: #030712;
+      background: var(--bg-card-2);
+
       border: 1px solid var(--border-color);
-      padding: 12px;
+
+      padding: 13px;
+
       border-radius: 10px;
+
       font-size: 12px;
+
+      min-width: 0;
     }
+
     .segment-box h4 {
       font-size: 11px;
+
       color: var(--accent-gold);
-      margin-bottom: 8px;
+
+      margin-bottom: 9px;
+
       text-transform: uppercase;
+
       letter-spacing: 0.5px;
     }
+
     .segment-box p {
-      margin-bottom: 4px;
+      margin-bottom: 5px;
+
       color: var(--text-muted);
+
+      line-height: 1.45;
     }
+
     .segment-box b {
       color: var(--text-main);
     }
-    .profit { color: var(--accent-green); font-weight: bold; }
-    .loss { color: var(--accent-red); font-weight: bold; }
+
+    .profit {
+      color:
+        var(--accent-green) !important;
+
+      font-weight: bold;
+    }
+
+    .loss {
+      color:
+        var(--accent-red) !important;
+
+      font-weight: bold;
+    }
+
+    .neutral {
+      color:
+        var(--text-muted) !important;
+
+      font-weight: bold;
+    }
+
+    /* ======================================================
+       PNL CARDS
+       ====================================================== */
+
+    .pnl-summary {
+      display: grid;
+
+      grid-template-columns:
+        repeat(3, minmax(0, 1fr));
+
+      gap: 10px;
+
+      margin-top: 12px;
+    }
+
+    .pnl-card {
+      background: #030712;
+
+      border: 1px solid var(--border-color);
+
+      border-radius: 10px;
+
+      padding: 12px;
+
+      text-align: center;
+    }
+
+    .pnl-card-title {
+      color: var(--text-muted);
+
+      font-size: 10px;
+
+      text-transform: uppercase;
+
+      letter-spacing: 0.6px;
+
+      margin-bottom: 6px;
+    }
+
+    .pnl-card-value {
+      font-size: 16px;
+
+      font-weight: 800;
+    }
+
+    /* ======================================================
+       TARGET SECTION
+       ====================================================== */
+
+    .targets-section {
+      margin-top: 15px;
+
+      background: #030712;
+
+      border: 1px solid var(--border-color);
+
+      border-radius: 12px;
+
+      overflow: hidden;
+    }
+
+    .targets-header {
+      padding: 13px 14px;
+
+      display: flex;
+
+      justify-content: space-between;
+
+      align-items: center;
+
+      gap: 10px;
+
+      border-bottom:
+        1px solid var(--border-color);
+
+      flex-wrap: wrap;
+    }
+
+    .targets-title {
+      color: var(--accent-gold);
+
+      font-size: 13px;
+
+      font-weight: 800;
+    }
+
+    .target-progress {
+      color: var(--text-muted);
+
+      font-size: 11px;
+    }
+
+    .target-table-wrapper {
+      overflow-x: auto;
+
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .target-table {
+      width: 100%;
+
+      min-width: 700px;
+
+      border-collapse: collapse;
+
+      font-size: 11px;
+    }
+
+    .target-table th,
+    .target-table td {
+      border-bottom:
+        1px solid var(--border-color);
+
+      padding: 9px 10px;
+
+      text-align: left;
+
+      white-space: nowrap;
+    }
+
+    .target-table th {
+      color: var(--accent-gold);
+
+      background: #020617;
+
+      font-size: 10px;
+
+      text-transform: uppercase;
+
+      letter-spacing: 0.4px;
+    }
+
+    .target-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .target-hit-row {
+      background:
+        rgba(16, 185, 129, 0.07);
+    }
+
+    .target-active-row {
+      background:
+        rgba(245, 158, 11, 0.10);
+    }
+
+    .target-number {
+      font-weight: 900;
+
+      color: var(--accent-gold);
+    }
+
+    .target-price {
+      font-weight: 800;
+
+      color: white;
+    }
+
+    .target-status {
+      font-weight: 800;
+
+      font-size: 10px;
+
+      padding: 4px 7px;
+
+      border-radius: 5px;
+
+      display: inline-block;
+    }
+
+    .status-hit {
+      color: var(--accent-green);
+
+      background:
+        rgba(16, 185, 129, 0.12);
+    }
+
+    .status-pending {
+      color: var(--accent-gold);
+
+      background:
+        rgba(245, 158, 11, 0.12);
+    }
+
+    .status-skipped {
+      color: var(--text-muted);
+
+      background:
+        rgba(148, 163, 184, 0.10);
+    }
+
+    .active-target-box {
+      margin: 12px;
+
+      border: 1px solid
+        rgba(245, 158, 11, 0.35);
+
+      background:
+        rgba(245, 158, 11, 0.07);
+
+      border-radius: 9px;
+
+      padding: 11px;
+
+      display: flex;
+
+      justify-content: space-between;
+
+      align-items: center;
+
+      gap: 10px;
+
+      flex-wrap: wrap;
+    }
+
+    .active-target-label {
+      color: var(--text-muted);
+
+      font-size: 10px;
+
+      text-transform: uppercase;
+    }
+
+    .active-target-value {
+      color: var(--accent-gold);
+
+      font-weight: 900;
+
+      font-size: 14px;
+    }
+
+    /* ======================================================
+       CLIENTS
+       ====================================================== */
+
+    .clients-section {
+      background: var(--bg-card);
+
+      border: 1px solid var(--border-color);
+
+      border-radius: 16px;
+
+      padding: 20px;
+
+      margin-top: 25px;
+    }
+
+    .client-form {
+      display: grid;
+
+      grid-template-columns:
+        minmax(0, 1fr)
+        minmax(0, 1fr)
+        auto;
+
+      gap: 10px;
+
+      margin-top: 15px;
+    }
+
+    .client-input {
+      width: 100%;
+
+      background: #030712;
+
+      border: 1px solid var(--border-color);
+
+      color: var(--text-main);
+
+      border-radius: 8px;
+
+      padding: 11px 12px;
+
+      outline: none;
+
+      font-size: 13px;
+    }
+
+    .client-input:focus {
+      border-color:
+        var(--accent-gold);
+    }
+
+    .clients-list {
+      display: grid;
+
+      grid-template-columns:
+        repeat(
+          auto-fit,
+          minmax(220px, 1fr)
+        );
+
+      gap: 10px;
+
+      margin-top: 15px;
+    }
+
+    .client-card {
+      background: #030712;
+
+      border: 1px solid var(--border-color);
+
+      border-radius: 10px;
+
+      padding: 12px;
+    }
+
+    .client-name {
+      font-weight: 800;
+
+      color: white;
+
+      margin-bottom: 4px;
+    }
+
+    .client-meta {
+      color: var(--text-muted);
+
+      font-size: 11px;
+
+      line-height: 1.5;
+    }
+
+    .empty-message {
+      color: var(--text-muted);
+
+      text-align: center;
+
+      padding: 18px;
+
+      font-size: 12px;
+    }
+
+    /* ======================================================
+       HISTORY
+       ====================================================== */
 
     .history-section {
       background: var(--bg-card);
+
       border: 1px solid var(--border-color);
+
       border-radius: 16px;
+
       padding: 20px;
+
       margin-top: 25px;
     }
+
+    .history-header {
+      display: flex;
+
+      justify-content: space-between;
+
+      align-items: center;
+
+      gap: 10px;
+
+      flex-wrap: wrap;
+    }
+
+    .history-summary {
+      font-size: 11px;
+
+      color: var(--text-muted);
+    }
+
+    .history-table-wrapper {
+      overflow-x: auto;
+
+      -webkit-overflow-scrolling: touch;
+    }
+
     .history-table {
       width: 100%;
+
+      min-width: 900px;
+
       border-collapse: collapse;
+
       margin-top: 15px;
+
       font-size: 12px;
     }
-    .history-table th, .history-table td {
+
+    .history-table th,
+    .history-table td {
       border: 1px solid var(--border-color);
-      padding: 8px 12px;
+
+      padding: 8px 10px;
+
       text-align: left;
+
+      white-space: nowrap;
     }
+
     .history-table th {
       color: var(--accent-gold);
+
       background: #030712;
+
+      font-size: 10px;
+
+      text-transform: uppercase;
+    }
+
+    .history-profit-row {
+      background:
+        rgba(16, 185, 129, 0.04);
+    }
+
+    .history-loss-row {
+      background:
+        rgba(239, 68, 68, 0.04);
+    }
+
+    /* ======================================================
+       LOADING
+       ====================================================== */
+
+    .loading-card {
+      background: var(--bg-card);
+
+      border: 1px solid var(--border-color);
+
+      border-radius: 16px;
+
+      padding: 40px;
+
+      text-align: center;
+
+      color: var(--text-muted);
+
+      grid-column: 1 / -1;
+    }
+
+    /* ======================================================
+       MOBILE
+       ====================================================== */
+
+    @media (max-width: 700px) {
+
+      body {
+        padding: 10px;
+      }
+
+      .terminal-header {
+        padding: 17px;
+
+        align-items: flex-start;
+
+        flex-direction: column;
+      }
+
+      .header-title h1 {
+        font-size: 21px;
+      }
+
+      .server-badge {
+        width: 100%;
+
+        text-align: center;
+      }
+
+      .segment-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .pnl-summary {
+        grid-template-columns: 1fr;
+      }
+
+      .client-form {
+        grid-template-columns: 1fr;
+      }
+
+      .btn-gold {
+        width: 100%;
+      }
+
+      .account-card {
+        padding: 15px;
+      }
+
+      .history-section,
+      .clients-section {
+        padding: 15px;
+      }
     }
   </style>
 </head>
+
 <body>
+
   <div class="terminal-container">
-    
-    <!-- HEADER -->
+
+    <!-- ====================================================
+         HEADER
+         ==================================================== -->
+
     <header class="terminal-header">
+
       <div class="header-title">
-        <div style="font-size: 10px; color: var(--text-muted); letter-spacing: 2px; font-weight: 800; text-transform: uppercase;">Institutional Grade Terminal</div>
-        <h1>Delta Pro AutoTrader</h1>
-        <p id="last-update" style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">Connected</p>
+
+        <div
+          style="
+            font-size:10px;
+            color:var(--text-muted);
+            letter-spacing:2px;
+            font-weight:800;
+            text-transform:uppercase;
+          "
+        >
+          Institutional Grade Terminal
+        </div>
+
+        <h1>
+          Delta Pro AutoTrader
+        </h1>
+
+        <p
+          id="last-update"
+          style="
+            font-size:11px;
+            color:var(--text-muted);
+            margin-top:4px;
+          "
+        >
+          Connecting...
+        </p>
+
       </div>
-      <div id="server-ip-display" class="server-badge">IP: Loading...</div>
+
+      <div
+        id="server-ip-display"
+        class="server-badge"
+      >
+        IP: Loading...
+      </div>
+
     </header>
 
-    <!-- ACCOUNTS GRID -->
+
+    <!-- ====================================================
+         MANAGEMENT / ACCOUNTS
+         ==================================================== -->
+
     <main id="accounts-container">
-      <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:16px; padding:40px; text-align:center; color:var(--text-muted); grid-column: 1 / -1;">
+
+      <div class="loading-card">
         Loading terminal accounts...
       </div>
+
     </main>
 
-    <!-- TRADE HISTORY -->
-    <section class="history-section">
-      <h3 style="font-size: 16px; color: var(--accent-gold); margin-bottom: 10px;">Trade History & Executions</h3>
-      <div style="overflow-x: auto;">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th>Date/Time</th>
-              <th>Symbol</th>
-              <th>Direction</th>
-              <th>Entry Price</th>
-              <th>Exit Price</th>
-              <th>Size</th>
-              <th>Reason / Target</th>
-            </tr>
-          </thead>
-          <tbody id="history-rows">
-            <tr><td colspan="7" style="text-align:center; color:var(--text-muted);">No trades recorded yet.</td></tr>
-          </tbody>
-        </table>
+
+    <!-- ====================================================
+         CLIENT MANAGEMENT
+         ==================================================== -->
+
+    <section class="clients-section">
+
+      <div class="history-header">
+
+        <div>
+          <div class="section-title">
+            Clients
+          </div>
+
+          <div class="section-subtitle">
+            Add and manage bot clients/accounts.
+          </div>
+        </div>
+
+        <button
+          class="btn-gold"
+          onclick="focusClientForm()"
+        >
+          + ADD CLIENT
+        </button>
+
       </div>
+
+
+      <div
+        id="client-form"
+        class="client-form"
+      >
+
+        <input
+          id="client-name"
+          class="client-input"
+          type="text"
+          placeholder="Client Name"
+        />
+
+        <input
+          id="client-account-name"
+          class="client-input"
+          type="text"
+          placeholder="Account Name"
+        />
+
+        <button
+          id="add-client-button"
+          class="btn-gold"
+          onclick="addClient()"
+        >
+          ADD CLIENT
+        </button>
+
+      </div>
+
+
+      <div
+        id="clients-list"
+        class="clients-list"
+      >
+        <div class="empty-message">
+          No clients added yet.
+        </div>
+      </div>
+
+    </section>
+
+
+    <!-- ====================================================
+         TRADE HISTORY
+         ==================================================== -->
+
+    <section class="history-section">
+
+      <div class="history-header">
+
+        <h3
+          style="
+            font-size:16px;
+            color:var(--accent-gold);
+          "
+        >
+          Trade History & Executions
+        </h3>
+
+        <div
+          id="history-summary"
+          class="history-summary"
+        >
+          Loading...
+        </div>
+
+      </div>
+
+
+      <div class="history-table-wrapper">
+
+        <table class="history-table">
+
+          <thead>
+
+            <tr>
+
+              <th>
+                Date/Time
+              </th>
+
+              <th>
+                Symbol
+              </th>
+
+              <th>
+                Direction
+              </th>
+
+              <th>
+                Entry Price
+              </th>
+
+              <th>
+                Exit Price
+              </th>
+
+              <th>
+                Size
+              </th>
+
+              <th>
+                Reason / Target
+              </th>
+
+              <th>
+                Leverage
+              </th>
+
+              <th>
+                PnL
+              </th>
+
+              <th>
+                Result
+              </th>
+
+            </tr>
+
+          </thead>
+
+          <tbody id="history-rows">
+
+            <tr>
+
+              <td
+                colspan="10"
+                style="
+                  text-align:center;
+                  color:var(--text-muted);
+                "
+              >
+                No trades recorded yet.
+              </td>
+
+            </tr>
+
+          </tbody>
+
+        </table>
+
+      </div>
+
     </section>
 
   </div>
 
+
+  <!-- ======================================================
+       JAVASCRIPT
+       ====================================================== -->
+
   <script>
-    async function fetchDashboard() {
-      try {
-        const res = await fetch('/api/dashboard');
-        const data = await res.json();
-        if (data.success) {
-          if (data.server_ip) {
-            document.getElementById('server-ip-display').innerText = 'IP: ' + data.server_ip;
-          }
-          document.getElementById('last-update').innerText = 'Last update: ' + new Date().toLocaleTimeString();
 
-          let html = '';
-          if (data.bots && data.bots.length > 0) {
-            data.bots.forEach(bot => {
-              html += `
-                <div class="account-card">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                    <h3 style="font-size: 16px; font-weight: 700;">${bot.account_name}</h3>
-                    <span style="font-size: 11px; font-family: monospace; background: #1e293b; padding: 4px 8px; border-radius: 6px; color: var(--accent-gold);">${bot.symbol}</span>
-                  </div>
-                  <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
-                    Status: <b>${bot.bot_enabled ? '🟢 ACTIVE' : '🔴 INACTIVE'}</b> | Balance: <b>$${Number(bot.balance || 0).toFixed(2)}</b> | LTP: <b>${bot.last_price || '-'}</b>
-                  </p>
-                  
-                  <button class="btn-action ${bot.bot_enabled ? 'btn-stop' : 'btn-start'}" onclick="toggleBot('${bot.id}', ${bot.bot_enabled})">
-                    ${bot.bot_enabled ? 'STOP BOT ⏹️' : 'START BOT ▶️'}
-                  </button>
+    /* ======================================================
+       HELPERS
+       ====================================================== */
 
-                  <div class="segment-grid">
-                    <div class="segment-box">
-                      <h4>Live Position</h4>
-                      <p>Dir: <b>${bot.local_position || 'FLAT'}</b></p>
-                      <p>Size: <b>${bot.size || 0}</b></p>
-                      <p>Entry: <b>${bot.entry_price || '-'}</b></p>
-                      <p>Stop Loss: <b style="color:var(--accent-red);">${bot.stop_loss || '-'}</b></p>
-                      <p>Leverage: <b>${bot.leverage || 10}x</b></p>
-                      <p>Margin: <b>$${Number(bot.margin || 0).toFixed(2)}</b></p>
-                      <p>PnL: <span class="${(bot.unrealized_pnl || 0) >= 0 ? 'profit' : 'loss'}">$${Number(bot.unrealized_pnl || 0).toFixed(2)}</span></p>
-                    </div>
-                    <div class="segment-box">
-                      <h4>Session & Targets</h4>
-                      <p>Day High: <b style="color:var(--accent-green);">${bot.day_high || '-'}</b></p>
-                      <p>Day Low: <b style="color:var(--accent-red);">${bot.day_low || '-'}</b></p>
-                      <p>Active Target: <b>${bot.active_target || 'None'}</b></p>
-                      <p>Trades: <b>${bot.stats.today.total_trades}</b></p>
-                      <p>Today PnL: <span class="${bot.stats.today.pnl >= 0 ? 'profit' : 'loss'}">$${Number(bot.stats.today.pnl).toFixed(2)}</span></p>
-                    </div>
-                  </div>
-                </div>
-              `;
-            });
-          } else {
-            html = `<div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:16px; padding:40px; text-align:center; color:var(--text-muted); grid-column: 1 / -1;">No active accounts or bots configured.</div>`;
-          }
-          document.getElementById('accounts-container').innerHTML = html;
+    function money(value) {
 
-          // History render
-          if (data.trades && data.trades.length > 0) {
-            let histHtml = '';
-            data.trades.slice().reverse().forEach(t => {
-              histHtml += `
-                <tr>
-                  <td>${t.date || '-'}</td>
-                  <td>${t.symbol || 'XAUTUSD'}</td>
-                  <td><b>${t.direction || '-'}</b></td>
-                  <td>${t.entry_price || '-'}</td>
-                  <td>${t.exit_price || '-'}</td>
-                  <td>${t.size || '-'}</td>
-                  <td><span style="color:var(--accent-gold);">${t.reason || '-'}</span></td>
-                </tr>
-              `;
-            });
-            document.getElementById('history-rows').innerHTML = histHtml;
-          }
+      const n = Number(value || 0);
+
+      return (
+        '$' +
+        n.toFixed(2)
+      );
+    }
+
+
+    function price(value) {
+
+      if (
+        value === null ||
+        value === undefined ||
+        value === ''
+      ) {
+        return '-';
+      }
+
+      const n = Number(value);
+
+      if (!Number.isFinite(n)) {
+        return '-';
+      }
+
+      return n.toFixed(2);
+    }
+
+
+    function integer(value) {
+
+      const n = Number(value || 0);
+
+      return n.toLocaleString(
+        'en-US',
+        {
+          maximumFractionDigits: 0
         }
-      } catch (e) {
-        console.error('Fetch error:', e);
-      }
+      );
     }
 
-    async function toggleBot(id, enabled) {
-      const endpoint = enabled ? '/api/stop' : '/api/start';
+
+    function pnlClass(value) {
+
+      const n = Number(value || 0);
+
+      if (n > 0) {
+        return 'profit';
+      }
+
+      if (n < 0) {
+        return 'loss';
+      }
+
+      return 'neutral';
+    }
+
+
+    function pnlText(value) {
+
+      const n = Number(value || 0);
+
+      if (n > 0) {
+        return '+' + money(n);
+      }
+
+      return money(n);
+    }
+
+
+    function escapeHtml(value) {
+
+      if (
+        value === null ||
+        value === undefined
+      ) {
+        return '';
+      }
+
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+
+    /* ======================================================
+       FETCH DASHBOARD
+       ====================================================== */
+
+    async function fetchDashboard() {
+
       try {
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id })
-        });
-        const result = await res.json();
-        alert(result.message || 'Done');
-        fetchDashboard();
-      } catch (err) {
-        console.error('Error toggling bot:', err);
+
+        const res = await fetch(
+          '/api/dashboard',
+          {
+            cache: 'no-store'
+          }
+        );
+
+        const data =
+          await res.json();
+
+
+        if (!data.success) {
+          return;
+        }
+
+
+        /* --------------------------------------------------
+           SERVER IP
+           -------------------------------------------------- */
+
+        if (data.server_ip) {
+
+          document.getElementById(
+            'server-ip-display'
+          ).innerText =
+            'IP: ' +
+            data.server_ip;
+        }
+
+
+        document.getElementById(
+          'last-update'
+        ).innerText =
+          'Last update: ' +
+          new Date()
+            .toLocaleTimeString();
+
+
+        /* --------------------------------------------------
+           ACCOUNTS
+           -------------------------------------------------- */
+
+        renderAccounts(
+          data.bots || []
+        );
+
+
+        /* --------------------------------------------------
+           HISTORY
+           -------------------------------------------------- */
+
+        renderHistory(
+          data.trades || []
+        );
+
+
+        /* --------------------------------------------------
+           CLIENTS
+           -------------------------------------------------- */
+
+        renderClients(
+          data.clients || []
+        );
+
+      } catch (e) {
+
+        console.error(
+          'Dashboard fetch error:',
+          e
+        );
+
+        document.getElementById(
+          'last-update'
+        ).innerText =
+          'Connection error';
       }
     }
 
-    setInterval(fetchDashboard, 3000);
+
+    /* ======================================================
+       RENDER ACCOUNTS
+       ====================================================== */
+
+    function renderAccounts(
+      bots
+    ) {
+
+      let html = '';
+
+
+      if (
+        !bots ||
+        bots.length === 0
+      ) {
+
+        html = `
+          <div class="loading-card">
+            No active accounts or bots configured.
+          </div>
+        `;
+
+        document.getElementById(
+          'accounts-container'
+        ).innerHTML = html;
+
+        return;
+      }
+
+
+      bots.forEach(
+        bot => {
+
+          html += renderBotCard(
+            bot
+          );
+
+        }
+      );
+
+
+      document.getElementById(
+        'accounts-container'
+      ).innerHTML = html;
+    }
+
+
+    /* ======================================================
+       BOT CARD
+       ====================================================== */
+
+    function renderBotCard(
+      bot
+    ) {
+
+      const enabled =
+        !!bot.bot_enabled;
+
+
+      const livePnl =
+        Number(
+          bot.unrealized_pnl || 0
+        );
+
+
+      const todayPnl =
+        Number(
+          bot.today_pnl ??
+          bot.stats?.today?.pnl ??
+          0
+        );
+
+
+      const totalClosed =
+        Number(
+          bot.total_closed_pnl || 0
+        );
+
+
+      const targets =
+        Array.isArray(
+          bot.targets
+        )
+        ? bot.targets
+        : [];
+
+
+      const hitCount =
+        Number(
+          bot.targets_hit || 0
+        );
+
+
+      const active =
+        bot.active_target;
+
+
+      let activeTargetText =
+        'None';
+
+
+      if (active) {
+
+        activeTargetText =
+          'T' +
+          active.number +
+          ' / ' +
+          active.label +
+          ' @ ' +
+          price(
+            active.price
+          );
+      }
+
+
+      return `
+
+        <div class="account-card">
+
+          <!-- ACCOUNT HEADER -->
+
+          <div class="account-header">
+
+            <h3 class="account-name">
+              ${escapeHtml(
+                bot.account_name ||
+                'Main'
+              )}
+            </h3>
+
+            <span class="symbol-badge">
+              ${escapeHtml(
+                bot.symbol ||
+                'XAUTUSD'
+              )}
+            </span>
+
+          </div>
+
+
+          <!-- STATUS -->
+
+          <p class="status-line">
+
+            Status:
+
+            <b
+              class="${
+                enabled
+                ? 'status-active'
+                : 'status-inactive'
+              }"
+            >
+              ${
+                enabled
+                ? '🟢 ACTIVE'
+                : '🔴 INACTIVE'
+              }
+            </b>
+
+            &nbsp; | &nbsp;
+
+            Balance:
+
+            <b>
+              ${money(
+                bot.balance
+              )}
+            </b>
+
+            &nbsp; | &nbsp;
+
+            LTP:
+
+            <b>
+              ${price(
+                bot.last_price
+              )}
+            </b>
+
+          </p>
+
+
+          <!-- START / STOP -->
+
+          <button
+            class="
+              btn-action
+              ${
+                enabled
+                ? 'btn-stop'
+                : 'btn-start'
+              }
+            "
+            onclick="
+              toggleBot(
+                '${escapeHtml(
+                  bot.id || 'primary'
+                )}',
+                ${enabled}
+              )
+            "
+          >
+
+            ${
+              enabled
+              ? 'STOP BOT ⏹️'
+              : 'START BOT ▶️'
+            }
+
+          </button>
+
+
+          <!-- LIVE / SESSION -->
+
+          <div class="segment-grid">
+
+
+            <!-- LIVE POSITION -->
+
+            <div class="segment-box">
+
+              <h4>
+                Live Position
+              </h4>
+
+              <p>
+                Dir:
+                <b>
+                  ${escapeHtml(
+                    bot.local_position ||
+                    'FLAT'
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Size:
+                <b>
+                  ${integer(
+                    bot.size
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Entry:
+                <b>
+                  ${price(
+                    bot.entry_price
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Stop Loss:
+                <b
+                  style="
+                    color:var(--accent-red);
+                  "
+                >
+                  ${price(
+                    bot.stop_loss
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Leverage:
+                <b>
+                  ${integer(
+                    bot.leverage || 10
+                  )}x
+                </b>
+              </p>
+
+              <p>
+                Margin:
+                <b>
+                  ${money(
+                    bot.margin
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Liquidation:
+                <b
+                  style="
+                    color:var(--accent-purple);
+                  "
+                >
+                  ${price(
+                    bot.liquidation_price
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Live PnL:
+                <span
+                  class="${pnlClass(
+                    livePnl
+                  )}"
+                >
+                  ${pnlText(
+                    livePnl
+                  )}
+                </span>
+              </p>
+
+              <p>
+                Exchange PnL:
+                <span
+                  class="${pnlClass(
+                    bot.exchange_unrealized_pnl
+                  )}"
+                >
+                  ${pnlText(
+                    bot.exchange_unrealized_pnl
+                  )}
+                </span>
+              </p>
+
+            </div>
+
+
+            <!-- SESSION -->
+
+            <div class="segment-box">
+
+              <h4>
+                Session & Targets
+              </h4>
+
+              <p>
+                Day High:
+                <b
+                  style="
+                    color:var(--accent-green);
+                  "
+                >
+                  ${price(
+                    bot.day_high
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Day Low:
+                <b
+                  style="
+                    color:var(--accent-red);
+                  "
+                >
+                  ${price(
+                    bot.day_low
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Active Target:
+                <b
+                  style="
+                    color:var(--accent-gold);
+                  "
+                >
+                  ${escapeHtml(
+                    activeTargetText
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Targets Hit:
+                <b>
+                  ${hitCount} / 10
+                </b>
+              </p>
+
+              <p>
+                Remaining Size:
+                <b>
+                  ${integer(
+                    bot.remaining_size
+                  )}
+                </b>
+              </p>
+
+              <p>
+                Trades:
+                <b>
+                  ${
+                    bot.stats?.today
+                    ?.total_trades ??
+                    0
+                  }
+                </b>
+              </p>
+
+              <p>
+                Today PnL:
+                <span
+                  class="${pnlClass(
+                    todayPnl
+                  )}"
+                >
+                  ${pnlText(
+                    todayPnl
+                  )}
+                </span>
+              </p>
+
+            </div>
+
+          </div>
+
+
+          <!-- PNL SUMMARY -->
+
+          <div class="pnl-summary">
+
+            <div class="pnl-card">
+
+              <div class="pnl-card-title">
+                Live PnL
+              </div>
+
+              <div
+                class="
+                  pnl-card-value
+                  ${pnlClass(
+                    livePnl
+                  )}
+                "
+              >
+                ${pnlText(
+                  livePnl
+                )}
+              </div>
+
+            </div>
+
+
+            <div class="pnl-card">
+
+              <div class="pnl-card-title">
+                Today Closed
+              </div>
+
+              <div
+                class="
+                  pnl-card-value
+                  ${pnlClass(
+                    todayPnl
+                  )}
+                "
+              >
+                ${pnlText(
+                  todayPnl
+                )}
+              </div>
+
+            </div>
+
+
+            <div class="pnl-card">
+
+              <div class="pnl-card-title">
+                Total Closed
+              </div>
+
+              <div
+                class="
+                  pnl-card-value
+                  ${pnlClass(
+                    totalClosed
+                  )}
+                "
+              >
+                ${pnlText(
+                  totalClosed
+                )}
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <!-- ACTIVE TARGET -->
+
+          ${
+            active
+            ? `
+              <div class="active-target-box">
+
+                <div>
+
+                  <div
+                    class="active-target-label"
+                  >
+                    Next Active Target
+                  </div>
+
+                  <div
+                    class="active-target-value"
+                  >
+                    T${active.number}
+                    -
+                    ${active.label}
+                  </div>
+
+                </div>
+
+                <div>
+
+                  <div
+                    class="active-target-label"
+                  >
+                    Target Price
+                  </div>
+
+                  <div
+                    class="active-target-value"
+                  >
+                    ${price(
+                      active.price
+                    )}
+                  </div>
+
+                </div>
+
+                <div>
+
+                  <div
+                    class="active-target-label"
+                  >
+                    Exit Quantity
+                  </div>
+
+                  <div
+                    class="active-target-value"
+                  >
+                    ${integer(
+                      active.quantity
+                    )}
+                  </div>
+
+                </div>
+
+              </div>
+            `
+            : ''
+          }
+
+
+          <!-- =================================================
+               ALL 10 TARGETS
+               ================================================= -->
+
+          <div class="targets-section">
+
+            <div class="targets-header">
+
+              <div class="targets-title">
+                10 TARGETS — 1R TO 10R
+              </div>
+
+              <div class="target-progress">
+
+                ${
+                  targets.length
+                  ? `${hitCount} / 10 TARGETS HIT`
+                  : 'No active trade'
+                }
+
+              </div>
+
+            </div>
+
+
+            ${
+              targets.length
+              ? `
+
+                <div class="target-table-wrapper">
+
+                  <table class="target-table">
+
+                    <thead>
+
+                      <tr>
+
+                        <th>
+                          Target
+                        </th>
+
+                        <th>
+                          Price
+                        </th>
+
+                        <th>
+                          Exit Qty
+                        </th>
+
+                        <th>
+                          Remaining
+                        </th>
+
+                        <th>
+                          Expected PnL
+                        </th>
+
+                        <th>
+                          Status
+                        </th>
+
+                      </tr>
+
+                    </thead>
+
+                    <tbody>
+
+                      ${targets
+                        .map(
+                          target => {
+
+                            const isActive =
+                              active &&
+                              Number(
+                                active.number
+                              ) ===
+                              Number(
+                                target.number
+                              );
+
+
+                            const rowClass =
+                              target.hit
+                              ? 'target-hit-row'
+                              : (
+                                isActive
+                                ? 'target-active-row'
+                                : ''
+                              );
+
+
+                            const statusClass =
+                              target.status ===
+                              'HIT'
+                              ? 'status-hit'
+                              : (
+                                target.status ===
+                                'PENDING'
+                                ? 'status-pending'
+                                : 'status-skipped'
+                              );
+
+
+                            return `
+
+                              <tr
+                                class="${rowClass}"
+                              >
+
+                                <td>
+
+                                  <span
+                                    class="target-number"
+                                  >
+                                    T${target.number}
+                                  </span>
+
+                                  &nbsp;
+
+                                  <b>
+                                    ${escapeHtml(
+                                      target.label
+                                    )}
+                                  </b>
+
+                                </td>
+
+
+                                <td>
+
+                                  <span
+                                    class="target-price"
+                                  >
+                                    ${price(
+                                      target.price
+                                    )}
+                                  </span>
+
+                                </td>
+
+
+                                <td>
+
+                                  <b>
+                                    ${integer(
+                                      target.quantity
+                                    )}
+                                  </b>
+
+                                </td>
+
+
+                                <td>
+
+                                  ${integer(
+                                    target.remaining_after
+                                  )}
+
+                                </td>
+
+
+                                <td>
+
+                                  <span
+                                    class="${pnlClass(
+                                      target.expected_pnl
+                                    )}"
+                                  >
+                                    ${pnlText(
+                                      target.expected_pnl
+                                    )}
+                                  </span>
+
+                                </td>
+
+
+                                <td>
+
+                                  <span
+                                    class="
+                                      target-status
+                                      ${statusClass}
+                                    "
+                                  >
+                                    ${
+                                      target.status
+                                    }
+                                  </span>
+
+                                </td>
+
+                              </tr>
+
+                            `;
+
+                          }
+                        )
+                        .join('')}
+
+                    </tbody>
+
+                  </table>
+
+                </div>
+
+              `
+              : `
+
+                <div
+                  class="empty-message"
+                >
+                  No active position.
+                  10 targets will appear
+                  immediately after a new trade.
+                </div>
+
+              `
+            }
+
+          </div>
+
+        </div>
+
+      `;
+    }
+
+
+    /* ======================================================
+       HISTORY
+       ====================================================== */
+
+    function renderHistory(
+      trades
+    ) {
+
+      const rows =
+        document.getElementById(
+          'history-rows'
+        );
+
+
+      if (
+        !trades ||
+        trades.length === 0
+      ) {
+
+        rows.innerHTML = `
+
+          <tr>
+
+            <td
+              colspan="10"
+              style="
+                text-align:center;
+                color:var(--text-muted);
+              "
+            >
+              No trades recorded yet.
+            </td>
+
+          </tr>
+
+        `;
+
+        document.getElementById(
+          'history-summary'
+        ).innerText =
+          'No closed trades';
+
+        return;
+      }
+
+
+      let totalPnl = 0;
+
+      let profitCount = 0;
+
+      let lossCount = 0;
+
+
+      const ordered =
+        trades
+          .slice()
+          .reverse();
+
+
+      let histHtml = '';
+
+
+      ordered.forEach(
+        t => {
+
+          const pnl =
+            Number(
+              t.pnl || 0
+            );
+
+
+          totalPnl += pnl;
+
+
+          if (pnl > 0) {
+            profitCount++;
+          }
+
+          if (pnl < 0) {
+            lossCount++;
+          }
+
+
+          const rowClass =
+            pnl > 0
+            ? 'history-profit-row'
+            : (
+              pnl < 0
+              ? 'history-loss-row'
+              : ''
+            );
+
+
+          const result =
+            t.pnl_type ||
+            (
+              pnl > 0
+              ? 'PROFIT'
+              : (
+                pnl < 0
+                ? 'LOSS'
+                : 'FLAT'
+              )
+            );
+
+
+          const resultClass =
+            pnlClass(
+              pnl
+            );
+
+
+          histHtml += `
+
+            <tr
+              class="${rowClass}"
+            >
+
+              <td>
+                ${escapeHtml(
+                  t.date || '-'
+                )}
+              </td>
+
+              <td>
+                ${escapeHtml(
+                  t.symbol ||
+                  'XAUTUSD'
+                )}
+              </td>
+
+              <td>
+
+                <b>
+                  ${escapeHtml(
+                    t.direction ||
+                    '-'
+                  )}
+                </b>
+
+              </td>
+
+              <td>
+                ${price(
+                  t.entry_price
+                )}
+              </td>
+
+              <td>
+                ${price(
+                  t.exit_price
+                )}
+              </td>
+
+              <td>
+                ${integer(
+                  t.size
+                )}
+              </td>
+
+              <td>
+
+                <span
+                  style="
+                    color:var(--accent-gold);
+                  "
+                >
+                  ${escapeHtml(
+                    t.reason ||
+                    '-'
+                  )}
+                </span>
+
+              </td>
+
+              <td>
+                ${integer(
+                  t.leverage ||
+                  0
+                )}x
+              </td>
+
+              <td>
+
+                <span
+                  class="${resultClass}"
+                >
+                  ${pnlText(
+                    pnl
+                  )}
+                </span>
+
+              </td>
+
+              <td>
+
+                <span
+                  class="${resultClass}"
+                >
+                  ${escapeHtml(
+                    result
+                  )}
+                </span>
+
+              </td>
+
+            </tr>
+
+          `;
+
+        }
+      );
+
+
+      rows.innerHTML =
+        histHtml;
+
+
+      document.getElementById(
+        'history-summary'
+      ).innerHTML = `
+
+        ${ordered.length}
+        executions
+        &nbsp; | &nbsp;
+
+        Profit:
+        <span class="profit">
+          ${profitCount}
+        </span>
+
+        &nbsp; | &nbsp;
+
+        Loss:
+        <span class="loss">
+          ${lossCount}
+        </span>
+
+        &nbsp; | &nbsp;
+
+        Total:
+        <span
+          class="${pnlClass(
+            totalPnl
+          )}"
+        >
+          ${pnlText(
+            totalPnl
+          )}
+        </span>
+
+      `;
+    }
+
+
+    /* ======================================================
+       CLIENTS
+       ====================================================== */
+
+    function renderClients(
+      clients
+    ) {
+
+      const container =
+        document.getElementById(
+          'clients-list'
+        );
+
+
+      if (
+        !clients ||
+        clients.length === 0
+      ) {
+
+        container.innerHTML = `
+
+          <div class="empty-message">
+
+            No clients added yet.
+
+          </div>
+
+        `;
+
+        return;
+      }
+
+
+      container.innerHTML =
+        clients
+          .map(
+            client => `
+
+              <div class="client-card">
+
+                <div class="client-name">
+
+                  ${escapeHtml(
+                    client.name ||
+                    client.account_name ||
+                    'Unnamed Client'
+                  )}
+
+                </div>
+
+                <div class="client-meta">
+
+                  Account:
+                  ${escapeHtml(
+                    client.account_name ||
+                    '-'
+                  )}
+
+                  <br />
+
+                  ID:
+                  ${escapeHtml(
+                    client.id ||
+                    '-'
+                  )}
+
+                  <br />
+
+                  ${
+                    client.created_at
+                    ? 'Added: ' +
+                      escapeHtml(
+                        client.created_at
+                      )
+                    : ''
+                  }
+
+                </div>
+
+              </div>
+
+            `
+          )
+          .join('');
+    }
+
+
+    /* ======================================================
+       ADD CLIENT
+       ====================================================== */
+
+    async function addClient() {
+
+      const nameInput =
+        document.getElementById(
+          'client-name'
+        );
+
+      const accountInput =
+        document.getElementById(
+          'client-account-name'
+        );
+
+      const button =
+        document.getElementById(
+          'add-client-button'
+        );
+
+
+      const name =
+        nameInput.value.trim();
+
+
+      const accountName =
+        accountInput.value.trim();
+
+
+      if (!name) {
+
+        alert(
+          'Please enter client name.'
+        );
+
+        nameInput.focus();
+
+        return;
+      }
+
+
+      button.disabled = true;
+
+      button.innerText =
+        'ADDING...';
+
+
+      try {
+
+        const response =
+          await fetch(
+            '/api/client/add',
+            {
+              method: 'POST',
+
+              headers: {
+                'Content-Type':
+                  'application/json'
+              },
+
+              body: JSON.stringify(
+                {
+                  name: name,
+
+                  account_name:
+                    accountName ||
+                    name
+                }
+              )
+            }
+          );
+
+
+        const result =
+          await response.json();
+
+
+        if (
+          result.success
+        ) {
+
+          nameInput.value = '';
+
+          accountInput.value = '';
+
+          renderClients(
+            result.clients ||
+            []
+          );
+
+          alert(
+            result.message ||
+            'Client added successfully.'
+          );
+
+        } else {
+
+          alert(
+            result.message ||
+            'Unable to add client.'
+          );
+
+        }
+
+      } catch (error) {
+
+        console.error(
+          'Add client error:',
+          error
+        );
+
+        alert(
+          'Unable to add client.'
+        );
+
+      } finally {
+
+        button.disabled = false;
+
+        button.innerText =
+          'ADD CLIENT';
+      }
+    }
+
+
+    /* ======================================================
+       FOCUS CLIENT FORM
+       ====================================================== */
+
+    function focusClientForm() {
+
+      const input =
+        document.getElementById(
+          'client-name'
+        );
+
+
+      if (input) {
+
+        input.focus();
+
+        input.scrollIntoView(
+          {
+            behavior: 'smooth',
+            block: 'center'
+          }
+        );
+      }
+    }
+
+
+    /* ======================================================
+       START / STOP BOT
+       ====================================================== */
+
+    async function toggleBot(
+      id,
+      enabled
+    ) {
+
+      const endpoint =
+        enabled
+        ? '/api/stop'
+        : '/api/start';
+
+
+      try {
+
+        const res =
+          await fetch(
+            endpoint,
+            {
+              method: 'POST',
+
+              headers: {
+                'Content-Type':
+                  'application/json'
+              },
+
+              body: JSON.stringify(
+                {
+                  id: id
+                }
+              )
+            }
+          );
+
+
+        const result =
+          await res.json();
+
+
+        alert(
+          result.message ||
+          'Done'
+        );
+
+
+        fetchDashboard();
+
+      } catch (err) {
+
+        console.error(
+          'Bot toggle error:',
+          err
+        );
+
+        alert(
+          'Unable to change bot state.'
+        );
+      }
+    }
+
+
+    /* ======================================================
+       AUTO REFRESH
+       ====================================================== */
+
+    setInterval(
+      fetchDashboard,
+      3000
+    );
+
+
+    /* ======================================================
+       INITIAL LOAD
+       ====================================================== */
+
     fetchDashboard();
+
   </script>
+
 </body>
-</html>
+  </html>
