@@ -274,7 +274,122 @@
       color: var(--accent-gold);
     }
 
-    /* ======================================================\n       CLIENTS\n       ====================================================== */\n\n    .clients-section {\n      background: var(--bg-card);\n      border: 1px solid var(--border-color);\n      border-radius: 16px;\n      padding: 20px;\n      margin-top: 25px;\n    }\n\n    .clients-header {\n      display: flex;\n      justify-content: space-between;\n      align-items: center;\n      gap: 10px;\n      flex-wrap: wrap;\n      margin-bottom: 15px;\n    }\n\n    .clients-title {\n      font-size: 16px;\n      color: var(--accent-gold);\n      font-weight: 800;\n    }\n\n    .client-count {\n      color: var(--text-muted);\n      font-size: 12px;\n    }\n\n    .client-form {\n      display: grid;\n      grid-template-columns: 1fr 1fr 1fr auto;\n      gap: 10px;\n      margin-bottom: 16px;\n    }\n\n    .client-input {\n      width: 100%;\n      background: #030712;\n      color: var(--text-main);\n      border: 1px solid var(--border-color);\n      border-radius: 9px;\n      padding: 11px 12px;\n      outline: none;\n      font-size: 12px;\n    }\n\n    .client-input:focus {\n      border-color: var(--accent-gold);\n    }\n\n    .client-add-btn {\n      border: none;\n      border-radius: 9px;\n      padding: 11px 16px;\n      background: var(--accent-gold);\n      color: #111827;\n      font-weight: 900;\n      cursor: pointer;\n      white-space: nowrap;\n    }\n\n    .client-add-btn:disabled {\n      opacity: 0.6;\n      cursor: wait;\n    }\n\n    .clients-grid {\n      display: grid;\n      grid-template-columns: repeat(3, minmax(0, 1fr));\n      gap: 10px;\n    }\n\n    .client-card {\n      background: #030712;\n      border: 1px solid var(--border-color);\n      border-radius: 11px;\n      padding: 13px;\n    }\n\n    .client-card-top {\n      display: flex;\n      justify-content: space-between;\n      align-items: center;\n      gap: 8px;\n      margin-bottom: 8px;\n    }\n\n    .client-name {\n      font-weight: 900;\n      color: var(--text-main);\n    }\n\n    .client-active {\n      font-size: 9px;\n      font-weight: 900;\n      color: var(--accent-green);\n      background: rgba(16,185,129,0.12);\n      border-radius: 5px;\n      padding: 3px 6px;\n    }\n\n    .client-meta {\n      color: var(--text-muted);\n      font-size: 11px;\n      line-height: 1.6;\n    }\n\n    .client-meta b {\n      color: var(--text-main);\n    }\n\n    /* ======================================================
+    /* ======================================================
+       CLIENTS
+       ====================================================== */
+
+    .clients-section {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 20px;
+      margin-top: 25px;
+    }
+
+    .clients-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 15px;
+    }
+
+    .clients-title {
+      font-size: 16px;
+      color: var(--accent-gold);
+      font-weight: 800;
+    }
+
+    .client-count {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .client-form {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr auto;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .client-input {
+      width: 100%;
+      background: #030712;
+      color: var(--text-main);
+      border: 1px solid var(--border-color);
+      border-radius: 9px;
+      padding: 11px 12px;
+      outline: none;
+      font-size: 12px;
+    }
+
+    .client-input:focus {
+      border-color: var(--accent-gold);
+    }
+
+    .client-add-btn {
+      border: none;
+      border-radius: 9px;
+      padding: 11px 16px;
+      background: var(--accent-gold);
+      color: #111827;
+      font-weight: 900;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .client-add-btn:disabled {
+      opacity: 0.6;
+      cursor: wait;
+    }
+
+    .clients-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .client-card {
+      background: #030712;
+      border: 1px solid var(--border-color);
+      border-radius: 11px;
+      padding: 13px;
+    }
+
+    .client-card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .client-name {
+      font-weight: 900;
+      color: var(--text-main);
+    }
+
+    .client-active {
+      font-size: 9px;
+      font-weight: 900;
+      color: var(--accent-green);
+      background: rgba(16,185,129,0.12);
+      border-radius: 5px;
+      padding: 3px 6px;
+    }
+
+    .client-meta {
+      color: var(--text-muted);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+
+    .client-meta b {
+      color: var(--text-main);
+    }
+
+    /* ======================================================
        HISTORY
        ====================================================== */
 
@@ -306,7 +421,20 @@
       background: #030712;
     }
 
-    @media (max-width: 1000px) {\n      .client-form {\n        grid-template-columns: 1fr 1fr;\n      }\n\n      .client-add-btn {\n        width: 100%;\n      }\n\n      .clients-grid {\n        grid-template-columns: repeat(2, minmax(0, 1fr));\n      }\n\n
+    @media (max-width: 1000px) {
+      .client-form {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .client-add-btn {
+        width: 100%;
+      }
+
+      .clients-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+
       .target-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -412,7 +540,79 @@
       Loading terminal accounts...
     </div>
 
-  </main>\n\n\n  <!-- CLIENTS -->\n  <section class="clients-section">\n\n    <div class="clients-header">\n\n      <div class="clients-title">\n        Clients / Accounts\n      </div>\n\n      <div id="client-count" class="client-count">\n        0 clients\n      </div>\n\n    </div>\n\n    <form id="client-form" class="client-form">\n\n      <input\n        id="client-name"\n        class="client-input"\n        type="text"\n        placeholder="Client name *"\n        autocomplete="off"\n        required\n      />\n\n      <input\n        id="client-id"\n        class="client-input"\n        type="text"\n        placeholder="Client ID (optional)"\n        autocomplete="off"\n      />\n\n      <input\n        id="client-account-name"\n        class="client-input"\n        type="text"\n        placeholder="Account name (optional)"\n        autocomplete="off"\n      />\n\n      <button\n        id="client-add-btn"\n        class="client-add-btn"\n        type="submit"\n      >\n        + ADD CLIENT\n      </button>\n\n    </form>\n\n    <div id="clients-container" class="clients-grid">\n      <div style="\n        grid-column:1 / -1;\n        padding:20px;\n        text-align:center;\n        color:var(--text-muted);\n        background:#030712;\n        border:1px solid var(--border-color);\n        border-radius:10px;\n      ">\n        Loading clients...\n      </div>\n    </div>\n\n  </section>\n\n\n  <!-- HISTORY -->
+  </main>
+
+
+  <!-- CLIENTS -->
+  <section class="clients-section">
+
+    <div class="clients-header">
+
+      <div class="clients-title">
+        Clients / Accounts
+      </div>
+
+      <div id="client-count" class="client-count">
+        0 clients
+      </div>
+
+    </div>
+
+    <form id="client-form" class="client-form">
+
+      <input
+        id="client-name"
+        class="client-input"
+        type="text"
+        placeholder="Client name *"
+        autocomplete="off"
+        required
+      />
+
+      <input
+        id="client-id"
+        class="client-input"
+        type="text"
+        placeholder="Client ID (optional)"
+        autocomplete="off"
+      />
+
+      <input
+        id="client-account-name"
+        class="client-input"
+        type="text"
+        placeholder="Account name (optional)"
+        autocomplete="off"
+      />
+
+      <button
+        id="client-add-btn"
+        class="client-add-btn"
+        type="submit"
+      >
+        + ADD CLIENT
+      </button>
+
+    </form>
+
+    <div id="clients-container" class="clients-grid">
+      <div style="
+        grid-column:1 / -1;
+        padding:20px;
+        text-align:center;
+        color:var(--text-muted);
+        background:#030712;
+        border:1px solid var(--border-color);
+        border-radius:10px;
+      ">
+        Loading clients...
+      </div>
+    </div>
+
+  </section>
+
+
+  <!-- HISTORY -->
   <section class="history-section">
 
     <h3 style="
@@ -945,7 +1145,163 @@
   }
 
 
-  function escapeHtml(value) {\n\n    return String(value ?? "")\n      .replace(/&/g, "&amp;")\n      .replace(/</g, "&lt;")\n      .replace(/>/g, "&gt;")\n      .replace(/"/g, "&quot;")\n      .replace(/'/g, "&#039;");\n  }\n\n\n  function renderClients(clients) {\n\n    const list = Array.isArray(clients) ? clients : [];\n\n    const countEl = document.getElementById("client-count");\n\n    if (countEl) {\n      countEl.innerText = `${list.length} client${list.length === 1 ? "" : "s"}`;\n    }\n\n    const container = document.getElementById("clients-container");\n\n    if (!container) {\n      return;\n    }\n\n    if (!list.length) {\n\n      container.innerHTML = `\n        <div style="\n          grid-column:1 / -1;\n          padding:20px;\n          text-align:center;\n          color:var(--text-muted);\n          background:#030712;\n          border:1px solid var(--border-color);\n          border-radius:10px;\n        ">\n          No clients added yet.\n        </div>\n      `;\n\n      return;\n    }\n\n    container.innerHTML = list.slice().reverse().map((client) => {\n\n      const name = escapeHtml(client.name || client.account_name || "Unnamed");\n      const clientId = escapeHtml(client.id || "-");\n      const accountName = escapeHtml(client.account_name || client.name || "-");\n      const createdAt = escapeHtml(client.created_at || "-");\n\n      return `\n        <div class="client-card">\n\n          <div class="client-card-top">\n            <div class="client-name">${name}</div>\n            <div class="client-active">${client.active === false ? "INACTIVE" : "ACTIVE"}</div>\n          </div>\n\n          <div class="client-meta">\n            Client ID: <b>${clientId}</b><br>\n            Account: <b>${accountName}</b><br>\n            Added: <b>${createdAt}</b>\n          </div>\n\n        </div>\n      `;\n\n    }).join("");\n  }\n\n\n  async function addClient(event) {\n\n    event.preventDefault();\n\n    const nameEl = document.getElementById("client-name");\n    const idEl = document.getElementById("client-id");\n    const accountEl = document.getElementById("client-account-name");\n    const button = document.getElementById("client-add-btn");\n\n    const name = nameEl.value.trim();\n    const clientId = idEl.value.trim();\n    const accountName = accountEl.value.trim();\n\n    if (!name) {\n      alert("Client name is required.");\n      return;\n    }\n\n    button.disabled = true;\n    button.innerText = "ADDING...";\n\n    try {\n\n      const res = await fetch("/api/client/add", {\n        method: "POST",\n        headers: {\n          "Content-Type": "application/json"\n        },\n        body: JSON.stringify({\n          name,\n          client_id: clientId,\n          account_name: accountName || name\n        })\n      });\n\n      const result = await res.json();\n\n      if (!result.success) {\n        throw new Error(result.message || "Unable to add client.");\n      }\n\n      nameEl.value = "";\n      idEl.value = "";\n      accountEl.value = "";\n\n      renderClients(result.clients || []);\n      alert(result.message || "Client added successfully.");\n\n    } catch (error) {\n\n      console.error("Add client error:", error);\n      alert(error.message || "Unable to add client.");\n\n    } finally {\n\n      button.disabled = false;\n      button.innerText = "+ ADD CLIENT";\n\n    }\n  }\n\n\n  async function fetchClients() {\n\n    try {\n\n      const res = await fetch("/api/clients", {\n        cache: "no-store"\n      });\n\n      const data = await res.json();\n\n      if (data.success) {\n        renderClients(data.clients || []);\n      }\n\n    } catch (error) {\n      console.error("Client fetch error:", error);\n    }\n  }\n\n\n  async function fetchDashboard() {
+  function escapeHtml(value) {
+
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+
+  function renderClients(clients) {
+
+    const list = Array.isArray(clients) ? clients : [];
+
+    const countEl = document.getElementById("client-count");
+
+    if (countEl) {
+      countEl.innerText = `${list.length} client${list.length === 1 ? "" : "s"}`;
+    }
+
+    const container = document.getElementById("clients-container");
+
+    if (!container) {
+      return;
+    }
+
+    if (!list.length) {
+
+      container.innerHTML = `
+        <div style="
+          grid-column:1 / -1;
+          padding:20px;
+          text-align:center;
+          color:var(--text-muted);
+          background:#030712;
+          border:1px solid var(--border-color);
+          border-radius:10px;
+        ">
+          No clients added yet.
+        </div>
+      `;
+
+      return;
+    }
+
+    container.innerHTML = list.slice().reverse().map((client) => {
+
+      const name = escapeHtml(client.name || client.account_name || "Unnamed");
+      const clientId = escapeHtml(client.id || "-");
+      const accountName = escapeHtml(client.account_name || client.name || "-");
+      const createdAt = escapeHtml(client.created_at || "-");
+
+      return `
+        <div class="client-card">
+
+          <div class="client-card-top">
+            <div class="client-name">${name}</div>
+            <div class="client-active">${client.active === false ? "INACTIVE" : "ACTIVE"}</div>
+          </div>
+
+          <div class="client-meta">
+            Client ID: <b>${clientId}</b><br>
+            Account: <b>${accountName}</b><br>
+            Added: <b>${createdAt}</b>
+          </div>
+
+        </div>
+      `;
+
+    }).join("");
+  }
+
+
+  async function addClient(event) {
+
+    event.preventDefault();
+
+    const nameEl = document.getElementById("client-name");
+    const idEl = document.getElementById("client-id");
+    const accountEl = document.getElementById("client-account-name");
+    const button = document.getElementById("client-add-btn");
+
+    const name = nameEl.value.trim();
+    const clientId = idEl.value.trim();
+    const accountName = accountEl.value.trim();
+
+    if (!name) {
+      alert("Client name is required.");
+      return;
+    }
+
+    button.disabled = true;
+    button.innerText = "ADDING...";
+
+    try {
+
+      const res = await fetch("/api/client/add", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          name,
+          client_id: clientId,
+          account_name: accountName || name
+        })
+      });
+
+      const result = await res.json();
+
+      if (!result.success) {
+        throw new Error(result.message || "Unable to add client.");
+      }
+
+      nameEl.value = "";
+      idEl.value = "";
+      accountEl.value = "";
+
+      renderClients(result.clients || []);
+      alert(result.message || "Client added successfully.");
+
+    } catch (error) {
+
+      console.error("Add client error:", error);
+      alert(error.message || "Unable to add client.");
+
+    } finally {
+
+      button.disabled = false;
+      button.innerText = "+ ADD CLIENT";
+
+    }
+  }
+
+
+  async function fetchClients() {
+
+    try {
+
+      const res = await fetch("/api/clients", {
+        cache: "no-store"
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        renderClients(data.clients || []);
+      }
+
+    } catch (error) {
+      console.error("Client fetch error:", error);
+    }
+  }
+
+
+  async function fetchDashboard() {
 
     try {
 
