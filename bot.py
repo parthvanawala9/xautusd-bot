@@ -85,14 +85,11 @@ TRADING_START = dtime(5, 45)
 # STRATEGY
 # ============================================================
 
-# 10% of available balance is used as margin.
 MARGIN_FRACTION = Decimal("0.10")
 
 MAX_LEVERAGE = 100
 MIN_LEVERAGE = 10
 
-# Exactly 10 targets:
-# 1R, 2R, 3R ... 10R
 TARGET_COUNT = 10
 
 
@@ -245,17 +242,6 @@ def as_float(value, default=None):
         return float(value)
     except Exception:
         return default
-
-
-def decimal_value(value, default="0"):
-    try:
-        return Decimal(
-            str(value)
-        )
-    except Exception:
-        return Decimal(
-            str(default)
-        )
 
 
 def current_session_start(dt=None):
@@ -414,13 +400,9 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Target-Bot/3.1"
+                "User-Agent": "XAUTUSD-Target-Bot/3.2"
             }
         )
-
-    # ========================================================
-    # SIGN
-    # ========================================================
 
     def sign(
         self,
@@ -451,12 +433,8 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Target-Bot/3.1"
+            "User-Agent": "XAUTUSD-Target-Bot/3.2"
         }
-
-    # ========================================================
-    # API
-    # ========================================================
 
     def api(
         self,
@@ -521,10 +499,6 @@ class DeltaClient:
 
         return data
 
-    # ========================================================
-    # PRODUCT
-    # ========================================================
-
     def product(self):
         data = self.api(
             "GET",
@@ -544,10 +518,6 @@ class DeltaClient:
             )
 
         return result
-
-    # ========================================================
-    # POSITION
-    # ========================================================
 
     def position(
         self,
@@ -696,10 +666,6 @@ class DeltaClient:
                 "margin": 0.0
             }
 
-    # ========================================================
-    # MARGINED POSITION
-    # ========================================================
-
     def margined_position(
         self,
         product_id
@@ -805,10 +771,6 @@ class DeltaClient:
 
         return {}
 
-    # ========================================================
-    # BALANCE
-    # ========================================================
-
     def balance(self):
         data = self.api(
             "GET",
@@ -868,10 +830,6 @@ class DeltaClient:
             "USD/USDT balance not found."
         )
 
-    # ========================================================
-    # LEVERAGE
-    # ========================================================
-
     def set_leverage(
         self,
         product_id,
@@ -887,10 +845,6 @@ class DeltaClient:
             },
             auth=True
         )
-
-    # ========================================================
-    # ORDER SIZE
-    # ========================================================
 
     def calculate_order_size(
         self,
@@ -975,10 +929,6 @@ class DeltaClient:
             size_decimal
         )
 
-    # ========================================================
-    # MARKET ENTRY
-    # ========================================================
-
     def market_entry(
         self,
         product_id,
@@ -1010,10 +960,6 @@ class DeltaClient:
             body=body,
             auth=True
         )
-
-    # ========================================================
-    # REDUCE ONLY CLOSE
-    # ========================================================
 
     def reduce_only_market_close(
         self,
@@ -1052,10 +998,6 @@ class DeltaClient:
             auth=True
         )
 
-    # ========================================================
-    # CANCEL
-    # ========================================================
-
     def cancel_all_orders(
         self,
         product_id
@@ -1074,10 +1016,6 @@ class DeltaClient:
         except Exception:
             return None
 
-    # ========================================================
-    # CLIENT ID
-    # ========================================================
-
     def make_client_id(
         self,
         prefix
@@ -1087,10 +1025,6 @@ class DeltaClient:
             f"{int(time.time() * 1000)}_"
             f"{uuid.uuid4().hex[:8]}"
         )[-32:]
-
-    # ========================================================
-    # CANDLES
-    # ========================================================
 
     def candles(
         self,
@@ -1166,7 +1100,6 @@ class XAUTTargetBot:
 
         self.leverage = 10
 
-        # True means that target has already been executed.
         self.target_hit = [
             False
             for _ in range(
@@ -1174,8 +1107,6 @@ class XAUTTargetBot:
             )
         ]
 
-        # Exact number of contracts to close at
-        # every target.
         self.target_quantities = [
             0
             for _ in range(
@@ -1192,10 +1123,6 @@ class XAUTTargetBot:
         self.lock = threading.RLock()
 
         self.load_state()
-
-    # ========================================================
-    # SAVE
-    # ========================================================
 
     def save(self):
 
@@ -1251,10 +1178,6 @@ class XAUTTargetBot:
                 "execution_uncertain": self.execution_uncertain
             }
         )
-
-    # ========================================================
-    # LOAD STATE
-    # ========================================================
 
     def load_state(self):
 
@@ -1408,10 +1331,6 @@ class XAUTTargetBot:
                 e
             )
 
-    # ========================================================
-    # PRODUCT
-    # ========================================================
-
     def prepare_product(self):
 
         if self.product_id:
@@ -1438,10 +1357,6 @@ class XAUTTargetBot:
 
             return False
 
-    # ========================================================
-    # CONTRACT VALUE
-    # ========================================================
-
     def contract_value(self):
 
         if not self.product:
@@ -1457,10 +1372,6 @@ class XAUTTargetBot:
                 or "0.001"
             )
         )
-
-    # ========================================================
-    # SESSION HIGH / LOW
-    # ========================================================
 
     def get_session_high_low(
         self,
@@ -1546,10 +1457,6 @@ class XAUTTargetBot:
 
         return highest, lowest
 
-    # ========================================================
-    # WAIT FOR POSITION
-    # ========================================================
-
     def wait_for_position(
         self,
         expected_direction=None,
@@ -1615,10 +1522,6 @@ class XAUTTargetBot:
 
         return None
 
-    # ========================================================
-    # WAIT REMAINING SIZE
-    # ========================================================
-
     def wait_for_remaining_size(
         self,
         expected_max_size,
@@ -1670,10 +1573,6 @@ class XAUTTargetBot:
 
         return None
 
-    # ========================================================
-    # WAIT FLAT
-    # ========================================================
-
     def wait_until_flat(
         self,
         timeout=CLOSE_CONFIRM_TIMEOUT
@@ -1713,12 +1612,6 @@ class XAUTTargetBot:
             )
 
         return False
-
-    # ========================================================
-    # ADOPT EXISTING EXCHANGE POSITION
-    #
-    # STARTUP NEVER CLOSES THIS POSITION.
-    # ========================================================
 
     def adopt_exchange_position(
         self,
@@ -1775,8 +1668,6 @@ class XAUTTargetBot:
                 exchange_leverage
             )
 
-        # If target quantities are missing after restart,
-        # reconstruct the ten parts from the ORIGINAL size.
         if (
             sum(
                 self.target_quantities
@@ -1801,10 +1692,6 @@ class XAUTTargetBot:
             ]
 
         self.bot_running = True
-
-    # ========================================================
-    # CLEAR POSITION
-    # ========================================================
 
     def clear_position(self):
 
@@ -1836,17 +1723,6 @@ class XAUTTargetBot:
 
         self.execution_uncertain = False
 
-    # ========================================================
-    # RECOVER FROZEN STRATEGY STATE
-    #
-    # A live exchange position does not necessarily contain the
-    # bot's strategy SL because the strategy uses a local/frozen
-    # day-extreme stop. If an older state file lost that value,
-    # recover it ONCE from the current session extreme, only when
-    # that extreme is on the correct side of the entry. Then save
-    # it so future restarts keep the same frozen SL.
-    # ========================================================
-
     def recover_missing_strategy_state(self):
 
         if not self.position or self.entry_price is None:
@@ -1854,7 +1730,6 @@ class XAUTTargetBot:
 
         changed = False
 
-        # Rebuild original size / target quantities if needed.
         if self.original_size <= 0 and self.remaining_size > 0:
             self.original_size = self.remaining_size
             changed = True
@@ -1872,8 +1747,6 @@ class XAUTTargetBot:
             ]
             changed = True
 
-        # Recover the frozen strategy stop only if it can be
-        # reconstructed safely from the current session extreme.
         if self.stop_loss <= 0:
 
             if self.day_high is None or self.day_low is None:
@@ -1907,14 +1780,6 @@ class XAUTTargetBot:
 
         return self.stop_loss > 0
 
-    # ========================================================
-    # START BOT
-    #
-    # IMPORTANT:
-    # A restart/deploy NEVER closes an existing exchange
-    # position.
-    # ========================================================
-
     def start_bot(self):
 
         with self.lock:
@@ -1927,71 +1792,8 @@ class XAUTTargetBot:
                         "Unable to load XAUTUSD product."
                     )
 
-                exchange_position = (
-                    self.client.position(
-                        self.product_id
-                    )
-                )
-
-                exchange_size = as_int(
-                    exchange_position.get(
-                        "size"
-                    ),
-                    0
-                )
-
-                if exchange_size:
-
-                    self.adopt_exchange_position(
-                        exchange_position
-                    )
-
-                    # Recover missing frozen SL / target state once
-                    # without closing or changing the exchange position.
-                    self.recover_missing_strategy_state()
-
-                    if (
-                        self.entry_price is None
-                        or self.stop_loss <= 0
-                    ):
-
-                        # We still never close the live position.
-                        # Automated entries/stops remain blocked until
-                        # strategy state is recoverable.
-                        self.execution_uncertain = True
-
-                        self.save()
-
-                        return {
-                            "success": True,
-                            "bot_running": True,
-                            "message": (
-                                "Existing live position adopted. "
-                                "Position was NOT closed, but frozen "
-                                "strategy state could not be reconstructed."
-                            )
-                        }
-
-                    self.execution_uncertain = False
-
-                    self.trading_armed = True
-
-                    self.save()
-
-                    return {
-                        "success": True,
-                        "bot_running": True,
-                        "message": (
-                            "Existing live position "
-                            "adopted safely. "
-                            "No position was closed."
-                        )
-                    }
-
                 self.bot_running = True
-
                 self.execution_uncertain = False
-
                 self.save()
 
                 return {
@@ -2012,18 +1814,10 @@ class XAUTTargetBot:
                     "success": False,
                     "bot_running": self.bot_running,
                     "message": (
-                        "Startup reconciliation failed. "
-                        "No exchange position was closed."
+                        "Startup reconciliation failed."
                     ),
                     "error": str(e)
                 }
-
-    # ========================================================
-    # STOP BOT
-    #
-    # This is an explicit dashboard STOP and therefore closes
-    # the exchange position.
-    # ========================================================
 
     def stop_bot(self):
 
@@ -2095,14 +1889,6 @@ class XAUTTargetBot:
                     "success": False,
                     "message": str(e)
                 }
-
-    # ========================================================
-    # LIQUIDATION ESTIMATE
-    #
-    # Fixed syntax here:
-    # the original code was missing the closing ")" after
-    # Decimal(str(self.product.get(...))).
-    # ========================================================
 
     def calculate_liquidation_estimate(
         self,
@@ -2209,10 +1995,6 @@ class XAUTTargetBot:
 
         return None
 
-    # ========================================================
-    # LEVERAGE LADDER
-    # ========================================================
-
     def leverage_ladder(self):
 
         return list(
@@ -2222,10 +2004,6 @@ class XAUTTargetBot:
                 -10
             )
         )
-
-    # ========================================================
-    # SAFE LEVERAGE
-    # ========================================================
 
     def choose_safe_leverage(
         self,
@@ -2269,10 +2047,6 @@ class XAUTTargetBot:
 
         return MIN_LEVERAGE
 
-    # ========================================================
-    # SPLIT SIZE INTO 10 TARGETS
-    # ========================================================
-
     def split_into_ten_parts(
         self,
         total_size
@@ -2311,20 +2085,9 @@ class XAUTTargetBot:
             )
         ]
 
-        # Any remainder goes to Target 10 so that the sum
-        # of all ten quantities is EXACTLY original_size.
         quantities[-1] += remainder
 
         return quantities
-
-    # ========================================================
-    # TARGET PRICE
-    #
-    # 1R = entry +/- 1 x risk
-    # 2R = entry +/- 2 x risk
-    # ...
-    # 10R = entry +/- 10 x risk
-    # ========================================================
 
     def calculate_target_price(
         self,
@@ -2385,10 +2148,6 @@ class XAUTTargetBot:
 
         return None
 
-    # ========================================================
-    # TARGET PNL
-    # ========================================================
-
     def calculate_trade_pnl(
         self,
         entry_price,
@@ -2437,10 +2196,6 @@ class XAUTTargetBot:
         return float(
             pnl
         )
-
-    # ========================================================
-    # BUILD ALL 10 TARGETS
-    # ========================================================
 
     def build_targets(self):
 
@@ -2550,10 +2305,6 @@ class XAUTTargetBot:
 
         return targets
 
-    # ========================================================
-    # ACTIVE TARGET
-    # ========================================================
-
     def active_target_data(self):
 
         targets = self.build_targets()
@@ -2569,10 +2320,6 @@ class XAUTTargetBot:
                 return target
 
         return None
-
-    # ========================================================
-    # RECORD TARGET EXECUTION
-    # ========================================================
 
     def record_partial_trade(
         self,
@@ -2654,10 +2401,6 @@ class XAUTTargetBot:
         save_history(
             history
         )
-
-    # ========================================================
-    # RECORD STOP
-    # ========================================================
 
     def record_full_close(
         self,
@@ -2741,10 +2484,6 @@ class XAUTTargetBot:
         save_history(
             history
         )
-
-    # ========================================================
-    # ENTER TRADE
-    # ========================================================
 
     def enter_trade(
         self,
@@ -2865,8 +2604,6 @@ class XAUTTargetBot:
                     or price
                 )
 
-                # STOP LOSS IS FROZEN AT THE OPPOSITE
-                # DAY EXTREME USED FOR THE ENTRY.
                 self.stop_loss = float(
                     stop_loss
                 )
@@ -2892,7 +2629,6 @@ class XAUTTargetBot:
                     else leverage
                 )
 
-                # EXACTLY 10 TARGET PARTS.
                 self.target_quantities = (
                     self.split_into_ten_parts(
                         confirmed_size
@@ -2929,15 +2665,6 @@ class XAUTTargetBot:
                     self.leverage
                 )
 
-                for target in self.build_targets():
-
-                    logging.info(
-                        "TARGET %s | Price=%s | ExitQty=%s",
-                        target["label"],
-                        target["price"],
-                        target["quantity"]
-                    )
-
                 self.save()
 
                 return True
@@ -2958,10 +2685,6 @@ class XAUTTargetBot:
             finally:
 
                 self.order_in_progress = False
-
-    # ========================================================
-    # PARTIAL TARGET CLOSE
-    # ========================================================
 
     def close_partial(
         self,
@@ -3044,12 +2767,6 @@ class XAUTTargetBot:
 
                     self.save()
 
-                    logging.error(
-                        "Target close not confirmed. "
-                        "Target=%s",
-                        target_index + 1
-                    )
-
                     return False
 
                 confirmed_remaining = abs(
@@ -3060,21 +2777,6 @@ class XAUTTargetBot:
                         0
                     )
                 )
-
-                if (
-                    confirmed_remaining
-                    > expected_remaining
-                ):
-
-                    self.execution_uncertain = True
-
-                    self.save()
-
-                    logging.error(
-                        "Unexpected remaining size."
-                    )
-
-                    return False
 
                 self.target_hit[
                     target_index
@@ -3090,18 +2792,6 @@ class XAUTTargetBot:
                     exit_price
                 )
 
-                logging.info(
-                    "TARGET %s HIT | "
-                    "Price=%s | Exit=%s | Remaining=%s",
-                    target_index + 1,
-                    exit_price,
-                    actual_quantity,
-                    confirmed_remaining
-                )
-
-                # If all ten targets are completed, exchange
-                # position should already be flat because the
-                # ten quantities add up to original_size.
                 if all(
                     self.target_hit
                 ):
@@ -3128,17 +2818,7 @@ class XAUTTargetBot:
                                 final_size
                             )
 
-                            if not self.wait_until_flat():
-
-                                self.execution_uncertain = True
-
-                                self.save()
-
-                                return False
-
-                    logging.info(
-                        "ALL 10 TARGETS COMPLETED -> FLAT"
-                    )
+                            self.wait_until_flat()
 
                     self.clear_position()
 
@@ -3147,11 +2827,6 @@ class XAUTTargetBot:
                 return True
 
             except Exception as e:
-
-                logging.error(
-                    "PARTIAL CLOSE ERROR: %s",
-                    e
-                )
 
                 self.execution_uncertain = True
 
@@ -3162,10 +2837,6 @@ class XAUTTargetBot:
             finally:
 
                 self.order_in_progress = False
-
-    # ========================================================
-    # FULL STOP CLOSE
-    # ========================================================
 
     def close_all_at_stop(
         self,
@@ -3215,27 +2886,12 @@ class XAUTTargetBot:
                     exchange_size
                 )
 
-                if not self.wait_until_flat():
-
-                    self.execution_uncertain = True
-
-                    self.save()
-
-                    logging.error(
-                        "SL close not confirmed."
-                    )
-
-                    return False
+                self.wait_until_flat()
 
                 self.record_full_close(
                     "DAY_EXTREME_SL",
                     price,
                     close_size
-                )
-
-                logging.info(
-                    "STOP LOSS HIT -> FLAT | Price=%s",
-                    price
                 )
 
                 self.clear_position()
@@ -3246,11 +2902,6 @@ class XAUTTargetBot:
 
             except Exception as e:
 
-                logging.error(
-                    "STOP CLOSE ERROR: %s",
-                    e
-                )
-
                 self.execution_uncertain = True
 
                 self.save()
@@ -3260,10 +2911,6 @@ class XAUTTargetBot:
             finally:
 
                 self.order_in_progress = False
-
-    # ========================================================
-    # STOP CHECK
-    # ========================================================
 
     def check_stop(
         self,
@@ -3295,14 +2942,6 @@ class XAUTTargetBot:
             )
 
         return False
-
-    # ========================================================
-    # TARGET CHECK
-    #
-    # Every target is checked in order.
-    # If price jumps over multiple targets, the loop can
-    # execute all reached targets sequentially.
-    # ========================================================
 
     def check_targets(
         self,
@@ -3365,9 +3004,7 @@ class XAUTTargetBot:
                 break
 
     # ========================================================
-    # NEW SESSION
-    #
-    # Existing exchange position is NEVER closed here.
+    # NEW SESSION (UPDATED: 5:30 AM EXIT PENDING POSITION)
     # ========================================================
 
     def reset_for_new_session(
@@ -3379,6 +3016,8 @@ class XAUTTargetBot:
 
             try:
 
+                # सुबह 5:30 बजे नया सेशन शुरू होने पर यदि कोई खुली पोजीशन या पेंडिंग ऑर्डर है, 
+                # तो उसे अनिवार्य रूप से बंद (Square Off) कर दिया जाएगा।
                 exchange_position = (
                     self.client.position(
                         self.product_id
@@ -3392,37 +3031,25 @@ class XAUTTargetBot:
                     0
                 )
 
-                if exchange_size:
-
-                    self.adopt_exchange_position(
-                        exchange_position
-                    )
-
-                    self.session = (
-                        new_session
-                    )
-
-                    self.trading_armed = True
-
+                if exchange_size != 0:
                     logging.info(
-                        "New session while position active. "
-                        "Position preserved."
+                        "5:30 AM NEW SESSION | Closing existing live position of size: %s",
+                        exchange_size
                     )
+                    self.client.cancel_all_orders(
+                        self.product_id
+                    )
+                    self.client.reduce_only_market_close(
+                        self.product_id,
+                        exchange_size
+                    )
+                    self.wait_until_flat()
 
-                    self.save()
-
-                    return True
-
-                # Flat -> reset day extremes.
                 self.clear_position()
 
-                self.session = (
-                    new_session
-                )
-
+                self.session = new_session
                 self.day_high = None
                 self.day_low = None
-
                 self.trading_armed = False
 
                 try:
@@ -3443,7 +3070,7 @@ class XAUTTargetBot:
                     pass
 
                 logging.info(
-                    "NEW SESSION | %s | High=%s | Low=%s",
+                    "NEW SESSION INITIALIZED | %s | High=%s | Low=%s",
                     new_session,
                     self.day_high,
                     self.day_low
@@ -3466,16 +3093,10 @@ class XAUTTargetBot:
 
                 return False
 
-    # ========================================================
-    # UPDATE EXTREMES
-    # ========================================================
-
     def update_session_extremes(
         self,
         price
     ):
-
-        changed = False
 
         price_decimal = Decimal(
             str(price)
@@ -3491,7 +3112,7 @@ class XAUTTargetBot:
                 price_decimal
             )
 
-            changed = True
+            return True
 
         if (
             self.day_low is None
@@ -3503,13 +3124,9 @@ class XAUTTargetBot:
                 price_decimal
             )
 
-            changed = True
+            return True
 
-        return changed
-
-    # ========================================================
-    # LIVE PNL
-    # ========================================================
+        return False
 
     def calculate_live_pnl(
         self,
@@ -3564,10 +3181,6 @@ class XAUTTargetBot:
             pnl
         )
 
-    # ========================================================
-    # HISTORY PNL
-    # ========================================================
-
     def history_pnl(
         self,
         history=None
@@ -3594,10 +3207,6 @@ class XAUTTargetBot:
             )
 
         return total
-
-    # ========================================================
-    # TODAY PNL
-    # ========================================================
 
     def today_pnl(
         self,
@@ -3643,15 +3252,7 @@ class XAUTTargetBot:
         return total
 
     # ========================================================
-    # MAIN STRATEGY EVALUATION
-    #
-    # ENTRY RULE:
-    #   Only DAY HIGH BREAK -> LONG
-    #   Only DAY LOW BREAK  -> SHORT
-    #
-    # There is NO middle-of-range entry.
-    # After a stop, the next entry must again be a fresh
-    # day-high/day-low breakout.
+    # EVALUATE
     # ========================================================
 
     def evaluate(
@@ -3669,6 +3270,8 @@ class XAUTTargetBot:
 
             current_time = now_ist()
 
+            # वीकेंड (शनिवार और रविवार) पर बोट पूरी तरह से फ्लैट रहेगा और ट्रेड नहीं लेगा।
+            # यदि शनिवार सुबह 5:30 बजे भी कोई पोजीशन होगी तो वह reset_for_new_session में बंद हो चुकी होगी।
             if is_weekend(
                 current_time
             ):
@@ -3707,10 +3310,6 @@ class XAUTTargetBot:
                 ):
                     return
 
-            # ------------------------------------------------
-            # INITIAL SESSION HIGH / LOW
-            # ------------------------------------------------
-
             if (
                 self.day_high is None
                 or self.day_low is None
@@ -3744,10 +3343,7 @@ class XAUTTargetBot:
 
                 self.save()
 
-            # ------------------------------------------------
-            # BEFORE 05:45 IST
-            # ------------------------------------------------
-
+            # 05:45 IST से पहले ट्रेडिंग बोट आर्म (Arm) नहीं होगा और ट्रेड नहीं लेगा
             if (
                 current_time.time()
                 < TRADING_START
@@ -3762,10 +3358,6 @@ class XAUTTargetBot:
 
                 return
 
-            # ------------------------------------------------
-            # ARM
-            # ------------------------------------------------
-
             if not self.trading_armed:
 
                 self.trading_armed = True
@@ -3777,10 +3369,6 @@ class XAUTTargetBot:
                 self.save()
 
                 return
-
-            # ------------------------------------------------
-            # EXCHANGE POSITION
-            # ------------------------------------------------
 
             exchange_position = (
                 self.client.position(
@@ -3795,25 +3383,12 @@ class XAUTTargetBot:
                 0
             )
 
-            # =================================================
-            # ACTIVE POSITION
-            # =================================================
-
             if self.position:
 
-                # If an older/restarted state is missing the frozen
-                # strategy SL or target quantities, reconstruct them
-                # before risk management / target checks.
                 if self.stop_loss <= 0:
                     self.recover_missing_strategy_state()
 
                 if exchange_size == 0:
-
-                    logging.warning(
-                        "Exchange position is FLAT while "
-                        "local position was %s.",
-                        self.direction
-                    )
 
                     self.clear_position()
 
@@ -3825,18 +3400,15 @@ class XAUTTargetBot:
 
                     return
 
-                # STOP FIRST.
                 if self.check_stop(
                     current_price
                 ):
                     return
 
-                # THEN TARGETS.
                 self.check_targets(
                     current_price
                 )
 
-                # Update day extremes for the NEXT trade.
                 changed = (
                     self.update_session_extremes(
                         current_price
@@ -3848,10 +3420,6 @@ class XAUTTargetBot:
 
                 return
 
-            # =================================================
-            # NO LOCAL POSITION BUT EXCHANGE HAS ONE
-            # =================================================
-
             if exchange_size:
 
                 self.adopt_exchange_position(
@@ -3861,10 +3429,6 @@ class XAUTTargetBot:
                 self.save()
 
                 return
-
-            # =================================================
-            # FLAT -> ONLY FRESH DAY EXTREME BREAKOUT
-            # =================================================
 
             previous_high = (
                 float(
@@ -3882,10 +3446,6 @@ class XAUTTargetBot:
                 else current_price
             )
 
-            # ------------------------------------------------
-            # DAY HIGH BREAK -> LONG
-            # ------------------------------------------------
-
             if current_price > previous_high:
 
                 stop_loss = previous_low
@@ -3898,14 +3458,6 @@ class XAUTTargetBot:
 
                 self.save()
 
-                logging.info(
-                    "DAY HIGH BREAK -> LONG | "
-                    "Price=%s | PreviousHigh=%s | SL=%s",
-                    current_price,
-                    previous_high,
-                    stop_loss
-                )
-
                 self.enter_trade(
                     "LONG",
                     current_price,
@@ -3913,10 +3465,6 @@ class XAUTTargetBot:
                 )
 
                 return
-
-            # ------------------------------------------------
-            # DAY LOW BREAK -> SHORT
-            # ------------------------------------------------
 
             if current_price < previous_low:
 
@@ -3930,14 +3478,6 @@ class XAUTTargetBot:
 
                 self.save()
 
-                logging.info(
-                    "DAY LOW BREAK -> SHORT | "
-                    "Price=%s | PreviousLow=%s | SL=%s",
-                    current_price,
-                    previous_low,
-                    stop_loss
-                )
-
                 self.enter_trade(
                     "SHORT",
                     current_price,
@@ -3946,18 +3486,10 @@ class XAUTTargetBot:
 
                 return
 
-            # ------------------------------------------------
-            # NO BREAKOUT
-            # ------------------------------------------------
-
             if self.update_session_extremes(
                 current_price
             ):
                 self.save()
-
-    # ========================================================
-    # DASHBOARD
-    # ========================================================
 
     def dashboard_data(self):
 
@@ -4106,16 +3638,12 @@ class XAUTTargetBot:
             else direction
         )
 
-        # Keep dashboard values useful even if an older state file
-        # lost the frozen SL/target state. This only reconstructs
-        # local strategy state; it does NOT place or close orders.
         if exchange_size and not self.position:
             self.adopt_exchange_position(position_data)
 
         if exchange_size and self.stop_loss <= 0:
             self.recover_missing_strategy_state()
 
-        # Rebuild targets after any recovery.
         targets = (
             self.build_targets()
             if exchange_size and self.position
@@ -4232,7 +3760,6 @@ class XAUTTargetBot:
                 else 0.0
             ),
 
-            # ALL TEN TARGETS ARE SENT TO INDEX.HTML.
             "targets": targets,
 
             "active_target": active_target,
@@ -4332,16 +3859,8 @@ class XAUTTargetBot:
         }
 
 
-# ============================================================
-# GLOBAL BOT
-# ============================================================
-
 BOT = XAUTTargetBot()
 
-
-# ============================================================
-# CLIENT MANAGEMENT
-# ============================================================
 
 def add_client_record(
     payload
@@ -4412,10 +3931,6 @@ def add_client_record(
     }
 
 
-# ============================================================
-# DASHBOARD HTTP
-# ============================================================
-
 class DashboardHandler(
     SimpleHTTPRequestHandler
 ):
@@ -4439,10 +3954,6 @@ class DashboardHandler(
     ):
 
         pass
-
-    # ========================================================
-    # SEND JSON
-    # ========================================================
 
     def send_json(
         self,
@@ -4494,10 +4005,6 @@ class DashboardHandler(
         except Exception:
             pass
 
-    # ========================================================
-    # READ BODY
-    # ========================================================
-
     def read_json_body(self):
 
         try:
@@ -4525,10 +4032,6 @@ class DashboardHandler(
         except Exception:
 
             return {}
-
-    # ========================================================
-    # GET
-    # ========================================================
 
     def do_GET(self):
 
@@ -4607,10 +4110,6 @@ class DashboardHandler(
 
         super().do_GET()
 
-    # ========================================================
-    # POST
-    # ========================================================
-
     def do_POST(self):
 
         parsed = urlparse(
@@ -4657,10 +4156,6 @@ class DashboardHandler(
             404
         )
 
-    # ========================================================
-    # OPTIONS
-    # ========================================================
-
     def do_OPTIONS(self):
 
         self.send_response(
@@ -4684,10 +4179,6 @@ class DashboardHandler(
 
         self.end_headers()
 
-
-# ============================================================
-# WEBSOCKET PRICE PARSER
-# ============================================================
 
 def extract_trade(
     message
@@ -4797,10 +4288,6 @@ def extract_trade(
     return None, None
 
 
-# ============================================================
-# WEBSOCKET
-# ============================================================
-
 def websocket_on_open(
     ws
 ):
@@ -4882,10 +4369,6 @@ def websocket_on_close(
     )
 
 
-# ============================================================
-# WEBSOCKET LOOP
-# ============================================================
-
 def websocket_loop():
 
     while True:
@@ -4922,10 +4405,6 @@ def websocket_loop():
         )
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
 
     if not acquire_single_process_lock():
@@ -4955,11 +4434,6 @@ def main():
             "Startup error: %s",
             e
         )
-
-        # NEVER call stop_bot() here.
-        #
-        # A deploy/restart must not close a live
-        # exchange position.
 
         BOT.execution_uncertain = True
 
@@ -4998,10 +4472,6 @@ def main():
 
         server.server_close()
 
-
-# ============================================================
-# START
-# ============================================================
 
 if __name__ == "__main__":
 
