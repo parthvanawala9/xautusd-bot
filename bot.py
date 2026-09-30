@@ -85,7 +85,7 @@ EVENING_TRADING_START = dtime(17, 45)
 
 
 # ============================================================
-# STRATEGY
+# STRATEGY (1:3 RISK-REWARD CONFIGURATION)
 # ============================================================
 
 MARGIN_FRACTION = Decimal("0.10")
@@ -93,7 +93,7 @@ MARGIN_FRACTION = Decimal("0.10")
 MAX_LEVERAGE = 100
 MIN_LEVERAGE = 10
 
-TARGET_COUNT = 10
+TARGET_COUNT = 3  # 1:10 से बदलकर 3 किया गया (1R, 2R, 3R)
 
 
 # ============================================================
@@ -1679,7 +1679,7 @@ class XAUTTargetBot:
         ):
 
             self.target_quantities = (
-                self.split_into_ten_parts(
+                self.split_into_three_parts(
                     self.original_size
                 )
             )
@@ -1742,7 +1742,7 @@ class XAUTTargetBot:
             sum(self.target_quantities) <= 0
             and self.original_size > 0
         ):
-            self.target_quantities = self.split_into_ten_parts(
+            self.target_quantities = self.split_into_three_parts(
                 self.original_size
             )
             self.target_hit = [
@@ -2051,11 +2051,11 @@ class XAUTTargetBot:
 
         return MIN_LEVERAGE
 
-    def split_into_ten_parts(
+    def split_into_three_parts(
         self,
         total_size
     ):
-
+        """Total size को 3 बराबर भागों में विभाजित करता है (1:3 R:R के लिए)"""
         total_size = int(
             total_size
         )
@@ -2634,7 +2634,7 @@ class XAUTTargetBot:
                 )
 
                 self.target_quantities = (
-                    self.split_into_ten_parts(
+                    self.split_into_three_parts(
                         confirmed_size
                     )
                 )
