@@ -488,8 +488,99 @@ class Bot:
         return Decimal(str((self.product or {}).get("contract_value") or "0.001"))
 
     def calculate_supertrend(self, candles):
+        """
+        TradingView-style Supertrend:
+        - ATR Length = 10
+        - Multiplier = 3
+        - Source = HL2
+        - ATR = Wilder/RMA
+        - Direction is determined from the PREVIOUS Supertrend band.
+        - Intended signal is evaluated only on CLOSED candles.
+        """
         if len(candles) < SUPERTREND_PERIOD + 2:
             return None, None
+
+        highs = [float(x["high"]) for x in candles]
+        lows = [float(x["low"]) for x in candles]
+        closes = [float(x["close"]) for x in candles]
+        n = len(closes)
+        p = SUPERTREND_PERIOD
+        m = SUPERTREND_MULTIPLIER
+
+        # True Range
+        tr = [0.0] * n
+        for i in range(n):
+            if i == 0:
+                tr[i] = highs[i] - lows[i]
+            else:
+                tr[i] = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
+                )
+
+        # Wilder RMA ATR, equivalent to TradingView ta.rma(TR, length).
+        atr = [None] * n
+        if n <= p:
+            return None, None
+
+        atr[p] = sum(tr[1:p + 1]) / p
+        for i in range(p + 1, n):
+            atr[i] = ((atr[i - 1] * (p - 1)) + tr[i]) / p
+
+        upper = [None] * n
+        lower = [None] * n
+        direction = [None] * n
+        supertrend = [None] * n
+
+        # TradingView's first usable direction is DOWN until ATR is available.
+        first = p
+        hl2 = (highs[first] + lows[first]) / 2.0
+        upper[first] = hl2 + m * atr[first]
+        lower[first] = hl2 - m * atr[first]
+        direction[first] = "SELL"
+        supertrend[first] = upper[first]
+
+        for i in range(first + 1, n):
+            hl2 = (highs[i] + lows[i]) / 2.0
+            basic_upper = hl2 + m * atr[i]
+            basic_lower = hl2 - m * atr[i]
+
+            prev_upper = upper[i - 1]
+            prev_lower = lower[i - 1]
+            prev_close = closes[i - 1]
+
+            # TradingView final upper/lower band rules.
+            upper[i] = (
+                basic_upper
+                if basic_upper < prev_upper or prev_close > prev_upper
+                else prev_upper
+            )
+            lower[i] = (
+                basic_lower
+                if basic_lower > prev_lower or prev_close < prev_lower
+                else prev_lower
+            )
+
+            # TradingView direction rule:
+            # If previous ST was previous upper band, close above current
+            # upper band flips UP; otherwise remain DOWN.
+            # If previous ST was previous lower band, close below current
+            # lower band flips DOWN; otherwise remain UP.
+            prev_st = supertrend[i - 1]
+            if prev_st == prev_upper:
+                direction[i] = "BUY" if closes[i] > upper[i] else "SELL"
+            else:
+                direction[i] = "SELL" if closes[i] < lower[i] else "BUY"
+
+            supertrend[i] = lower[i] if direction[i] == "BUY" else upper[i]
+
+        return direction[-1], float(supertrend[-1])
+
+    def calculate_supertrend_series(self, candles):
+        """Return direction/ST for every usable closed candle."""
+        if len(candles) < SUPERTREND_PERIOD + 2:
+            return []
 
         highs = [float(x["high"]) for x in candles]
         lows = [float(x["low"]) for x in candles]
@@ -505,84 +596,102 @@ class Bot:
             else:
                 tr[i] = max(
                     highs[i] - lows[i],
-                    abs(highs[i] - closes[i-1]),
-                    abs(lows[i] - closes[i-1]),
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]),
                 )
 
         atr = [None] * n
-        atr[p] = sum(tr[1:p+1]) / p
-
-        for i in range(p+1, n):
-            atr[i] = ((atr[i-1] * (p-1)) + tr[i]) / p
+        atr[p] = sum(tr[1:p + 1]) / p
+        for i in range(p + 1, n):
+            atr[i] = ((atr[i - 1] * (p - 1)) + tr[i]) / p
 
         upper = [None] * n
         lower = [None] * n
         direction = [None] * n
         st = [None] * n
 
-        for i in range(p, n):
-            if atr[i] is None:
-                continue
+        upper[p] = (highs[p] + lows[p]) / 2.0 + m * atr[p]
+        lower[p] = (highs[p] + lows[p]) / 2.0 - m * atr[p]
+        direction[p] = "SELL"
+        st[p] = upper[p]
 
+        for i in range(p + 1, n):
             hl2 = (highs[i] + lows[i]) / 2.0
-            basic_upper = hl2 + m * atr[i]
-            basic_lower = hl2 - m * atr[i]
+            bu = hl2 + m * atr[i]
+            bl = hl2 - m * atr[i]
 
-            if i == p:
-                upper[i] = basic_upper
-                lower[i] = basic_lower
-                direction[i] = "BUY" if closes[i] >= hl2 else "SELL"
-                st[i] = lower[i] if direction[i] == "BUY" else upper[i]
-                continue
+            upper[i] = bu if bu < upper[i - 1] or closes[i - 1] > upper[i - 1] else upper[i - 1]
+            lower[i] = bl if bl > lower[i - 1] or closes[i - 1] < lower[i - 1] else lower[i - 1]
 
-            upper[i] = basic_upper if basic_upper < upper[i-1] or closes[i-1] > upper[i-1] else upper[i-1]
-            lower[i] = basic_lower if basic_lower > lower[i-1] or closes[i-1] < lower[i-1] else lower[i-1]
-
-            if direction[i-1] == "SELL":
+            if st[i - 1] == upper[i - 1]:
                 direction[i] = "BUY" if closes[i] > upper[i] else "SELL"
             else:
                 direction[i] = "SELL" if closes[i] < lower[i] else "BUY"
 
             st[i] = lower[i] if direction[i] == "BUY" else upper[i]
 
-        valid = [i for i in range(n) if direction[i] and st[i] is not None]
-        if not valid:
-            return None, None
-        i = valid[-1]
-        return direction[i], float(st[i])
+        return [
+            {
+                "bucket": candles[i]["bucket"],
+                "direction": direction[i],
+                "level": float(st[i]),
+                "close": closes[i],
+            }
+            for i in range(p, n)
+            if direction[i] is not None and st[i] is not None
+        ]
 
     def load_initial_candles(self):
         try:
             end_ts = int(time.time())
-            start_ts = end_ts - 60 * 250
+            start_ts = end_ts - 60 * 300
             raw = self.client.candles("1m", start_ts, end_ts)
 
             out = []
+            current_bucket = int(time.time() // 60)
+
             for x in raw:
                 c = normalize_candle(x)
-                if c:
-                    out.append(c)
+                if not c:
+                    continue
+
+                # CRITICAL:
+                # Historical API can include the currently forming 1-minute
+                # candle. Never use that candle for a startup signal.
+                if c["bucket"] >= current_bucket:
+                    continue
+
+                out.append(c)
 
             if not out:
-                raise RuntimeError("No 1m candles received.")
+                raise RuntimeError("No CLOSED 1m candles received.")
 
             unique = {x["bucket"]: x for x in out}
             self.candles = sorted(unique.values(), key=lambda x: x["bucket"])[-250:]
-            self.current_bucket = self.candles[-1]["bucket"]
 
-            direction, level = self.calculate_supertrend(self.candles)
-            self.supertrend_direction = direction
-            self.supertrend_level = level
+            # The last candle here is a CLOSED candle only.
+            self.current_bucket = current_bucket
 
-            # CRITICAL:
-            # Startup signal is baseline only. No trade on startup.
-            self.last_signal = direction
-            self.signal_initialized = direction is not None
+            series = self.calculate_supertrend_series(self.candles)
+            if not series:
+                raise RuntimeError("Not enough closed candles for Supertrend 10/3.")
+
+            last = series[-1]
+            self.supertrend_direction = last["direction"]
+            self.supertrend_level = last["level"]
+
+            # IMPORTANT:
+            # Startup only establishes a baseline. No startup trade.
+            self.last_signal = last["direction"]
+            self.signal_initialized = True
+            self.last_closed_bucket = last["bucket"]
 
             logging.info(
-                "SUPERTREND BASELINE | %s | level=%s | EXISTING POSITION WILL NOT BE TOUCHED",
-                direction,
-                level,
+                "SUPERTREND BASELINE | candle=%s | close=%.2f | direction=%s | level=%.2f | NO STARTUP TRADE",
+                last["bucket"],
+                last["close"],
+                last["direction"],
+                last["level"],
             )
             self.save()
             return True
@@ -891,57 +1000,86 @@ class Bot:
             unique = {x["bucket"]: x for x in self.candles}
             self.candles = sorted(unique.values(), key=lambda x: x["bucket"])[-250:]
 
-            direction, level = self.calculate_supertrend(self.candles)
-            if not direction:
+            series = self.calculate_supertrend_series(self.candles)
+            if not series:
                 return
+
+            current = series[-1]
+            direction = current["direction"]
+            level = current["level"]
 
             previous = self.last_signal
             self.supertrend_direction = direction
             self.supertrend_level = level
 
-            # Startup/current baseline: never trade here.
-            if not self.signal_initialized:
+            logging.info(
+                "CLOSED 1M CANDLE | bucket=%s | O=%.2f H=%.2f L=%.2f C=%.2f | ST=%s | ST_LEVEL=%.2f | PREV=%s",
+                candle["bucket"],
+                candle["open"],
+                candle["high"],
+                candle["low"],
+                candle["close"],
+                direction,
+                level,
+                previous,
+            )
+
+            # Baseline only. Never trade simply because bot started.
+            if not self.signal_initialized or previous is None:
                 self.last_signal = direction
                 self.signal_initialized = True
                 self.save()
                 return
 
-            # No flip = no trade.
+            # Same Supertrend direction = absolutely NO TRADE.
             if direction == previous:
                 self.save()
                 return
 
-            # REAL FLIP.
+            # Confirmed CLOSED-CANDLE FLIP.
             self.last_signal = direction
             self.save()
 
-            if is_market_closed() or self.last_price is None:
+            logging.info(
+                "CONFIRMED SUPERTREND FLIP | %s -> %s | candle_close=%.2f | st_level=%.2f | ACTION=%s",
+                previous,
+                direction,
+                candle["close"],
+                level,
+                "LONG" if direction == "BUY" else "SHORT",
+            )
+
+            if is_market_closed():
+                logging.info("FLIP ignored because market is closed.")
                 return
 
-            logging.info("SUPERTREND FLIP | %s -> %s | level=%s", previous, direction, level)
+            # Use the CLOSED candle close as the signal price.
+            # The actual market order executes at current market price,
+            # but the signal can only originate from this confirmed candle.
+            signal_price = float(candle["close"])
 
             pos = self.client.position(self.product_id)
             size = as_int(pos.get("size"), 0)
 
             if direction == "BUY":
                 if size < 0:
-                    if not self.close_position("SUPERTREND_SIGNAL_FLIP", self.last_price):
+                    if not self.close_position("SUPERTREND_SIGNAL_FLIP", self.last_price or signal_price):
                         return
                     size = 0
 
                 if size == 0:
-                    sl = float(level) if level and level > 0 else self.last_price * 0.99
-                    self.enter_trade("LONG", self.last_price, sl)
+                    sl = float(level)
+                    self.enter_trade("LONG", self.last_price or signal_price, sl)
 
             elif direction == "SELL":
                 if size > 0:
-                    if not self.close_position("SUPERTREND_SIGNAL_FLIP", self.last_price):
+                    if not self.close_position("SUPERTREND_SIGNAL_FLIP", self.last_price or signal_price):
                         return
                     size = 0
 
                 if size == 0:
-                    sl = float(level) if level and level > 0 else self.last_price * 1.01
-                    self.enter_trade("SHORT", self.last_price, sl)
+                    sl = float(level)
+                    self.enter_trade("SHORT", self.last_price or signal_price, sl)
 
     def on_candle(self, candle):
         if candle is None:
@@ -949,25 +1087,36 @@ class Bot:
 
         with self.lock:
             b = candle["bucket"]
+            current_live_bucket = int(time.time() // 60)
+
+            # Never process a future/invalid candle.
+            if b > current_live_bucket:
+                return
 
             if self.current_bucket is None:
-                self.current_bucket = b
-                self._upsert_candle(candle)
+                self.current_bucket = current_live_bucket
+                # Only keep a WS update if it belongs to the current live bucket.
+                if b == current_live_bucket:
+                    self._upsert_candle(candle)
                 return
 
+            # Same live candle: update OHLC, but NEVER calculate a trade from it.
             if b == self.current_bucket:
                 self._upsert_candle(candle)
-                direction, level = self.calculate_supertrend(self.candles)
-                if direction:
-                    self.supertrend_direction = direction
-                    self.supertrend_level = level
                 return
 
+            # Ignore old/out-of-order messages.
+            if b < self.current_bucket:
+                return
+
+            # New minute arrived. The previous current_bucket is now CLOSED.
             old_bucket = self.current_bucket
             old = next((x for x in self.candles if x["bucket"] == old_bucket), None)
+
             if old is not None:
                 self.process_closed_candle(old)
 
+            # Start tracking the new live candle. It is NOT a signal candle yet.
             self.current_bucket = b
             self._upsert_candle(candle)
 
