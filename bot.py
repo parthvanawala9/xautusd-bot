@@ -1192,7 +1192,7 @@ class Bot:
                 "local_position": direction,
                 "size": abs(size),
                 "entry_price": entry,
-                "stop_loss": self.stop_loss or 0.0,
+                "stop_loss": (self.supertrend_level if direction != "FLAT" and self.supertrend_level else 0.0),
                 "leverage": as_int(pos.get("leverage"), self.leverage) or self.leverage,
                 "margin": as_float(pos.get("margin"), 0.0) or 0.0,
                 "liquidation_price": as_float(pos.get("liquidation_price"), 0.0) or 0.0,
