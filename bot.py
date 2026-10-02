@@ -1857,7 +1857,7 @@ def extract_trade(message):
             try:
                 return str(symbol).upper(), float(price)
             except Exception:
-                return None, None
+                continue
 
     return None, None
 
