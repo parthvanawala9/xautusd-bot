@@ -85,7 +85,7 @@ EVENING_TRADING_START = dtime(17, 45)
 
 
 # ============================================================
-# STRATEGY (1:3 RISK-REWARD CONFIGURATION)
+# STRATEGY (SUPERTREND CONFIGURATION)
 # ============================================================
 
 MARGIN_FRACTION = Decimal("0.10")
@@ -93,7 +93,11 @@ MARGIN_FRACTION = Decimal("0.10")
 MAX_LEVERAGE = 100
 MIN_LEVERAGE = 10
 
-TARGET_COUNT = 3  # 1:10 से बदलकर 3 किया गया (1R, 2R, 3R)
+# Supertrend Parameters (1-minute timeframe)
+SUPERTREND_PERIOD = 10
+SUPERTREND_MULTIPLIER = Decimal("3.0")
+
+TARGET_COUNT = 3  # 1R, 2R, 3R target tracking
 
 
 # ============================================================
@@ -262,13 +266,28 @@ def current_session_start(dt=None):
         return evening_base - timedelta(days=1)
 
 
-def is_weekend(dt=None):
+def is_market_closed(dt=None):
+    """
+    Saturday सुबह 5:30 बजे से लेकर Monday सुबह 5:30 बजे तक बाजार बंद रहेगा।
+    weekday() -> 0:Mon, 1:Tue, 2:Wed, 3:Thu, 4:Fri, 5:Sat, 6:Sun
+    """
     dt = dt or now_ist()
+    weekday = dt.weekday()
+    t = dt.time()
 
-    return dt.weekday() in (
-        5,
-        6
-    )
+    # Saturday (5): 05:30 AM के बाद बंद
+    if weekday == 5 and t >= dtime(5, 30):
+        return True
+    
+    # Sunday (6): पूरा दिन बंद
+    if weekday == 6:
+        return True
+    
+    # Monday (0): 05:30 AM से पहले बंद
+    if weekday == 0 and t < dtime(5, 30):
+        return True
+
+    return False
 
 
 # ============================================================
@@ -400,7 +419,7 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Target-Bot/3.2"
+                "User-Agent": "XAUTUSD-Supertrend-Bot/3.2"
             }
         )
 
@@ -433,7 +452,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Target-Bot/3.2"
+            "User-Agent": "XAUTUSD-Supertrend-Bot/3.2"
         }
 
     def api(
@@ -1067,7 +1086,7 @@ class DeltaClient:
 
 
 # ============================================================
-# XAU TARGET BOT
+# XAU TARGET BOT (SUPERTREND STRATEGY)
 # ============================================================
 
 class XAUTTargetBot:
@@ -1461,6 +1480,87 @@ class XAUTTargetBot:
 
         return highest, lowest
 
+    def calculate_supertrend(self, candles):
+        """Calculates Supertrend on 1m candles list."""
+        if not candles or len(candles) < SUPERTREND_PERIOD:
+            return None, None
+
+        highs = []
+        lows = []
+        closes = []
+
+        for c in candles:
+            try:
+                if isinstance(c, dict):
+                    highs.append(float(c.get("high", 0)))
+                    lows.append(float(c.get("low", 0)))
+                    closes.append(float(c.get("close", 0)))
+                elif isinstance(c, list) and len(c) >= 5:
+                    highs.append(float(c[2]))
+                    lows.append(float(c[3]))
+                    closes.append(float(c[4]))
+            except Exception:
+                continue
+
+        if len(closes) < SUPERTREND_PERIOD:
+            return None, None
+
+        atr = []
+        for i in range(len(closes)):
+            if i == 0:
+                tr = highs[i] - lows[i]
+            else:
+                tr = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1])
+                )
+            atr.append(tr)
+
+        period = SUPERTREND_PERIOD
+        multiplier = float(SUPERTREND_MULTIPLIER)
+
+        supertrend_dir = "BUY"
+        final_upperband = 0.0
+        final_lowerband = 0.0
+
+        for i in range(period, len(closes)):
+            current_atr = sum(atr[i - period + 1:i + 1]) / period
+            hl2 = (highs[i] + lows[i]) / 2.0
+            basic_upperband = hl2 + (multiplier * current_atr)
+            basic_lowerband = hl2 - (multiplier * current_atr)
+
+            if i == period:
+                final_upperband = basic_upperband
+                final_lowerband = basic_lowerband
+            
+            if basic_upperband < final_upperband or closes[i - 1] > final_upperband:
+                final_upperband = basic_upperband
+            else:
+                final_upperband = final_upperband
+
+            if basic_lowerband > final_lowerband or closes[i - 1] < final_lowerband:
+                final_lowerband = basic_lowerband
+            else:
+                final_lowerband = final_lowerband
+
+            if i == period:
+                supertrend_dir = "BUY" if closes[i] >= final_lowerband else "SELL"
+            else:
+                prev_dir = supertrend_dir
+                if prev_dir == "BUY":
+                    if closes[i] <= final_lowerband:
+                        supertrend_dir = "SELL"
+                    else:
+                        supertrend_dir = "BUY"
+                else:
+                    if closes[i] >= final_upperband:
+                        supertrend_dir = "BUY"
+                    else:
+                        supertrend_dir = "SELL"
+
+        return supertrend_dir, final_lowerband if supertrend_dir == "BUY" else final_upperband
+
     def wait_for_position(
         self,
         expected_direction=None,
@@ -1727,63 +1827,6 @@ class XAUTTargetBot:
 
         self.execution_uncertain = False
 
-    def recover_missing_strategy_state(self):
-
-        if not self.position or self.entry_price is None:
-            return False
-
-        changed = False
-
-        if self.original_size <= 0 and self.remaining_size > 0:
-            self.original_size = self.remaining_size
-            changed = True
-
-        if (
-            sum(self.target_quantities) <= 0
-            and self.original_size > 0
-        ):
-            self.target_quantities = self.split_into_three_parts(
-                self.original_size
-            )
-            self.target_hit = [
-                quantity <= 0
-                for quantity in self.target_quantities
-            ]
-            changed = True
-
-        if self.stop_loss <= 0:
-
-            if self.day_high is None or self.day_low is None:
-                try:
-                    high, low = self.get_session_high_low(self.session)
-                    if high is not None:
-                        self.day_high = high
-                        changed = True
-                    if low is not None:
-                        self.day_low = low
-                        changed = True
-                except Exception:
-                    pass
-
-            entry = Decimal(str(self.entry_price))
-
-            if self.direction == "LONG" and self.day_low is not None:
-                candidate = Decimal(str(self.day_low))
-                if candidate > 0 and candidate < entry:
-                    self.stop_loss = float(candidate)
-                    changed = True
-
-            elif self.direction == "SHORT" and self.day_high is not None:
-                candidate = Decimal(str(self.day_high))
-                if candidate > entry:
-                    self.stop_loss = float(candidate)
-                    changed = True
-
-        if changed:
-            self.save()
-
-        return self.stop_loss > 0
-
     def start_bot(self):
 
         with self.lock:
@@ -1804,7 +1847,7 @@ class XAUTTargetBot:
                     "success": True,
                     "bot_running": True,
                     "message": (
-                        "XAUTUSD bot started."
+                        "XAUTUSD Supertrend bot started."
                     )
                 }
 
@@ -2055,7 +2098,6 @@ class XAUTTargetBot:
         self,
         total_size
     ):
-        """Total size को 3 बराबर भागों में विभाजित करता है (1:3 R:R के लिए)"""
         total_size = int(
             total_size
         )
@@ -2500,31 +2542,8 @@ class XAUTTargetBot:
             not self.bot_running
             or self.execution_uncertain
             or self.order_in_progress
-            or is_weekend()
+            or is_market_closed()
         ):
-            return False
-
-        try:
-
-            existing = (
-                self.client.position(
-                    self.product_id
-                )
-            )
-
-            if (
-                as_int(
-                    existing.get(
-                        "size"
-                    ),
-                    0
-                )
-                != 0
-            ):
-                return False
-
-        except Exception:
-
             return False
 
         with self.lock:
@@ -2532,6 +2551,22 @@ class XAUTTargetBot:
             self.order_in_progress = True
 
             try:
+
+                existing = (
+                    self.client.position(
+                        self.product_id
+                    )
+                )
+                existing_size = as_int(existing.get("size"), 0)
+
+                if existing_size != 0:
+                    current_dir = "LONG" if existing_size > 0 else "SHORT"
+                    if current_dir == direction:
+                        return False
+                    else:
+                        self.client.cancel_all_orders(self.product_id)
+                        self.client.reduce_only_market_close(self.product_id, existing_size)
+                        self.wait_until_flat()
 
                 leverage = (
                     self.choose_safe_leverage(
@@ -2598,7 +2633,6 @@ class XAUTTargetBot:
                     return False
 
                 self.position = direction
-
                 self.direction = direction
 
                 self.entry_price = (
@@ -2660,7 +2694,7 @@ class XAUTTargetBot:
                 self.execution_uncertain = False
 
                 logging.info(
-                    "ENTRY | %s | Entry=%s | SL=%s | "
+                    "SUPERTREND ENTRY | %s | Entry=%s | SL=%s | "
                     "Size=%s | Leverage=%sx",
                     direction,
                     self.entry_price,
@@ -2690,571 +2724,40 @@ class XAUTTargetBot:
 
                 self.order_in_progress = False
 
-    def close_partial(
-        self,
-        target_index,
-        quantity,
-        exit_price
-    ):
-
-        if (
-            quantity <= 0
-            or self.order_in_progress
-            or not self.position
-        ):
-            return False
-
-        with self.lock:
-
-            self.order_in_progress = True
-
-            try:
-
-                exchange_position = (
-                    self.client.position(
-                        self.product_id
-                    )
-                )
-
-                exchange_size = as_int(
-                    exchange_position.get(
-                        "size"
-                    ),
-                    0
-                )
-
-                if exchange_size == 0:
-
-                    self.clear_position()
-
-                    self.save()
-
-                    return True
-
-                actual_quantity = min(
-                    int(quantity),
-                    abs(
-                        exchange_size
-                    )
-                )
-
-                if actual_quantity <= 0:
-                    return False
-
-                signed_close_size = (
-                    actual_quantity
-                    if exchange_size > 0
-                    else -actual_quantity
-                )
-
-                expected_remaining = (
-                    abs(
-                        exchange_size
-                    )
-                    - actual_quantity
-                )
-
-                self.client.reduce_only_market_close(
-                    self.product_id,
-                    signed_close_size
-                )
-
-                confirmed = (
-                    self.wait_for_remaining_size(
-                        expected_remaining
-                    )
-                )
-
-                if confirmed is None:
-
-                    self.execution_uncertain = True
-
-                    self.save()
-
-                    return False
-
-                confirmed_remaining = abs(
-                    as_int(
-                        confirmed.get(
-                            "size"
-                        ),
-                        0
-                    )
-                )
-
-                self.target_hit[
-                    target_index
-                ] = True
-
-                self.remaining_size = (
-                    confirmed_remaining
-                )
-
-                self.record_partial_trade(
-                    target_index,
-                    actual_quantity,
-                    exit_price
-                )
-
-                if all(
-                    self.target_hit
-                ):
-
-                    if confirmed_remaining != 0:
-
-                        final_position = (
-                            self.client.position(
-                                self.product_id
-                            )
-                        )
-
-                        final_size = as_int(
-                            final_position.get(
-                                "size"
-                            ),
-                            0
-                        )
-
-                        if final_size != 0:
-
-                            self.client.reduce_only_market_close(
-                                self.product_id,
-                                final_size
-                            )
-
-                            self.wait_until_flat()
-
-                    self.clear_position()
-
-                self.save()
-
-                return True
-
-            except Exception as e:
-
-                self.execution_uncertain = True
-
-                self.save()
-
-                return False
-
-            finally:
-
-                self.order_in_progress = False
-
-    def close_all_at_stop(
-        self,
-        price
-    ):
-
+    def close_all_position(self, reason, price):
         if self.order_in_progress:
             return False
 
         with self.lock:
-
             self.order_in_progress = True
-
             try:
-
-                exchange_position = (
-                    self.client.position(
-                        self.product_id
-                    )
-                )
-
-                exchange_size = as_int(
-                    exchange_position.get(
-                        "size"
-                    ),
-                    0
-                )
+                exchange_position = self.client.position(self.product_id)
+                exchange_size = as_int(exchange_position.get("size"), 0)
 
                 if exchange_size == 0:
-
                     self.clear_position()
-
                     self.save()
-
                     return True
 
-                close_size = abs(
-                    exchange_size
-                )
-
-                self.client.cancel_all_orders(
-                    self.product_id
-                )
-
-                self.client.reduce_only_market_close(
-                    self.product_id,
-                    exchange_size
-                )
-
+                close_size = abs(exchange_size)
+                self.client.cancel_all_orders(self.product_id)
+                self.client.reduce_only_market_close(self.product_id, exchange_size)
                 self.wait_until_flat()
 
-                self.record_full_close(
-                    "DAY_EXTREME_SL",
-                    price,
-                    close_size
-                )
-
+                self.record_full_close(reason, price, close_size)
                 self.clear_position()
-
                 self.save()
-
                 return True
 
             except Exception as e:
-
                 self.execution_uncertain = True
-
                 self.save()
-
                 return False
-
             finally:
-
                 self.order_in_progress = False
 
-    def check_stop(
-        self,
-        price
-    ):
-
-        if (
-            not self.position
-            or self.stop_loss <= 0
-        ):
-            return False
-
-        if (
-            self.direction == "LONG"
-            and price <= self.stop_loss
-        ):
-
-            return self.close_all_at_stop(
-                price
-            )
-
-        if (
-            self.direction == "SHORT"
-            and price >= self.stop_loss
-        ):
-
-            return self.close_all_at_stop(
-                price
-            )
-
-        return False
-
-    def check_targets(
-        self,
-        price
-    ):
-
-        if (
-            not self.position
-            or self.entry_price is None
-        ):
-            return
-
-        for index in range(
-            TARGET_COUNT
-        ):
-
-            if self.target_hit[index]:
-                continue
-
-            target_price = (
-                self.calculate_target_price(
-                    index
-                )
-            )
-
-            if target_price is None:
-                return
-
-            reached = (
-                price >= target_price
-                if self.direction == "LONG"
-                else price <= target_price
-            )
-
-            if not reached:
-                break
-
-            quantity = (
-                self.target_quantities[index]
-            )
-
-            if quantity <= 0:
-
-                self.target_hit[
-                    index
-                ] = True
-
-                continue
-
-            success = self.close_partial(
-                index,
-                quantity,
-                price
-            )
-
-            if not success:
-                break
-
-            if not self.position:
-                break
-
     # ========================================================
-    # DUAL SESSION RESET (05:30 AM & 05:30 PM)
-    # ========================================================
-
-    def reset_for_new_session(
-        self,
-        new_session
-    ):
-
-        with self.lock:
-
-            try:
-
-                exchange_position = (
-                    self.client.position(
-                        self.product_id
-                    )
-                )
-
-                exchange_size = as_int(
-                    exchange_position.get(
-                        "size"
-                    ),
-                    0
-                )
-
-                if exchange_size != 0:
-                    logging.info(
-                        "SESSION CHANGE (05:30) | Closing existing live position of size: %s",
-                        exchange_size
-                    )
-                    self.client.cancel_all_orders(
-                        self.product_id
-                    )
-                    self.client.reduce_only_market_close(
-                        self.product_id,
-                        exchange_size
-                    )
-                    self.wait_until_flat()
-
-                self.clear_position()
-
-                self.session = new_session
-                self.day_high = None
-                self.day_low = None
-                self.trading_armed = False
-
-                try:
-
-                    high, low = (
-                        self.get_session_high_low(
-                            new_session
-                        )
-                    )
-
-                    if high is not None:
-                        self.day_high = high
-
-                    if low is not None:
-                        self.day_low = low
-
-                except Exception:
-                    pass
-
-                logging.info(
-                    "NEW 12H DUAL SESSION INITIALIZED | %s | High=%s | Low=%s",
-                    new_session,
-                    self.day_high,
-                    self.day_low
-                )
-
-                self.save()
-
-                return True
-
-            except Exception as e:
-
-                logging.error(
-                    "Session reset error: %s",
-                    e
-                )
-
-                self.execution_uncertain = True
-
-                self.save()
-
-                return False
-
-    def update_session_extremes(
-        self,
-        price
-    ):
-
-        price_decimal = Decimal(
-            str(price)
-        )
-
-        if (
-            self.day_high is None
-            or price_decimal
-            > self.day_high
-        ):
-
-            self.day_high = (
-                price_decimal
-            )
-
-            return True
-
-        if (
-            self.day_low is None
-            or price_decimal
-            < self.day_low
-        ):
-
-            self.day_low = (
-                price_decimal
-            )
-
-            return True
-
-        return False
-
-    def calculate_live_pnl(
-        self,
-        current_price,
-        position_size,
-        entry_price,
-        direction
-    ):
-
-        if (
-            current_price is None
-            or entry_price is None
-            or position_size == 0
-        ):
-            return 0.0
-
-        current = Decimal(
-            str(current_price)
-        )
-
-        entry = Decimal(
-            str(entry_price)
-        )
-
-        qty = Decimal(
-            str(
-                abs(
-                    position_size
-                )
-            )
-        )
-
-        contract = (
-            self.contract_value()
-        )
-
-        if direction == "LONG":
-
-            pnl = (
-                current
-                - entry
-            ) * qty * contract
-
-        else:
-
-            pnl = (
-                entry
-                - current
-            ) * qty * contract
-
-        return float(
-            pnl
-        )
-
-    def history_pnl(
-        self,
-        history=None
-    ):
-
-        history = (
-            history
-            if history is not None
-            else load_history()
-        )
-
-        total = 0.0
-
-        for item in history:
-
-            total += (
-                as_float(
-                    item.get(
-                        "pnl"
-                    ),
-                    0.0
-                )
-                or 0.0
-            )
-
-        return total
-
-    def today_pnl(
-        self,
-        history=None
-    ):
-
-        history = (
-            history
-            if history is not None
-            else load_history()
-        )
-
-        today = now_ist().strftime(
-            "%Y-%m-%d"
-        )
-
-        total = 0.0
-
-        for item in history:
-
-            date_text = str(
-                item.get(
-                    "date",
-                    ""
-                )
-            )
-
-            if not date_text.startswith(
-                today
-            ):
-                continue
-
-            total += (
-                as_float(
-                    item.get(
-                        "pnl"
-                    ),
-                    0.0
-                )
-                or 0.0
-            )
-
-        return total
-
-    # ========================================================
-    # EVALUATE
+    # EVALUATE (SUPERTREND STRATEGY LOGIC)
     # ========================================================
 
     def evaluate(
@@ -3272,7 +2775,7 @@ class XAUTTargetBot:
 
             current_time = now_ist()
 
-            if is_weekend(
+            if is_market_closed(
                 current_time
             ):
                 return
@@ -3294,202 +2797,39 @@ class XAUTTargetBot:
             if not self.prepare_product():
                 return
 
-            current_session = (
-                current_session_start(
-                    current_time
-                )
-            )
+            end_ts = int(time.time())
+            start_ts = end_ts - (60 * 100)
+            candles = self.client.candles("1m", start_ts, end_ts)
 
-            if (
-                self.session
-                != current_session
-            ):
-
-                if not self.reset_for_new_session(
-                    current_session
-                ):
-                    return
-
-            if (
-                self.day_high is None
-                or self.day_low is None
-            ):
-
-                high, low = (
-                    self.get_session_high_low(
-                        self.session
-                    )
-                )
-
-                if high is not None:
-                    self.day_high = high
-
-                if low is not None:
-                    self.day_low = low
-
-                if self.day_high is None:
-                    self.day_high = Decimal(
-                        str(
-                            current_price
-                        )
-                    )
-
-                if self.day_low is None:
-                    self.day_low = Decimal(
-                        str(
-                            current_price
-                        )
-                    )
-
-                self.save()
-
-            # 12-hour dual sessions trading start buffer (05:30 - 05:45 AM/PM)
-            t = current_time.time()
-            in_morning_buffer = dtime(5, 30) <= t < dtime(5, 45)
-            in_evening_buffer = dtime(17, 30) <= t < dtime(17, 45)
-
-            if in_morning_buffer or in_evening_buffer:
-                if self.update_session_extremes(
-                    current_price
-                ):
-                    self.save()
-
-                self.trading_armed = False
-
+            if not candles:
                 return
 
-            if not self.trading_armed:
-
-                self.trading_armed = True
-
-                self.update_session_extremes(
-                    current_price
-                )
-
-                self.save()
-
+            st_dir, st_level = self.calculate_supertrend(candles)
+            if not st_dir:
                 return
 
-            exchange_position = (
-                self.client.position(
-                    self.product_id
-                )
-            )
+            exchange_position = self.client.position(self.product_id)
+            exchange_size = as_int(exchange_position.get("size"), 0)
 
-            exchange_size = as_int(
-                exchange_position.get(
-                    "size"
-                ),
-                0
-            )
-
-            if self.position:
-
-                if self.stop_loss <= 0:
-                    self.recover_missing_strategy_state()
-
+            if st_dir == "BUY":
+                if exchange_size < 0:
+                    logging.info("Supertrend turned BUY. Closing short position.")
+                    self.close_all_position("SUPERTREND_SIGNAL_FLIP", current_price)
+                
                 if exchange_size == 0:
+                    stop_loss = st_level if st_level > 0 else current_price * 0.99
+                    logging.info("Supertrend BUY Signal. Opening LONG.")
+                    self.enter_trade("LONG", current_price, stop_loss)
 
-                    self.clear_position()
-
-                    self.update_session_extremes(
-                        current_price
-                    )
-
-                    self.save()
-
-                    return
-
-                if self.check_stop(
-                    current_price
-                ):
-                    return
-
-                self.check_targets(
-                    current_price
-                )
-
-                changed = (
-                    self.update_session_extremes(
-                        current_price
-                    )
-                )
-
-                if changed:
-                    self.save()
-
-                return
-
-            if exchange_size:
-
-                self.adopt_exchange_position(
-                    exchange_position
-                )
-
-                self.save()
-
-                return
-
-            previous_high = (
-                float(
-                    self.day_high
-                )
-                if self.day_high is not None
-                else current_price
-            )
-
-            previous_low = (
-                float(
-                    self.day_low
-                )
-                if self.day_low is not None
-                else current_price
-            )
-
-            if current_price > previous_high:
-
-                stop_loss = previous_low
-
-                self.day_high = Decimal(
-                    str(
-                        current_price
-                    )
-                )
-
-                self.save()
-
-                self.enter_trade(
-                    "LONG",
-                    current_price,
-                    stop_loss
-                )
-
-                return
-
-            if current_price < previous_low:
-
-                stop_loss = previous_high
-
-                self.day_low = Decimal(
-                    str(
-                        current_price
-                    )
-                )
-
-                self.save()
-
-                self.enter_trade(
-                    "SHORT",
-                    current_price,
-                    stop_loss
-                )
-
-                return
-
-            if self.update_session_extremes(
-                current_price
-            ):
-                self.save()
+            elif st_dir == "SELL":
+                if exchange_size > 0:
+                    logging.info("Supertrend turned SELL. Closing long position.")
+                    self.close_all_position("SUPERTREND_SIGNAL_FLIP", current_price)
+                
+                if exchange_size == 0:
+                    stop_loss = st_level if st_level > 0 else current_price * 1.01
+                    logging.info("Supertrend SELL Signal. Opening SHORT.")
+                    self.enter_trade("SHORT", current_price, stop_loss)
 
     def dashboard_data(self):
 
@@ -3640,9 +2980,6 @@ class XAUTTargetBot:
 
         if exchange_size and not self.position:
             self.adopt_exchange_position(position_data)
-
-        if exchange_size and self.stop_loss <= 0:
-            self.recover_missing_strategy_state()
 
         targets = (
             self.build_targets()
