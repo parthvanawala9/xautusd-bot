@@ -212,9 +212,6 @@ def as_float(value, default=None):
 
 
 def is_market_closed(dt=None):
-    """
-    Saturday सुबह 5:30 बजे से लेकर Monday सुबह 5:30 बजे तक बाजार बंद रहेगा।
-    """
     dt = dt or now_ist()
     weekday = dt.weekday()
     t = dt.time()
@@ -360,7 +357,7 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Supertrend-Bot/4.1"
+                "User-Agent": "XAUTUSD-Supertrend-Bot/4.2"
             }
         )
 
@@ -393,7 +390,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Supertrend-Bot/4.1"
+            "User-Agent": "XAUTUSD-Supertrend-Bot/4.2"
         }
 
     def api(
@@ -1489,6 +1486,10 @@ class XAUTSupertrendBot:
             if not st_dir:
                 return
 
+            # Update stop_loss live with current Supertrend level
+            if st_level > 0:
+                self.stop_loss = float(st_level)
+
             exchange_position = self.client.position(self.product_id)
             exchange_size = as_int(exchange_position.get("size"), 0)
 
@@ -1558,6 +1559,8 @@ class XAUTSupertrendBot:
         history = load_history()
         total_closed_pnl_val = self.history_pnl(history)
 
+        current_sl = self.stop_loss or position_data.get("stop_loss") or 0.0
+
         bot_obj = {
             "id": ACCOUNT_ID,
             "account_name": ACCOUNT_NAME,
@@ -1569,7 +1572,7 @@ class XAUTSupertrendBot:
             "local_position": direction,
             "size": abs(exchange_size),
             "entry_price": float(entry_price),
-            "stop_loss": self.stop_loss or position_data.get("stop_loss") or 0.0,
+            "stop_loss": float(current_sl),
             "leverage": position_data.get("leverage") or self.leverage or 10,
             "margin": position_data.get("margin") or 0.0,
             "unrealized_pnl": round(live_pnl, 8),
@@ -1640,7 +1643,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        # HTML Dashboard with updated clean layout (No 10 Targets, No Clients, Session & Strategy with Lifetime Total PnL)
         if path == "/" or path == "/index.html":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
