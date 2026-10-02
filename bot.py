@@ -357,7 +357,7 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Supertrend-Bot/4.4"
+                "User-Agent": "XAUTUSD-Supertrend-Bot/4.5"
             }
         )
 
@@ -390,7 +390,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Supertrend-Bot/4.4"
+            "User-Agent": "XAUTUSD-Supertrend-Bot/4.5"
         }
 
     def api(
@@ -1170,22 +1170,21 @@ class XAUTSupertrendBot:
             if basic_lowerband > final_lowerband or closes[i - 1] < final_lowerband:
                 final_lowerband = basic_lowerband
 
-            if i == period:
-                supertrend_dir = "BUY" if closes[i] >= final_lowerband else "SELL"
+            # CORRECT DIRECTION LOGIC: If close is above lower band, Supertrend is BUY (Green), else SELL (Red)
+            if closes[i] > final_lowerband and closes[i] > final_upperband:
+                supertrend_dir = "BUY"
+            elif closes[i] < final_lowerband and closes[i] < final_upperband:
+                supertrend_dir = "SELL"
             else:
-                prev_dir = supertrend_dir
-                if prev_dir == "BUY":
-                    if closes[i] <= final_lowerband:
-                        supertrend_dir = "SELL"
-                    else:
-                        supertrend_dir = "BUY"
+                # Fallback to previous direction continuity if in between bands
+                if i > period:
+                    # Keep previous supertrend_dir
+                    pass
                 else:
-                    if closes[i] >= final_upperband:
-                        supertrend_dir = "BUY"
-                    else:
-                        supertrend_dir = "SELL"
+                    supertrend_dir = "BUY" if closes[i] >= hl2 else "SELL"
 
-        return supertrend_dir, final_lowerband if supertrend_dir == "BUY" else final_upperband
+        active_st_line = final_lowerband if supertrend_dir == "BUY" else final_upperband
+        return supertrend_dir, active_st_line
 
     def wait_for_position(self, expected_direction=None, timeout=ENTRY_CONFIRM_TIMEOUT):
         deadline = time.time() + timeout
@@ -1492,10 +1491,10 @@ class XAUTSupertrendBot:
             exchange_position = self.client.position(self.product_id)
             exchange_size = as_int(exchange_position.get("size"), 0)
 
-            # CORRECTED LOGIC: BUY (Green) -> Open LONG, SELL (Red) -> Open SHORT
+            # STRICT CORRECT MAPPING: BUY -> LONG, SELL -> SHORT
             if st_dir == "BUY":
                 if exchange_size < 0:
-                    logging.info("Supertrend turned BUY. Closing short and reversing to LONG.")
+                    logging.info("Supertrend turned BUY. Closing short and taking LONG.")
                     self.close_all_position("SUPERTREND_SIGNAL_FLIP", current_price)
                 
                 exchange_position = self.client.position(self.product_id)
@@ -1507,7 +1506,7 @@ class XAUTSupertrendBot:
 
             elif st_dir == "SELL":
                 if exchange_size > 0:
-                    logging.info("Supertrend turned SELL. Closing long and reversing to SHORT.")
+                    logging.info("Supertrend turned SELL. Closing long and taking SHORT.")
                     self.close_all_position("SUPERTREND_SIGNAL_FLIP", current_price)
                 
                 exchange_position = self.client.position(self.product_id)
