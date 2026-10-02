@@ -357,7 +357,7 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Supertrend-Bot/4.3"
+                "User-Agent": "XAUTUSD-Supertrend-Bot/4.4"
             }
         )
 
@@ -390,7 +390,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Supertrend-Bot/4.3"
+            "User-Agent": "XAUTUSD-Supertrend-Bot/4.4"
         }
 
     def api(
@@ -1492,10 +1492,14 @@ class XAUTSupertrendBot:
             exchange_position = self.client.position(self.product_id)
             exchange_size = as_int(exchange_position.get("size"), 0)
 
+            # CORRECTED LOGIC: BUY (Green) -> Open LONG, SELL (Red) -> Open SHORT
             if st_dir == "BUY":
                 if exchange_size < 0:
-                    logging.info("Supertrend turned BUY. Closing short.")
+                    logging.info("Supertrend turned BUY. Closing short and reversing to LONG.")
                     self.close_all_position("SUPERTREND_SIGNAL_FLIP", current_price)
+                
+                exchange_position = self.client.position(self.product_id)
+                exchange_size = as_int(exchange_position.get("size"), 0)
                 if exchange_size == 0:
                     stop_loss = st_level if st_level > 0 else current_price * 0.99
                     logging.info("Supertrend BUY Signal. Opening LONG.")
@@ -1503,8 +1507,11 @@ class XAUTSupertrendBot:
 
             elif st_dir == "SELL":
                 if exchange_size > 0:
-                    logging.info("Supertrend turned SELL. Closing long.")
+                    logging.info("Supertrend turned SELL. Closing long and reversing to SHORT.")
                     self.close_all_position("SUPERTREND_SIGNAL_FLIP", current_price)
+                
+                exchange_position = self.client.position(self.product_id)
+                exchange_size = as_int(exchange_position.get("size"), 0)
                 if exchange_size == 0:
                     stop_loss = st_level if st_level > 0 else current_price * 1.01
                     logging.info("Supertrend SELL Signal. Opening SHORT.")
