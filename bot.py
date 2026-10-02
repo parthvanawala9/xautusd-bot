@@ -1830,7 +1830,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     let b = data.client;
                     isRunning = b.bot_enabled;
                     
-                    document.getElementById('status-bar.innerText = `Client: ${clientName} | Status: ${b.status} | Balance: $${b.balance.toFixed(2)} | LTP: $${b.last_price.toFixed(2)}`;
+                    document.getElementById('status-bar').innerText = `Client: ${clientName} | Status: ${b.status} | Balance: $${b.balance.toFixed(2)} | LTP: $${b.last_price.toFixed(2)}`;
                     document.getElementById('start-date').innerText = b.starting_date;
                     document.getElementById('expiry-date').innerText = b.expiry_date;
                     
@@ -1922,6 +1922,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
         .active { background: #065f46; color: #34d399; }
         .stopped { background: #7f1d1d; color: #f87171; }
+        .btn-action { padding: 6px 12px; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -1983,12 +1984,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     <th>Balance</th>
                     <th>Position</th>
                     <th>PnL</th>
-                    <th>Dedicated URL</th>
-                    <th>Action</th>
+                    <th>Actions & Link Generation</th>
                 </tr>
             </thead>
             <tbody id="client-table">
-                <tr><td colspan="8" style="text-align: center;">No clients added yet.</td></tr>
+                <tr><td colspan="7" style="text-align: center;">No clients added yet.</td></tr>
             </tbody>
         </table>
     </div>
@@ -2097,17 +2097,26 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                             <td>$${c.balance.toFixed(2)}</td>
                             <td>${c.local_position} (${c.size})</td>
                             <td class="${c.unrealized_pnl >= 0 ? 'profit' : 'loss'}">$${c.unrealized_pnl.toFixed(2)}</td>
-                            <td><a href="${clientUrl}" target="_blank" style="color: #38bdf8;">Open Link</a></td>
                             <td>
-                                <button onclick="toggleClient('${c.account_name}', ${!c.bot_enabled})" style="padding: 6px 12px; background: ${c.bot_enabled ? '#ef4444' : '#10b981'}; color: white; border: none; border-radius: 4px; cursor: pointer;">${c.bot_enabled ? 'Stop' : 'Start'}</button>
+                                <button onclick="toggleClient('${c.account_name}', ${!c.bot_enabled})" class="btn-action" style="background: ${c.bot_enabled ? '#ef4444' : '#10b981'};">${c.bot_enabled ? 'Stop' : 'Start'}</button>
+                                <button onclick="copyLink('${clientUrl}')" class="btn-action" style="background: #38bdf8; color: black;">Copy Link</button>
+                                <a href="${clientUrl}" target="_blank" style="color: #38bdf8; text-decoration: none; margin-left: 5px;">Open</a>
                             </td>
                         </tr>`;
                     });
-                    document.getElementById('client-table').innerHTML = html || '<tr><td colspan="8" style="text-align: center;">No clients added yet.</td></tr>';
+                    document.getElementById('client-table').innerHTML = html || '<tr><td colspan="7" style="text-align: center;">No clients added yet.</td></tr>';
                 }
             } catch (err) {
                 console.error("Clients fetch error:", err);
             }
+        }
+
+        function copyLink(url) {
+            navigator.clipboard.writeText(url).then(() => {
+                alert("Client dashboard link copied to clipboard!");
+            }).catch(err => {
+                console.error('Failed to copy: ', err);
+            });
         }
 
         async function addClient(e) {
@@ -2277,10 +2286,7 @@ def websocket_on_message(ws, message):
     if symbol != SYMBOL:
         return
     try:
-        # Evaluate Main Bot
         BOT.evaluate(price)
-
-        # Evaluate All Active Clients
         for client_wrapper in MANAGER.clients.values():
             if client_wrapper.check_validity() == "ACTIVE" and client_wrapper.bot.bot_running:
                 client_wrapper.bot.evaluate(price)
