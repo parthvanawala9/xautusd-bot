@@ -8,7 +8,7 @@ import threading
 import uuid
 import atexit
 from decimal import Decimal, ROUND_DOWN
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta, time as dtime, date
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode, urlparse
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -71,17 +71,6 @@ ACCOUNT_ID = os.getenv(
 ).strip()
 
 SYMBOL = "XAUTUSD"
-
-
-# ============================================================
-# 12-HOUR DUAL SESSIONS CONFIGURATION
-# ============================================================
-
-MORNING_SESSION_START = dtime(5, 30)
-MORNING_TRADING_START = dtime(5, 45)
-
-EVENING_SESSION_START = dtime(17, 30)
-EVENING_TRADING_START = dtime(17, 45)
 
 
 # ============================================================
@@ -251,39 +240,20 @@ def as_float(value, default=None):
         return default
 
 
-def current_session_start(dt=None):
-    dt = dt or now_ist()
-    t = dt.time()
-
-    morning_base = dt.replace(hour=5, minute=30, second=0, microsecond=0)
-    evening_base = dt.replace(hour=17, minute=30, second=0, microsecond=0)
-
-    if dtime(5, 30) <= t < dtime(17, 30):
-        return morning_base
-    elif t >= dtime(17, 30):
-        return evening_base
-    else:
-        return evening_base - timedelta(days=1)
-
-
 def is_market_closed(dt=None):
     """
     Saturday सुबह 5:30 बजे से लेकर Monday सुबह 5:30 बजे तक बाजार बंद रहेगा।
-    weekday() -> 0:Mon, 1:Tue, 2:Wed, 3:Thu, 4:Fri, 5:Sat, 6:Sun
     """
     dt = dt or now_ist()
     weekday = dt.weekday()
     t = dt.time()
 
-    # Saturday (5): 05:30 AM के बाद बंद
     if weekday == 5 and t >= dtime(5, 30):
         return True
     
-    # Sunday (6): पूरा दिन बंद
     if weekday == 6:
         return True
     
-    # Monday (0): 05:30 AM से पहले बंद
     if weekday == 0 and t < dtime(5, 30):
         return True
 
@@ -1392,96 +1362,7 @@ class XAUTTargetBot:
             )
         )
 
-    def get_session_high_low(
-        self,
-        session_start
-    ):
-        start_timestamp = int(session_start.timestamp())
-        current_timestamp = int(now_ist().timestamp())
-
-        candles = self.client.candles(
-            "1m",
-            start_timestamp,
-            current_timestamp
-        )
-
-        highest = None
-        lowest = None
-
-        for candle in candles:
-
-            try:
-
-                if isinstance(
-                    candle,
-                    dict
-                ):
-                    c_time = as_int(candle.get("time") or candle.get("t"), 0)
-                    if c_time > 0 and c_time < start_timestamp:
-                        continue
-
-                    high = Decimal(
-                        str(
-                            candle.get(
-                                "high"
-                            )
-                        )
-                    )
-
-                    low = Decimal(
-                        str(
-                            candle.get(
-                                "low"
-                            )
-                        )
-                    )
-
-                elif (
-                    isinstance(
-                        candle,
-                        list
-                    )
-                    and len(candle) >= 4
-                ):
-                    c_time = as_int(candle[0], 0)
-                    if c_time > 0 and c_time < start_timestamp:
-                        continue
-
-                    high = Decimal(
-                        str(
-                            candle[2]
-                        )
-                    )
-
-                    low = Decimal(
-                        str(
-                            candle[3]
-                        )
-                    )
-
-                else:
-
-                    continue
-
-                if (
-                    highest is None
-                    or high > highest
-                ):
-                    highest = high
-
-                if (
-                    lowest is None
-                    or low < lowest
-                ):
-                    lowest = low
-
-            except Exception:
-                continue
-
-        return highest, lowest
-
     def calculate_supertrend(self, candles):
-        """Calculates Supertrend on 1m candles list."""
         if not candles or len(candles) < SUPERTREND_PERIOD:
             return None, None
 
@@ -1536,13 +1417,9 @@ class XAUTTargetBot:
             
             if basic_upperband < final_upperband or closes[i - 1] > final_upperband:
                 final_upperband = basic_upperband
-            else:
-                final_upperband = final_upperband
 
             if basic_lowerband > final_lowerband or closes[i - 1] < final_lowerband:
                 final_lowerband = basic_lowerband
-            else:
-                final_lowerband = final_lowerband
 
             if i == period:
                 supertrend_dir = "BUY" if closes[i] >= final_lowerband else "SELL"
@@ -1614,57 +1491,6 @@ class XAUTTargetBot:
                 if (
                     expected_direction
                     is None
-                ):
-                    return position
-
-            except Exception:
-                pass
-
-            time.sleep(
-                POLL_INTERVAL
-            )
-
-        return None
-
-    def wait_for_remaining_size(
-        self,
-        expected_max_size,
-        timeout=PARTIAL_CONFIRM_TIMEOUT
-    ):
-
-        deadline = (
-            time.time()
-            + timeout
-        )
-
-        expected_max_size = abs(
-            int(
-                expected_max_size
-            )
-        )
-
-        while time.time() < deadline:
-
-            try:
-
-                position = (
-                    self.client.position(
-                        self.product_id
-                    )
-                )
-
-                current_size = abs(
-                    as_int(
-                        position.get(
-                            "size"
-                        ),
-                        0
-                    )
-                )
-
-                if (
-                    current_size
-                    <= expected_max_size
                 ):
                     return position
 
@@ -1990,19 +1816,7 @@ class XAUTTargetBot:
             )
 
         except Exception as e:
-
-            logging.warning(
-                "Liquidation parameter error: %s",
-                e
-            )
-
-            maintenance = Decimal(
-                "0"
-            )
-
-            taker_fee = Decimal(
-                "0"
-            )
+            pass
 
         effective = (
             maintenance
@@ -2243,6 +2057,37 @@ class XAUTTargetBot:
             pnl
         )
 
+    def calculate_live_pnl(
+        self,
+        current_price,
+        size,
+        entry_price,
+        direction
+    ):
+        if not current_price or not entry_price or size == 0:
+            return 0.0
+        return self.calculate_trade_pnl(
+            entry_price,
+            current_price,
+            abs(size),
+            direction
+        )
+
+    def today_pnl(self, history):
+        today_str = now_ist().strftime("%Y-%m-%d")
+        total = 0.0
+        for item in history:
+            date_str = str(item.get("date", ""))
+            if date_str.startswith(today_str):
+                total += as_float(item.get("pnl"), 0.0)
+        return total
+
+    def history_pnl(self, history):
+        total = 0.0
+        for item in history:
+            total += as_float(item.get("pnl"), 0.0)
+        return total
+
     def build_targets(self):
 
         targets = []
@@ -2366,87 +2211,6 @@ class XAUTTargetBot:
                 return target
 
         return None
-
-    def record_partial_trade(
-        self,
-        target_index,
-        quantity,
-        exit_price
-    ):
-
-        pnl = (
-            self.calculate_trade_pnl(
-                self.entry_price,
-                exit_price,
-                quantity,
-                self.direction
-            )
-        )
-
-        history = load_history()
-
-        history.append(
-            {
-                "id": (
-                    f"{self.trade_id}"
-                    f"_TARGET_{target_index + 1}_"
-                    f"{int(time.time() * 1000)}"
-                ),
-
-                "trade_id": self.trade_id,
-
-                "date": now_ist().strftime(
-                    "%Y-%m-%d %H:%M"
-                ),
-
-                "symbol": SYMBOL,
-
-                "direction": self.direction,
-
-                "entry_price": self.entry_price,
-
-                "exit_price": float(
-                    exit_price
-                ),
-
-                "size": int(
-                    quantity
-                ),
-
-                "reason": (
-                    f"TARGET_{target_index + 1}R"
-                ),
-
-                "target": (
-                    target_index + 1
-                ),
-
-                "leverage": self.leverage,
-
-                "contract_value": float(
-                    self.contract_value()
-                ),
-
-                "pnl": round(
-                    pnl,
-                    8
-                ),
-
-                "pnl_type": (
-                    "PROFIT"
-                    if pnl > 0
-                    else (
-                        "LOSS"
-                        if pnl < 0
-                        else "FLAT"
-                    )
-                )
-            }
-        )
-
-        save_history(
-            history
-        )
 
     def record_full_close(
         self,
@@ -2755,10 +2519,6 @@ class XAUTTargetBot:
                 return False
             finally:
                 self.order_in_progress = False
-
-    # ========================================================
-    # EVALUATE (SUPERTREND STRATEGY LOGIC)
-    # ========================================================
 
     def evaluate(
         self,
@@ -3081,22 +2841,6 @@ class XAUTTargetBot:
                 or 0.0
             ),
 
-            "day_high": (
-                float(
-                    self.day_high
-                )
-                if self.day_high is not None
-                else 0.0
-            ),
-
-            "day_low": (
-                float(
-                    self.day_low
-                )
-                if self.day_low is not None
-                else 0.0
-            ),
-
             "targets": targets,
 
             "active_target": active_target,
@@ -3199,75 +2943,6 @@ class XAUTTargetBot:
 BOT = XAUTTargetBot()
 
 
-def add_client_record(
-    payload
-):
-
-    clients = load_clients()
-
-    name = str(
-        payload.get(
-            "name",
-            ""
-        )
-    ).strip()
-
-    client_id = str(
-        payload.get(
-            "client_id",
-            ""
-        )
-    ).strip()
-
-    if not name:
-
-        return {
-            "success": False,
-            "message": "Client name required."
-        }
-
-    if not client_id:
-
-        client_id = (
-            f"client_"
-            f"{int(time.time() * 1000)}"
-        )
-
-    record = {
-        "id": client_id,
-
-        "name": name,
-
-        "account_name": str(
-            payload.get(
-                "account_name",
-                name
-            )
-        ).strip(),
-
-        "created_at": now_ist().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        ),
-
-        "active": True
-    }
-
-    clients.append(
-        record
-    )
-
-    save_clients(
-        clients
-    )
-
-    return {
-        "success": True,
-        "message": "Client added successfully.",
-        "client": record,
-        "clients": clients
-    }
-
-
 class DashboardHandler(
     SimpleHTTPRequestHandler
 ):
@@ -3342,34 +3017,6 @@ class DashboardHandler(
         except Exception:
             pass
 
-    def read_json_body(self):
-
-        try:
-
-            length = int(
-                self.headers.get(
-                    "Content-Length",
-                    "0"
-                )
-            )
-
-            if length <= 0:
-                return {}
-
-            raw = self.rfile.read(
-                length
-            )
-
-            return json.loads(
-                raw.decode(
-                    "utf-8"
-                )
-            )
-
-        except Exception:
-
-            return {}
-
     def do_GET(self):
 
         parsed = urlparse(
@@ -3426,25 +3073,6 @@ class DashboardHandler(
 
             return
 
-        if path == "/api/targets":
-
-            data = BOT.dashboard_data()
-
-            self.send_json(
-                {
-                    "success": True,
-                    "targets": data.get(
-                        "targets",
-                        []
-                    ),
-                    "active_target": data.get(
-                        "active_target"
-                    )
-                }
-            )
-
-            return
-
         super().do_GET()
 
     def do_POST(self):
@@ -3467,20 +3095,6 @@ class DashboardHandler(
 
             self.send_json(
                 BOT.stop_bot()
-            )
-
-            return
-
-        if path == "/api/client/add":
-
-            payload = (
-                self.read_json_body()
-            )
-
-            self.send_json(
-                add_client_record(
-                    payload
-                )
             )
 
             return
