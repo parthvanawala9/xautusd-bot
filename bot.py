@@ -111,11 +111,6 @@ HISTORY_FILE = os.path.join(
     "xautusd_trade_history.json"
 )
 
-CLIENTS_FILE = os.path.join(
-    DATA_DIR,
-    "xautusd_clients.json"
-)
-
 LOCK_FILE = os.path.join(
     DATA_DIR,
     "xautusd_bot.lock"
@@ -199,25 +194,6 @@ def save_history(history):
     atomic_write(
         HISTORY_FILE,
         history
-    )
-
-
-def load_clients():
-    data = load_json(
-        CLIENTS_FILE,
-        []
-    )
-
-    return data if isinstance(
-        data,
-        list
-    ) else []
-
-
-def save_clients(clients):
-    atomic_write(
-        CLIENTS_FILE,
-        clients
     )
 
 
@@ -384,7 +360,7 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Supertrend-Bot/4.0"
+                "User-Agent": "XAUTUSD-Supertrend-Bot/4.1"
             }
         )
 
@@ -417,7 +393,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Supertrend-Bot/4.0"
+            "User-Agent": "XAUTUSD-Supertrend-Bot/4.1"
         }
 
     def api(
@@ -1356,15 +1332,6 @@ class XAUTSupertrendBot:
             return 0.0
         return self.calculate_trade_pnl(entry_price, current_price, abs(size), direction)
 
-    def today_pnl(self, history):
-        today_str = now_ist().strftime("%Y-%m-%d")
-        total = 0.0
-        for item in history:
-            date_str = str(item.get("date", ""))
-            if date_str.startswith(today_str):
-                total += as_float(item.get("pnl"), 0.0)
-        return total
-
     def history_pnl(self, history):
         total = 0.0
         for item in history:
@@ -1404,7 +1371,6 @@ class XAUTSupertrendBot:
                     if current_dir == direction:
                         return False
                     else:
-                        # Record close before reverse
                         ex_entry = as_float(existing.get("entry_price")) or price
                         self.client.cancel_all_orders(self.product_id)
                         self.client.reduce_only_market_close(self.product_id, existing_size)
@@ -1590,7 +1556,6 @@ class XAUTSupertrendBot:
             balance_val = 0.0
 
         history = load_history()
-        today_pnl_val = self.today_pnl(history)
         total_closed_pnl_val = self.history_pnl(history)
 
         bot_obj = {
@@ -1610,7 +1575,6 @@ class XAUTSupertrendBot:
             "unrealized_pnl": round(live_pnl, 8),
             "realized_pnl": position_data.get("realized_pnl", 0.0) or 0.0,
             "liquidation_price": position_data.get("liquidation_price") or 0.0,
-            "today_pnl": round(today_pnl_val, 8),
             "total_closed_pnl": round(total_closed_pnl_val, 8),
             "contract_value": float(self.contract_value())
         }
@@ -1621,10 +1585,8 @@ class XAUTSupertrendBot:
             "bot_running": self.bot_running,
             "bot": bot_obj,
             "bots": [bot_obj],
-            "today_pnl": round(today_pnl_val, 8),
             "total_closed_pnl": round(total_closed_pnl_val, 8),
-            "trades": history[-50:],
-            "clients": load_clients()
+            "trades": history[-50:]
         }
 
 
@@ -1676,6 +1638,168 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                 "history": load_history(),
                 "total_closed_pnl": BOT.history_pnl(load_history())
             })
+            return
+
+        # HTML Dashboard with updated clean layout (No 10 Targets, No Clients, Session & Strategy with Lifetime Total PnL)
+        if path == "/" or path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>XAUTUSD Supertrend Bot</title>
+    <style>
+        body { background-color: #0b0f19; color: #e2e8f0; font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: #111827; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }
+        .btn-toggle { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; width: 100%; font-size: 16px; margin-bottom: 20px; }
+        .btn-start { background-color: #10b981; }
+        .btn-stop { background-color: #ef4444; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .card { background: #111827; padding: 20px; border-radius: 8px; border: 1px solid #1f2937; }
+        .card h3 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #1f2937; padding-bottom: 10px; }
+        .row { display: flex; justify-content: space-between; margin: 8px 0; }
+        table { width: 100%%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #1f2937; font-size: 14px; }
+        th { color: #9ca3af; }
+        .profit { color: #10b981; }
+        .loss { color: #ef4444; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div id="status-bar">Status: Loading... | Balance: $0.00 | LTP: $0.00</div>
+    </div>
+
+    <button id="toggle-btn" class="btn-toggle btn-start" onclick="toggleBot()">START BOT</button>
+
+    <div class="grid">
+        <div class="card">
+            <h3>LIVE POSITION</h3>
+            <div class="row"><span>Dir:</span> <span id="pos-dir">-</span></div>
+            <div class="row"><span>Size:</span> <span id="pos-size">0</span></div>
+            <div class="row"><span>Entry:</span> <span id="pos-entry">-</span></div>
+            <div class="row"><span>Stop Loss:</span> <span id="pos-sl">-</span></div>
+            <div class="row"><span>Leverage:</span> <span id="pos-lev">-</span></div>
+            <div class="row"><span>Margin:</span> <span id="pos-margin">-</span></div>
+            <div class="row"><span>Liquidation:</span> <span id="pos-liq">-</span></div>
+            <div class="row"><span>PnL:</span> <span id="pos-pnl">-</span></div>
+        </div>
+
+        <div class="card">
+            <h3>SESSION & STRATEGY</h3>
+            <div class="row"><span>Strategy:</span> <span>Supertrend (1m)</span></div>
+            <div class="row"><span>Timeframe:</span> <span>1 Minute</span></div>
+            <div class="row"><span>Total Lifetime PnL:</span> <span id="total-pnl" style="font-weight: bold;">$0.00</span></div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>TRADE HISTORY (Recent)</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Symbol</th>
+                    <th>Direction</th>
+                    <th>Entry</th>
+                    <th>Exit</th>
+                    <th>Size</th>
+                    <th>Reason</th>
+                    <th>PnL</th>
+                </tr>
+            </thead>
+            <tbody id="trades-table">
+                <tr><td colspan="8" style="text-align: center;">No trades recorded yet.</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        let isRunning = false;
+
+        async function fetchDashboard() {
+            try {
+                let res = await fetch('/api/dashboard');
+                let data = await res.json();
+                if (data.success && data.bot) {
+                    let b = data.bot;
+                    isRunning = b.bot_enabled;
+                    
+                    document.getElementById('status-bar').innerText = `Status: ${b.status} | Balance: $${b.balance.toFixed(2)} | LTP: $${b.last_price.toFixed(2)}`;
+                    
+                    let btn = document.getElementById('toggle-btn');
+                    if (isRunning) {
+                        btn.innerText = "STOP BOT";
+                        btn.className = "btn-toggle btn-stop";
+                    } else {
+                        btn.innerText = "START BOT";
+                        btn.className = "btn-toggle btn-start";
+                    }
+
+                    document.getElementById('pos-dir').innerText = b.local_position;
+                    document.getElementById('pos-size').innerText = b.size;
+                    document.getElementById('pos-entry').innerText = b.entry_price ? b.entry_price.toFixed(2) : '-';
+                    document.getElementById('pos-sl').innerText = b.stop_loss ? b.stop_loss.toFixed(2) : '-';
+                    document.getElementById('pos-lev').innerText = b.leverage + 'x';
+                    document.getElementById('pos-margin').innerText = '$' + b.margin.toFixed(2);
+                    document.getElementById('pos-liq').innerText = b.liquidation_price ? b.liquidation_price.toFixed(2) : '-';
+                    
+                    let pnlEl = document.getElementById('pos-pnl');
+                    let pnlVal = b.unrealized_pnl;
+                    pnlEl.innerText = (pnlVal >= 0 ? '$' : '-$') + Math.abs(pnlVal).toFixed(2);
+                    pnlEl.className = pnlVal >= 0 ? 'profit' : 'loss';
+
+                    let totalPnlEl = document.getElementById('total-pnl');
+                    let totalVal = data.total_closed_pnl;
+                    totalPnlEl.innerText = (totalVal >= 0 ? '$' : '-$') + Math.abs(totalVal).toFixed(2);
+                    totalPnlEl.className = totalVal >= 0 ? 'profit' : 'loss';
+
+                    let tradesHtml = '';
+                    if (data.trades && data.trades.length > 0) {
+                        let sortedTrades = [...data.trades].reverse();
+                        sortedTrades.forEach(t => {
+                            let pCl = t.pnl >= 0 ? 'profit' : 'loss';
+                            tradesHtml += `<tr>
+                                <td>${t.date}</td>
+                                <td>${t.symbol}</td>
+                                <td>${t.direction}</td>
+                                <td>${t.entry_price}</td>
+                                <td>${t.exit_price}</td>
+                                <td>${t.size}</td>
+                                <td>${t.reason}</td>
+                                <td class="${pCl}">${(t.pnl >= 0 ? '$' : '-$') + Math.abs(t.pnl).toFixed(2)}</td>
+                            </tr>`;
+                        });
+                    } else {
+                        tradesHtml = '<tr><td colspan="8" style="text-align: center;">No trades recorded yet.</td></tr>';
+                    }
+                    document.getElementById('trades-table').innerHTML = tradesHtml;
+                }
+            } catch (err) {
+                console.error("Dashboard fetch error:", err);
+            }
+        }
+
+        async function toggleBot() {
+            let endpoint = isRunning ? '/api/stop' : '/api/start';
+            try {
+                let res = await fetch(endpoint, { method: 'POST' });
+                let data = await res.json();
+                fetchDashboard();
+            } catch (err) {
+                console.error("Toggle error:", err);
+            }
+        }
+
+        setInterval(fetchDashboard, 2000);
+        fetchDashboard();
+    </script>
+</body>
+</html>
+"""
+            self.wfile.write(html.encode("utf-8"))
             return
 
         super().do_GET()
