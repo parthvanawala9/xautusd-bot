@@ -357,7 +357,7 @@ class DeltaClient:
             {
                 "Accept": "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": "XAUTUSD-Supertrend-Bot/4.2"
+                "User-Agent": "XAUTUSD-Supertrend-Bot/4.3"
             }
         )
 
@@ -390,7 +390,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
-            "User-Agent": "XAUTUSD-Supertrend-Bot/4.2"
+            "User-Agent": "XAUTUSD-Supertrend-Bot/4.3"
         }
 
     def api(
@@ -1486,7 +1486,6 @@ class XAUTSupertrendBot:
             if not st_dir:
                 return
 
-            # Update stop_loss live with current Supertrend level
             if st_level > 0:
                 self.stop_loss = float(st_level)
 
@@ -1655,7 +1654,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     <style>
         body { background-color: #0b0f19; color: #e2e8f0; font-family: Arial, sans-serif; margin: 0; padding: 20px; }
         .header { display: flex; justify-content: space-between; align-items: center; background: #111827; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }
-        .btn-toggle { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; width: 100%; font-size: 16px; margin-bottom: 20px; }
+        .btn-toggle { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; width: 100%%; font-size: 16px; margin-bottom: 20px; }
         .btn-start { background-color: #10b981; }
         .btn-stop { background-color: #ef4444; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
@@ -1667,11 +1666,13 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         th { color: #9ca3af; }
         .profit { color: #10b981; }
         .loss { color: #ef4444; }
+        .ip-badge { background: #1f2937; padding: 4px 8px; border-radius: 4px; font-family: monospace; color: #38bdf8; }
     </style>
 </head>
 <body>
     <div class="header">
         <div id="status-bar">Status: Loading... | Balance: $0.00 | LTP: $0.00</div>
+        <div>Server IP: <span id="server-ip" class="ip-badge">Loading...</span></div>
     </div>
 
     <button id="toggle-btn" class="btn-toggle btn-start" onclick="toggleBot()">START BOT</button>
@@ -1730,6 +1731,7 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     isRunning = b.bot_enabled;
                     
                     document.getElementById('status-bar').innerText = `Status: ${b.status} | Balance: $${b.balance.toFixed(2)} | LTP: $${b.last_price.toFixed(2)}`;
+                    document.getElementById('server-ip').innerText = data.server_ip || 'Unknown';
                     
                     let btn = document.getElementById('toggle-btn');
                     if (isRunning) {
