@@ -111,11 +111,6 @@ HISTORY_FILE = os.path.join(
     "xautusd_trade_history.json"
 )
 
-CLIENTS_FILE = os.path.join(
-    DATA_DIR,
-    "clients_config.json"
-)
-
 LOCK_FILE = os.path.join(
     DATA_DIR,
     "xautusd_bot.lock"
@@ -340,10 +335,7 @@ def get_public_ip():
 
 class DeltaClient:
 
-    def __init__(self, custom_key=None, custom_secret=None):
-        self.api_key = (custom_key if custom_key is not None else API_KEY).strip()
-        self.api_secret = (custom_secret if custom_secret is not None else API_SECRET).strip()
-        
+    def __init__(self):
         self.session = requests.Session()
 
         adapter = requests.adapters.HTTPAdapter(
@@ -389,13 +381,13 @@ class DeltaClient:
         )
 
         signature = hmac.new(
-            self.api_secret.encode(),
+            API_SECRET.encode(),
             message.encode(),
             hashlib.sha256
         ).hexdigest()
 
         return {
-            "api-key": self.api_key,
+            "api-key": API_KEY,
             "signature": signature,
             "timestamp": timestamp,
             "User-Agent": "XAUTUSD-Supertrend-Bot/4.5"
@@ -1032,19 +1024,20 @@ class DeltaClient:
 
 
 # ============================================================
-# XAUT SUPERTREND BOT (MAIN & CLIENT INSTANCES)
+# XAUT SUPERTREND BOT
 # ============================================================
 
 class XAUTSupertrendBot:
 
-    def __init__(self, custom_key=None, custom_secret=None, name="Main"):
-        self.account_name = name
-        self.client = DeltaClient(custom_key, custom_secret)
+    def __init__(self):
+
+        self.client = DeltaClient()
 
         self.product = None
         self.product_id = 0
 
         self.last_price = None
+
         self.bot_running = False
 
         self.position = None
@@ -1061,12 +1054,10 @@ class XAUTSupertrendBot:
         self.order_in_progress = False
 
         self.lock = threading.RLock()
-        if self.account_name == "Main":
-            self.load_state()
+
+        self.load_state()
 
     def save(self):
-        if self.account_name != "Main":
-            return
         atomic_write(
             STATE_FILE,
             {
@@ -1085,8 +1076,6 @@ class XAUTSupertrendBot:
         )
 
     def load_state(self):
-        if self.account_name != "Main":
-            return
         state = load_json(
             STATE_FILE,
             {}
@@ -1343,8 +1332,6 @@ class XAUTSupertrendBot:
         return total
 
     def record_full_close(self, reason, exit_price, closed_size, direction, entry_price):
-        if self.account_name != "Main":
-            return
         history = load_history()
         pnl = self.calculate_trade_pnl(entry_price, exit_price, closed_size, direction)
 
@@ -1463,7 +1450,7 @@ class XAUTSupertrendBot:
             finally:
                 self.order_in_progress = False
 
-    def evaluate(self, price, candles=None):
+    def evaluate(self, price):
         with self.lock:
             if not self.bot_running or self.execution_uncertain:
                 return
@@ -1484,10 +1471,9 @@ class XAUTSupertrendBot:
             if not self.prepare_product():
                 return
 
-            if candles is None:
-                end_ts = int(time.time())
-                start_ts = end_ts - (60 * 100)
-                candles = self.client.candles("1m", start_ts, end_ts)
+            end_ts = int(time.time())
+            start_ts = end_ts - (60 * 100)
+            candles = self.client.candles("1m", start_ts, end_ts)
 
             if not candles:
                 return
@@ -1502,6 +1488,7 @@ class XAUTSupertrendBot:
             exchange_position = self.client.position(self.product_id)
             exchange_size = as_int(exchange_position.get("size"), 0)
 
+            # STRICT CORRECT MAPPING: BUY -> LONG, SELL -> SHORT
             if st_dir == "BUY":
                 if exchange_size < 0:
                     logging.info("Supertrend turned BUY. Closing short and taking LONG.")
@@ -1571,14 +1558,14 @@ class XAUTSupertrendBot:
         except Exception:
             balance_val = 0.0
 
-        history = load_history() if self.account_name == "Main" else []
+        history = load_history()
         total_closed_pnl_val = self.history_pnl(history)
 
         current_sl = self.stop_loss or position_data.get("stop_loss") or 0.0
 
         bot_obj = {
-            "id": ACCOUNT_ID if self.account_name == "Main" else self.account_name,
-            "account_name": self.account_name,
+            "id": ACCOUNT_ID,
+            "account_name": ACCOUNT_NAME,
             "symbol": SYMBOL,
             "bot_enabled": self.bot_running,
             "status": "ACTIVE" if self.bot_running else "STOPPED",
@@ -1608,102 +1595,8 @@ class XAUTSupertrendBot:
         }
 
 
-# ============================================================
-# MULTI-CLIENT MANAGER
-# ============================================================
+BOT = XAUTSupertrendBot()
 
-BOT = XAUTSupertrendBot(name="Main")
-
-class ClientInstanceWrapper:
-    def __init__(self, config):
-        self.name = config["name"]
-        self.api_key = config["api_key"]
-        self.api_secret = config["api_secret"]
-        self.starting_date = config["starting_date"]
-        self.expiry_date = config["expiry_date"]
-        self.bot_running = config.get("bot_running", False)
-        
-        self.bot = XAUTSupertrendBot(self.api_key, self.api_secret, name=self.name)
-        if self.bot_running:
-            self.bot.start_bot()
-
-    def check_validity(self):
-        try:
-            today = now_ist().date()
-            start_dt = datetime.strptime(self.starting_date, "%Y-%m-%d").date()
-            expiry_dt = datetime.strptime(self.expiry_date, "%Y-%m-%d").date()
-
-            if today < start_dt:
-                return "NOT_STARTED"
-            if today > expiry_dt:
-                if self.bot.bot_running:
-                    self.bot.stop_bot()
-                return "EXPIRED"
-        except Exception:
-            pass
-        return "ACTIVE"
-
-    def get_info(self):
-        validity = self.check_validity()
-        data = self.bot.dashboard_data()["bot"]
-        data["starting_date"] = self.starting_date
-        data["expiry_date"] = self.expiry_date
-        data["validity_status"] = validity
-        if validity == "EXPIRED":
-            data["status"] = "EXPIRED"
-            data["bot_enabled"] = False
-        elif validity == "NOT_STARTED":
-            data["status"] = "NOT_STARTED"
-            data["bot_enabled"] = False
-        return data
-
-
-class MultiClientManager:
-    def __init__(self):
-        self.clients = {}
-        self.load_clients()
-
-    def load_clients(self):
-        data = load_json(CLIENTS_FILE, [])
-        for c in data:
-            name = c.get("name")
-            if name:
-                self.clients[name] = ClientInstanceWrapper(c)
-
-    def save_clients(self):
-        data = []
-        for name, inst in self.clients.items():
-            data.append({
-                "name": inst.name,
-                "api_key": inst.api_key,
-                "api_secret": inst.api_secret,
-                "starting_date": inst.starting_date,
-                "expiry_date": inst.expiry_date,
-                "bot_running": inst.bot.bot_running
-            })
-        atomic_write(CLIENTS_FILE, data)
-
-    def add_client(self, name, api_key, api_secret, starting_date, expiry_date):
-        config = {
-            "name": name,
-            "api_key": api_key,
-            "api_secret": api_secret,
-            "starting_date": starting_date,
-            "expiry_date": expiry_date,
-            "bot_running": False
-        }
-        self.clients[name] = ClientInstanceWrapper(config)
-        self.save_clients()
-
-    def get_all_summaries(self):
-        return [inst.get_info() for inst in self.clients.values()]
-
-MANAGER = MultiClientManager()
-
-
-# ============================================================
-# DASHBOARD HANDLER
-# ============================================================
 
 class DashboardHandler(SimpleHTTPRequestHandler):
 
@@ -1752,47 +1645,37 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             })
             return
 
-        if path == "/api/clients":
-            self.send_json({"success": True, "clients": MANAGER.get_all_summaries()})
-            return
-
-        if path.startswith("/api/client/"):
-            name = path.split("/")[-1]
-            if name in MANAGER.clients:
-                self.send_json({"success": True, "client": MANAGER.clients[name].get_info()})
-                return
-            self.send_json({"success": False, "message": "Client not found"}, 404)
-            return
-
-        # Dedicated Client URL
-        if path.startswith("/client/"):
-            name = path.split("/")[-1]
-            if name in MANAGER.clients:
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                client_html = f"""<!DOCTYPE html>
+        if path == "/" or path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            html = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Client Dashboard - {name}</title>
+    <title>XAUTUSD Supertrend Bot</title>
     <style>
-        body {{ background-color: #0b0f19; color: #e2e8f0; font-family: Arial, sans-serif; margin: 0; padding: 20px; }}
-        .header {{ display: flex; justify-content: space-between; align-items: center; background: #111827; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }}
-        .btn-toggle {{ padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; width: 100%; font-size: 16px; margin-bottom: 20px; }}
-        .btn-start {{ background-color: #10b981; }}
-        .btn-stop {{ background-color: #ef4444; }}
-        .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }}
-        .card {{ background: #111827; padding: 20px; border-radius: 8px; border: 1px solid #1f2937; }}
-        .card h3 {{ margin-top: 0; color: #38bdf8; border-bottom: 1px solid #1f2937; padding-bottom: 10px; }}
-        .row {{ display: flex; justify-content: space-between; margin: 8px 0; }}
-        .profit {{ color: #10b981; }}
-        .loss {{ color: #ef4444; }}
+        body { background-color: #0b0f19; color: #e2e8f0; font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: #111827; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }
+        .btn-toggle { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; width: 100%; font-size: 16px; margin-bottom: 20px; }
+        .btn-start { background-color: #10b981; }
+        .btn-stop { background-color: #ef4444; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .card { background: #111827; padding: 20px; border-radius: 8px; border: 1px solid #1f2937; }
+        .card h3 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #1f2937; padding-bottom: 10px; }
+        .row { display: flex; justify-content: space-between; margin: 8px 0; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #1f2937; font-size: 14px; }
+        th { color: #9ca3af; }
+        .profit { color: #10b981; }
+        .loss { color: #ef4444; }
+        .ip-badge { background: #1f2937; padding: 4px 8px; border-radius: 4px; font-family: monospace; color: #38bdf8; }
     </style>
 </head>
 <body>
     <div class="header">
-        <div id="status-bar">Client: {name} | Status: Loading... | Balance: $0.00 | LTP: $0.00</div>
+        <div id="status-bar">Status: Loading... | Balance: $0.00 | LTP: $0.00</div>
+        <div>Server IP: <span id="server-ip" class="ip-badge">Loading...</span></div>
     </div>
 
     <button id="toggle-btn" class="btn-toggle btn-start" onclick="toggleBot()">START BOT</button>
@@ -1811,186 +1694,11 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         </div>
 
         <div class="card">
-            <h3>SESSION & VALIDITY</h3>
-            <div class="row"><span>Strategy:</span> <span>Supertrend (1m)</span></div>
-            <div class="row"><span>Starting Date:</span> <span id="start-date">-</span></div>
-            <div class="row"><span>Expiry Date:</span> <span id="expiry-date">-</span></div>
-        </div>
-    </div>
-
-    <script>
-        const clientName = "{name}";
-        let isRunning = false;
-
-        async function fetchClientDashboard() {{
-            try {{
-                let res = await fetch('/api/client/' + clientName);
-                let data = await res.json();
-                if (data.success && data.client) {{
-                    let b = data.client;
-                    isRunning = b.bot_enabled;
-                    
-                    document.getElementById('status-bar').innerText = `Client: ${clientName} | Status: ${b.status} | Balance: $${b.balance.toFixed(2)} | LTP: $${b.last_price.toFixed(2)}`;
-                    document.getElementById('start-date').innerText = b.starting_date;
-                    document.getElementById('expiry-date').innerText = b.expiry_date;
-                    
-                    let btn = document.getElementById('toggle-btn');
-                    if(b.validity_status === 'EXPIRED' || b.validity_status === 'NOT_STARTED') {{
-                        btn.innerText = b.validity_status === 'EXPIRED' ? "SUBSCRIPTION EXPIRED" : "NOT STARTED YET";
-                        btn.className = "btn-toggle btn-stop";
-                        btn.disabled = true;
-                    }} else if (isRunning) {{
-                        btn.innerText = "STOP BOT";
-                        btn.className = "btn-toggle btn-stop";
-                        btn.disabled = false;
-                    }} else {{
-                        btn.innerText = "START BOT";
-                        btn.className = "btn-toggle btn-start";
-                        btn.disabled = false;
-                    }}
-
-                    document.getElementById('pos-dir').innerText = b.local_position;
-                    document.getElementById('pos-size').innerText = b.size;
-                    document.getElementById('pos-entry').innerText = b.entry_price ? b.entry_price.toFixed(2) : '-';
-                    document.getElementById('pos-sl').innerText = b.stop_loss ? b.stop_loss.toFixed(2) : '-';
-                    document.getElementById('pos-lev').innerText = b.leverage + 'x';
-                    document.getElementById('pos-margin').innerText = '$' + b.margin.toFixed(2);
-                    document.getElementById('pos-liq').innerText = b.liquidation_price ? b.liquidation_price.toFixed(2) : '-';
-                    
-                    let pnlEl = document.getElementById('pos-pnl');
-                    let pnlVal = b.unrealized_pnl;
-                    pnlEl.innerText = (pnlVal >= 0 ? '$' : '-$') + Math.abs(pnlVal).toFixed(2);
-                    pnlEl.className = pnlVal >= 0 ? 'profit' : 'loss';
-                }}
-            }} catch (err) {{
-                console.error("Client dashboard fetch error:", err);
-            }}
-        }}
-
-        async function toggleBot() {{
-            let endpoint = isRunning ? '/api/client/stop' : '/api/client/start';
-            try {{
-                await fetch(endpoint, {{
-                    method: 'POST',
-                    headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{name: clientName}})
-                }});
-                fetchClientDashboard();
-            }} catch (err) {{
-                console.error("Toggle error:", err);
-            }}
-        }}
-
-        setInterval(fetchClientDashboard, 2000);
-        fetchClientDashboard();
-    </script>
-</body>
-</html>
-"""
-                self.wfile.write(client_html.encode("utf-8"))
-                return
-            self.send_response(404)
-            self.end_headers()
-            return
-
-        if path == "/" or path == "/index.html":
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            html = """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>XAUTUSD Supertrend Bot & Master Admin</title>
-    <style>
-        body { background-color: #0b0f19; color: #e2e8f0; font-family: Arial, sans-serif; margin: 0; padding: 20px; }
-        .header { display: flex; justify-content: space-between; align-items: center; background: #111827; padding: 15px 20px; border-radius: 8px; margin-bottom: 20px; }
-        .btn-toggle { padding: 12px 24px; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; color: white; width: 100%; font-size: 16px; margin-bottom: 20px; }
-        .btn-start { background-color: #10b981; }
-        .btn-stop { background-color: #ef4444; }
-        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
-        .card { background: #111827; padding: 20px; border-radius: 8px; border: 1px solid #1f2937; margin-bottom: 20px; }
-        .card h3 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #1f2937; padding-bottom: 10px; }
-        .row { display: flex; justify-content: space-between; margin: 8px 0; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { padding: 10px; text-align: left; border-bottom: 1px solid #1f2937; font-size: 14px; }
-        th { color: #9ca3af; }
-        .profit { color: #10b981; }
-        .loss { color: #ef4444; }
-        .ip-badge { background: #1f2937; padding: 4px 8px; border-radius: 4px; font-family: monospace; color: #38bdf8; }
-        input, select { padding: 8px; margin: 5px 0; border-radius: 4px; border: 1px solid #374151; background: #1f2937; color: white; width: 100%; box-sizing: border-box; }
-        .badge { padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-        .active { background: #065f46; color: #34d399; }
-        .stopped { background: #7f1d1d; color: #f87171; }
-        .btn-action { padding: 6px 12px; color: white; border: none; border-radius: 4px; cursor: pointer; margin-right: 5px; font-weight: bold; }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div id="status-bar">Status: Loading... | Balance: $0.00 | LTP: $0.00</div>
-        <div>Server IP: <span id="server-ip" class="ip-badge">Loading...</span></div>
-    </div>
-
-    <button id="toggle-btn" class="btn-toggle btn-start" onclick="toggleBot()">START BOT (MAIN)</button>
-
-    <div class="grid">
-        <div class="card">
-            <h3>LIVE POSITION (MAIN)</h3>
-            <div class="row"><span>Dir:</span> <span id="pos-dir">-</span></div>
-            <div class="row"><span>Size:</span> <span id="pos-size">0</span></div>
-            <div class="row"><span>Entry:</span> <span id="pos-entry">-</span></div>
-            <div class="row"><span>Stop Loss:</span> <span id="pos-sl">-</span></div>
-            <div class="row"><span>Leverage:</span> <span id="pos-lev">-</span></div>
-            <div class="row"><span>Margin:</span> <span id="pos-margin">-</span></div>
-            <div class="row"><span>Liquidation:</span> <span id="pos-liq">-</span></div>
-            <div class="row"><span>PnL:</span> <span id="pos-pnl">-</span></div>
-        </div>
-
-        <div class="card">
             <h3>SESSION & STRATEGY</h3>
             <div class="row"><span>Strategy:</span> <span>Supertrend (1m)</span></div>
             <div class="row"><span>Timeframe:</span> <span>1 Minute</span></div>
             <div class="row"><span>Total Lifetime PnL:</span> <span id="total-pnl" style="font-weight: bold;">$0.00</span></div>
         </div>
-    </div>
-
-    <!-- CLIENT MANAGEMENT SECTION -->
-    <div class="card">
-        <h3>ADD NEW CLIENT</h3>
-        <form onsubmit="addClient(event)">
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <div><label>Client Name:</label><input type="text" id="cname" required /></div>
-                <div><label>API Key:</label><input type="text" id="ckey" required /></div>
-            </div>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
-                <div><label>API Secret:</label><input type="password" id="csec" required /></div>
-                <div><label>Starting Date:</label><input type="date" id="cstart" required /></div>
-            </div>
-            <div style="margin-top: 10px;">
-                <label>Expiry Date:</label><input type="date" id="cexpiry" required />
-            </div>
-            <button type="submit" style="margin-top: 15px; background: #38bdf8; color: black; font-weight: bold; border: none; padding: 10px; border-radius: 4px; cursor: pointer;">Add Client Bot</button>
-        </form>
-    </div>
-
-    <div class="card">
-        <h3>ALL CLIENTS OVERVIEW</h3>
-        <table>
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Validity</th>
-                    <th>Status</th>
-                    <th>Balance</th>
-                    <th>Position</th>
-                    <th>PnL</th>
-                    <th>Actions & Link Generation</th>
-                </tr>
-            </thead>
-            <tbody id="client-table">
-                <tr><td colspan="7" style="text-align: center;">No clients added yet.</td></tr>
-            </tbody>
-        </table>
     </div>
 
     <div class="card">
@@ -2030,10 +1738,10 @@ class DashboardHandler(SimpleHTTPRequestHandler):
                     
                     let btn = document.getElementById('toggle-btn');
                     if (isRunning) {
-                        btn.innerText = "STOP BOT (MAIN)";
+                        btn.innerText = "STOP BOT";
                         btn.className = "btn-toggle btn-stop";
                     } else {
-                        btn.innerText = "START BOT (MAIN)";
+                        btn.innerText = "START BOT";
                         btn.className = "btn-toggle btn-start";
                     }
 
@@ -2081,91 +1789,19 @@ class DashboardHandler(SimpleHTTPRequestHandler):
             }
         }
 
-        async function fetchClients() {
-            try {
-                let res = await fetch('/api/clients');
-                let data = await res.json();
-                if (data.success) {
-                    let html = '';
-                    data.clients.forEach(c => {
-                        let clientUrl = window.location.origin + '/client/' + encodeURIComponent(c.account_name);
-                        let badgeClass = c.bot_enabled ? 'active' : 'stopped';
-                        html += `<tr>
-                            <td><b>${c.account_name}</b></td>
-                            <td>${c.starting_date} to ${c.expiry_date}</td>
-                            <td><span class="badge ${badgeClass}">${c.status}</span></td>
-                            <td>$${c.balance.toFixed(2)}</td>
-                            <td>${c.local_position} (${c.size})</td>
-                            <td class="${c.unrealized_pnl >= 0 ? 'profit' : 'loss'}">$${c.unrealized_pnl.toFixed(2)}</td>
-                            <td>
-                                <button onclick="toggleClient('${c.account_name}', ${!c.bot_enabled})" class="btn-action" style="background: ${c.bot_enabled ? '#ef4444' : '#10b981'};">${c.bot_enabled ? 'Stop' : 'Start'}</button>
-                                <button onclick="copyLink('${clientUrl}')" class="btn-action" style="background: #38bdf8; color: black;">Copy Link</button>
-                                <a href="${clientUrl}" target="_blank" style="color: #38bdf8; text-decoration: none; margin-left: 5px;">Open</a>
-                            </td>
-                        </tr>`;
-                    });
-                    document.getElementById('client-table').innerHTML = html || '<tr><td colspan="7" style="text-align: center;">No clients added yet.</td></tr>';
-                }
-            } catch (err) {
-                console.error("Clients fetch error:", err);
-            }
-        }
-
-        function copyLink(url) {
-            navigator.clipboard.writeText(url).then(() => {
-                alert("Client dashboard link copied to clipboard!");
-            }).catch(err => {
-                console.error('Failed to copy: ', err);
-            });
-        }
-
-        async function addClient(e) {
-            e.preventDefault();
-            let payload = {
-                name: document.getElementById('cname').value,
-                api_key: document.getElementById('ckey').value,
-                api_secret: document.getElementById('csec').value,
-                starting_date: document.getElementById('cstart').value,
-                expiry_date: document.getElementById('cexpiry').value
-            };
-            let res = await fetch('/api/client/add', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(payload)
-            });
-            let data = await res.json();
-            alert(data.message);
-            fetchClients();
-            e.target.reset();
-        }
-
-        async function toggleClient(name, start) {
-            let endpoint = start ? '/api/client/start' : '/api/client/stop';
-            await fetch(endpoint, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name: name})
-            });
-            fetchClients();
-        }
-
         async function toggleBot() {
             let endpoint = isRunning ? '/api/stop' : '/api/start';
             try {
-                await fetch(endpoint, { method: 'POST' });
+                let res = await fetch(endpoint, { method: 'POST' });
+                let data = await res.json();
                 fetchDashboard();
             } catch (err) {
                 console.error("Toggle error:", err);
             }
         }
 
-        setInterval(() => {
-            fetchDashboard();
-            fetchClients();
-        }, 2000);
-        
+        setInterval(fetchDashboard, 2000);
         fetchDashboard();
-        fetchClients();
     </script>
 </body>
 </html>
@@ -2178,8 +1814,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
-        length = int(self.headers.get('content-length', 0))
-        body = json.loads(self.rfile.read(length).decode('utf-8')) if length > 0 else {}
 
         if path == "/api/start":
             self.send_json(BOT.start_bot())
@@ -2187,39 +1821,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
 
         if path == "/api/stop":
             self.send_json(BOT.stop_bot())
-            return
-
-        if path == "/api/client/add":
-            name = body.get("name")
-            key = body.get("api_key")
-            sec = body.get("api_secret")
-            start = body.get("starting_date")
-            expiry = body.get("expiry_date")
-            if not name or not key or not sec or not start or not expiry:
-                self.send_json({"success": False, "message": "All fields are required."})
-                return
-            MANAGER.add_client(name, key, sec, start, expiry)
-            self.send_json({"success": True, "message": f"Client {name} added successfully."})
-            return
-
-        if path == "/api/client/start":
-            name = body.get("name")
-            if name in MANAGER.clients:
-                res = MANAGER.clients[name].bot.start_bot()
-                MANAGER.save_clients()
-                self.send_json(res)
-                return
-            self.send_json({"success": False, "message": "Client not found."})
-            return
-
-        if path == "/api/client/stop":
-            name = body.get("name")
-            if name in MANAGER.clients:
-                res = MANAGER.clients[name].bot.stop_bot()
-                MANAGER.save_clients()
-                self.send_json(res)
-                return
-            self.send_json({"success": False, "message": "Client not found."})
             return
 
         self.send_json({"success": False, "message": "Unknown endpoint."}, 404)
@@ -2231,10 +1832,6 @@ class DashboardHandler(SimpleHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
-
-# ============================================================
-# WEBSOCKET & BACKGROUND LOOP
-# ============================================================
 
 def extract_trade(message):
     try:
@@ -2287,9 +1884,6 @@ def websocket_on_message(ws, message):
         return
     try:
         BOT.evaluate(price)
-        for client_wrapper in MANAGER.clients.values():
-            if client_wrapper.check_validity() == "ACTIVE" and client_wrapper.bot.bot_running:
-                client_wrapper.bot.evaluate(price)
     except Exception as e:
         logging.error("Evaluate error: %s", e)
 
