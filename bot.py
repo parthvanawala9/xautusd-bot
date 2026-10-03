@@ -57,6 +57,25 @@ MARGIN_FRACTION = Decimal("0.10")
 MAX_LEVERAGE = 100
 MIN_LEVERAGE = 10
 
+# ============================================================
+# DELTA XAUTUSD SUPERTREND
+# ============================================================
+#
+# Source:
+#   Delta Exchange XAUTUSD 1-minute candles
+#
+# Supertrend:
+#   ATR Period = 10
+#   Multiplier = 3
+#   Source = HL2
+#
+# Signals:
+#   CLOSED CANDLE ONLY
+#   BUY  = Supertrend changes to bullish
+#   SELL = Supertrend changes to bearish
+#
+# ============================================================
+
 SUPERTREND_PERIOD = 10
 SUPERTREND_MULTIPLIER = 3.0
 
@@ -72,15 +91,14 @@ POSITION_REFRESH_SECONDS = 1.0
 # WEEKEND SETTINGS
 # ============================================================
 
-# Saturday 5:00 AM IST:
+# Saturday 05:00 AM IST:
 # Open position must be force closed.
 WEEKEND_CLOSE_TIME = dtime(5, 0)
 
-# Monday 5:30 AM IST:
+# Monday 05:30 AM IST:
 # Trading becomes allowed again.
 WEEKEND_RESUME_TIME = dtime(5, 30)
 
-# Scheduler checks every second.
 WEEKEND_CHECK_INTERVAL = 1.0
 
 # ============================================================
@@ -150,7 +168,6 @@ def load_json(path, default):
 
 def load_history():
     data = load_json(HISTORY_FILE, [])
-
     return data if isinstance(data, list) else []
 
 
@@ -178,20 +195,16 @@ def as_float(value, default=None):
 
 def is_market_closed(dt=None):
     """
-    Weekend trading schedule:
-
     Saturday:
-        00:00 - 04:59  -> technically Friday session continuation
-        05:00 onward   -> CLOSED
+        00:00 - 04:59 -> Friday session continuation
+        05:00 onward  -> CLOSED
 
     Sunday:
         FULL DAY CLOSED
 
     Monday:
-        00:00 - 05:29  -> CLOSED
-        05:30 onward   -> OPEN
-
-    This function is used to prevent new trades.
+        00:00 - 05:29 -> CLOSED
+        05:30 onward  -> OPEN
     """
 
     dt = dt or now_ist()
@@ -199,15 +212,12 @@ def is_market_closed(dt=None):
     wd = dt.weekday()
     t = dt.time()
 
-    # Saturday
     if wd == 5 and t >= WEEKEND_CLOSE_TIME:
         return True
 
-    # Sunday
     if wd == 6:
         return True
 
-    # Monday before 05:30
     if wd == 0 and t < WEEKEND_RESUME_TIME:
         return True
 
@@ -216,12 +226,10 @@ def is_market_closed(dt=None):
 
 def weekend_state(dt=None):
     """
-    Returns:
-
-        PRE_CLOSE
-        WEEKEND
-        MONDAY_PRE_OPEN
-        OPEN
+    PRE_CLOSE
+    WEEKEND
+    MONDAY_PRE_OPEN
+    OPEN
     """
 
     dt = dt or now_ist()
@@ -229,19 +237,15 @@ def weekend_state(dt=None):
     wd = dt.weekday()
     t = dt.time()
 
-    # Saturday before 05:00
     if wd == 5 and t < WEEKEND_CLOSE_TIME:
         return "PRE_CLOSE"
 
-    # Saturday after 05:00
     if wd == 5 and t >= WEEKEND_CLOSE_TIME:
         return "WEEKEND"
 
-    # Sunday
     if wd == 6:
         return "WEEKEND"
 
-    # Monday before 05:30
     if wd == 0 and t < WEEKEND_RESUME_TIME:
         return "MONDAY_PRE_OPEN"
 
@@ -446,7 +450,7 @@ class DeltaClient:
         self.session.headers.update({
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "XAUTUSD-Supertrend-Bot/5.1",
+            "User-Agent": "XAUTUSD-Supertrend-Bot/6.0",
         })
 
     def sign(
@@ -477,7 +481,7 @@ class DeltaClient:
             "api-key": API_KEY,
             "signature": sig,
             "timestamp": ts,
-            "User-Agent": "XAUTUSD-Supertrend-Bot/5.1",
+            "User-Agent": "XAUTUSD-Supertrend-Bot/6.0",
         }
 
     def api(
@@ -1224,16 +1228,40 @@ class Bot:
     # ========================================================
     # SUPERTREND
     # ========================================================
+    #
+    # IMPORTANT:
+    #
+    # This calculation uses ONLY Delta Exchange candles.
+    #
+    # 1. True Range from Delta OHLC
+    # 2. ATR(10) using Wilder/RMA
+    # 3. HL2 as source
+    # 4. Multiplier = 3.0
+    # 5. Final upper/lower bands
+    # 6. Direction only changes on CLOSED candles
+    #
+    # No TradingView candle/data is used.
+    #
+    # ========================================================
 
-    def calculate_supertrend(
+    def _supertrend_calculation(
         self,
         candles
     ):
+        """
+        Single source of truth for the Supertrend
+        calculation.
 
-        if len(candles) < (
-            SUPERTREND_PERIOD + 2
-        ):
-            return None, None
+        This function is used by both:
+            calculate_supertrend()
+            calculate_supertrend_series()
+
+        This prevents the two calculations from ever
+        becoming different.
+        """
+
+        if len(candles) < SUPERTREND_PERIOD + 2:
+            return []
 
         highs = [
             float(x["high"])
@@ -1250,12 +1278,15 @@ class Bot:
             for x in candles
         ]
 
-        n = len(closes)
-
+        n = len(candles)
         p = SUPERTREND_PERIOD
         m = SUPERTREND_MULTIPLIER
 
-        tr = [0.0] * n
+        # ----------------------------------------------------
+        # TRUE RANGE
+        # ----------------------------------------------------
+
+        tr = [None] * n
 
         for i in range(n):
 
@@ -1268,28 +1299,54 @@ class Bot:
 
             else:
 
-                tr[i] = max(
-                    highs[i] - lows[i],
-                    abs(
-                        highs[i]
-                        - closes[i - 1]
-                    ),
-                    abs(
-                        lows[i]
-                        - closes[i - 1]
-                    ),
+                hl = (
+                    highs[i]
+                    - lows[i]
                 )
+
+                hc = abs(
+                    highs[i]
+                    - closes[i - 1]
+                )
+
+                lc = abs(
+                    lows[i]
+                    - closes[i - 1]
+                )
+
+                tr[i] = max(
+                    hl,
+                    hc,
+                    lc
+                )
+
+        # ----------------------------------------------------
+        # WILDER / RMA ATR
+        # ----------------------------------------------------
+        #
+        # First ATR is the SMA of the first p TR values.
+        #
+        # We use TR[1] ... TR[p] because TR[0] has no
+        # previous close.
+        #
+        # After that:
+        #
+        # ATR = ((previous ATR * (p - 1)) + TR) / p
+        #
+        # ----------------------------------------------------
 
         atr = [None] * n
 
         if n <= p:
-            return None, None
+            return []
 
-        atr[p] = (
+        first_atr = (
             sum(
                 tr[1:p + 1]
             ) / p
         )
+
+        atr[p] = first_atr
 
         for i in range(
             p + 1,
@@ -1304,11 +1361,17 @@ class Bot:
                 + tr[i]
             ) / p
 
+        # ----------------------------------------------------
+        # BANDS
+        # ----------------------------------------------------
+
         upper = [None] * n
         lower = [None] * n
+
         direction = [None] * n
         supertrend = [None] * n
 
+        # First valid ATR candle.
         first = p
 
         hl2 = (
@@ -1316,21 +1379,31 @@ class Bot:
             + lows[first]
         ) / 2.0
 
-        upper[first] = (
+        basic_upper = (
             hl2
             + m * atr[first]
         )
 
-        lower[first] = (
+        basic_lower = (
             hl2
             - m * atr[first]
         )
 
+        upper[first] = basic_upper
+        lower[first] = basic_lower
+
+        # Initial direction.
+        #
+        # The first valid Supertrend value is initialized
+        # as bearish/SELL, exactly once. Subsequent candles
+        # determine the direction from the previous final band.
         direction[first] = "SELL"
 
-        supertrend[first] = (
-            upper[first]
-        )
+        supertrend[first] = upper[first]
+
+        # ----------------------------------------------------
+        # MAIN SUPERTREND LOOP
+        # ----------------------------------------------------
 
         for i in range(
             first + 1,
@@ -1352,222 +1425,107 @@ class Bot:
                 - m * atr[i]
             )
 
-            prev_upper = upper[i - 1]
-            prev_lower = lower[i - 1]
+            previous_upper = upper[i - 1]
+            previous_lower = lower[i - 1]
 
-            prev_close = closes[i - 1]
+            previous_close = closes[i - 1]
 
-            upper[i] = (
-                basic_upper
-                if (
-                    basic_upper < prev_upper
-                    or prev_close > prev_upper
-                )
-                else prev_upper
-            )
+            # ------------------------------------------------
+            # FINAL UPPER BAND
+            # ------------------------------------------------
 
-            lower[i] = (
-                basic_lower
-                if (
-                    basic_lower > prev_lower
-                    or prev_close < prev_lower
-                )
-                else prev_lower
-            )
+            if (
+                basic_upper < previous_upper
+                or previous_close > previous_upper
+            ):
 
-            prev_st = supertrend[i - 1]
-
-            if prev_st == prev_upper:
-
-                direction[i] = (
-                    "BUY"
-                    if closes[i] > upper[i]
-                    else "SELL"
-                )
+                upper[i] = basic_upper
 
             else:
 
-                direction[i] = (
-                    "SELL"
-                    if closes[i] < lower[i]
-                    else "BUY"
-                )
+                upper[i] = previous_upper
 
-            supertrend[i] = (
-                lower[i]
-                if direction[i] == "BUY"
-                else upper[i]
-            )
+            # ------------------------------------------------
+            # FINAL LOWER BAND
+            # ------------------------------------------------
 
-        return (
-            direction[-1],
-            float(supertrend[-1])
-        )
+            if (
+                basic_lower > previous_lower
+                or previous_close < previous_lower
+            ):
 
-    def calculate_supertrend_series(
-        self,
-        candles
-    ):
-
-        if len(candles) < (
-            SUPERTREND_PERIOD + 2
-        ):
-            return []
-
-        highs = [
-            float(x["high"])
-            for x in candles
-        ]
-
-        lows = [
-            float(x["low"])
-            for x in candles
-        ]
-
-        closes = [
-            float(x["close"])
-            for x in candles
-        ]
-
-        n = len(closes)
-
-        p = SUPERTREND_PERIOD
-        m = SUPERTREND_MULTIPLIER
-
-        tr = [0.0] * n
-
-        for i in range(n):
-
-            if i == 0:
-
-                tr[i] = (
-                    highs[i]
-                    - lows[i]
-                )
+                lower[i] = basic_lower
 
             else:
 
-                tr[i] = max(
-                    highs[i] - lows[i],
-                    abs(
-                        highs[i]
-                        - closes[i - 1]
-                    ),
-                    abs(
-                        lows[i]
-                        - closes[i - 1]
-                    ),
-                )
+                lower[i] = previous_lower
 
-        atr = [None] * n
+            previous_supertrend = supertrend[i - 1]
 
-        atr[p] = (
-            sum(
-                tr[1:p + 1]
-            ) / p
-        )
+            # ------------------------------------------------
+            # DIRECTION
+            # ------------------------------------------------
+
+            if previous_supertrend == previous_upper:
+
+                # Previous trend was SELL / bearish.
+                #
+                # Only a CLOSE above final upper band
+                # changes it to BUY.
+
+                if closes[i] > upper[i]:
+
+                    direction[i] = "BUY"
+
+                else:
+
+                    direction[i] = "SELL"
+
+            else:
+
+                # Previous trend was BUY / bullish.
+                #
+                # Only a CLOSE below final lower band
+                # changes it to SELL.
+
+                if closes[i] < lower[i]:
+
+                    direction[i] = "SELL"
+
+                else:
+
+                    direction[i] = "BUY"
+
+            # ------------------------------------------------
+            # SUPERTREND LINE
+            # ------------------------------------------------
+
+            if direction[i] == "BUY":
+
+                supertrend[i] = lower[i]
+
+            else:
+
+                supertrend[i] = upper[i]
+
+        # ----------------------------------------------------
+        # RETURN FULL CALCULATION
+        # ----------------------------------------------------
+
+        result = []
 
         for i in range(
-            p + 1,
+            first,
             n
         ):
 
-            atr[i] = (
-                (
-                    atr[i - 1]
-                    * (p - 1)
-                )
-                + tr[i]
-            ) / p
+            if (
+                direction[i] is None
+                or supertrend[i] is None
+            ):
+                continue
 
-        upper = [None] * n
-        lower = [None] * n
-        direction = [None] * n
-        st = [None] * n
-
-        upper[p] = (
-            (
-                highs[p]
-                + lows[p]
-            ) / 2.0
-            + m * atr[p]
-        )
-
-        lower[p] = (
-            (
-                highs[p]
-                + lows[p]
-            ) / 2.0
-            - m * atr[p]
-        )
-
-        direction[p] = "SELL"
-        st[p] = upper[p]
-
-        for i in range(
-            p + 1,
-            n
-        ):
-
-            hl2 = (
-                highs[i]
-                + lows[i]
-            ) / 2.0
-
-            bu = (
-                hl2
-                + m * atr[i]
-            )
-
-            bl = (
-                hl2
-                - m * atr[i]
-            )
-
-            upper[i] = (
-                bu
-                if (
-                    bu < upper[i - 1]
-                    or closes[i - 1]
-                    > upper[i - 1]
-                )
-                else upper[i - 1]
-            )
-
-            lower[i] = (
-                bl
-                if (
-                    bl > lower[i - 1]
-                    or closes[i - 1]
-                    < lower[i - 1]
-                )
-                else lower[i - 1]
-            )
-
-            if st[i - 1] == upper[i - 1]:
-
-                direction[i] = (
-                    "BUY"
-                    if closes[i] > upper[i]
-                    else "SELL"
-                )
-
-            else:
-
-                direction[i] = (
-                    "SELL"
-                    if closes[i] < lower[i]
-                    else "BUY"
-                )
-
-            st[i] = (
-                lower[i]
-                if direction[i] == "BUY"
-                else upper[i]
-            )
-
-        return [
-            {
+            result.append({
                 "bucket":
                     candles[i]["bucket"],
 
@@ -1575,24 +1533,50 @@ class Bot:
                     direction[i],
 
                 "level":
-                    float(st[i]),
+                    float(supertrend[i]),
 
                 "close":
                     closes[i],
-            }
 
-            for i in range(
-                p,
-                n
-            )
+                "upper":
+                    float(upper[i]),
 
-            if (
-                direction[i]
-                is not None
-                and st[i]
-                is not None
-            )
-        ]
+                "lower":
+                    float(lower[i]),
+
+                "atr":
+                    float(atr[i]),
+            })
+
+        return result
+
+    def calculate_supertrend(
+        self,
+        candles
+    ):
+
+        series = self._supertrend_calculation(
+            candles
+        )
+
+        if not series:
+            return None, None
+
+        last = series[-1]
+
+        return (
+            last["direction"],
+            last["level"]
+        )
+
+    def calculate_supertrend_series(
+        self,
+        candles
+    ):
+
+        return self._supertrend_calculation(
+            candles
+        )
 
     # ========================================================
     # INITIAL CANDLES
@@ -1628,6 +1612,7 @@ class Bot:
                 if not c:
                     continue
 
+                # NEVER use the currently forming candle.
                 if (
                     c["bucket"]
                     >= current_bucket
@@ -1687,11 +1672,12 @@ class Bot:
             )
 
             logging.info(
-                "SUPERTREND BASELINE | candle=%s | close=%.2f | direction=%s | level=%.2f | NO STARTUP TRADE",
+                "SUPERTREND BASELINE | candle=%s | close=%.2f | direction=%s | level=%.2f | ATR=%.4f | NO STARTUP TRADE",
                 last["bucket"],
                 last["close"],
                 last["direction"],
                 last["level"],
+                last["atr"],
             )
 
             self.save()
@@ -1782,23 +1768,6 @@ class Bot:
 
     def weekend_force_close(self):
 
-        """
-        HARD SAFETY:
-
-        Saturday 05:00 IST onward:
-            Close any open position.
-
-        Sunday:
-            Keep account FLAT.
-
-        Monday before 05:30:
-            Keep account FLAT.
-
-        This function does NOT depend on bot_running.
-        Therefore an open position is closed even if the
-        dashboard says STOPPED.
-        """
-
         state = weekend_state()
 
         if state == "PRE_CLOSE":
@@ -1876,12 +1845,10 @@ class Bot:
 
                 try:
 
-                    # Cancel any exchange-side orders first.
                     self.client.cancel_all_orders(
                         self.product_id
                     )
 
-                    # Force reduce-only market close.
                     self.client.reduce_only_close(
                         self.product_id,
                         size
@@ -1905,7 +1872,6 @@ class Bot:
 
                     return
 
-                # Record the weekend close.
                 self.record_close(
                     "WEEKEND_SQUARE_OFF",
                     exit_price,
@@ -1978,9 +1944,6 @@ class Bot:
 
                 elif state == "OPEN":
 
-                    # Once Monday 05:30 arrives,
-                    # allow normal trading again.
-
                     if self.weekend_close_attempted:
 
                         logging.info(
@@ -2024,10 +1987,6 @@ class Bot:
                         "Product load failed."
                 }
 
-            # IMPORTANT:
-            # If somebody starts/restarts the bot during
-            # Saturday/Sunday/Monday pre-open, immediately
-            # force account flat.
             if is_market_closed():
 
                 logging.warning(
@@ -2049,12 +2008,10 @@ class Bot:
 
             self.sync_existing_position()
 
-            # Extra weekend safety check after position sync.
             if is_market_closed():
 
                 self.weekend_force_close()
 
-                # Re-sync after possible close.
                 self.sync_existing_position()
 
             self.bot_running = True
@@ -2067,7 +2024,7 @@ class Bot:
                 "success": True,
                 "bot_running": True,
                 "message":
-                    "Bot started. Weekend protection active.",
+                    "Bot started. Delta XAUTUSD Supertrend 10/3 active.",
             }
 
     def stop_bot(self):
@@ -2468,7 +2425,6 @@ class Bot:
         stop_loss
     ):
 
-        # HARD WEEKEND BLOCK
         if is_market_closed():
 
             logging.info(
@@ -2547,8 +2503,6 @@ class Bot:
                         existing_entry,
                     )
 
-                # Check weekend again immediately before
-                # sending actual order.
                 if is_market_closed():
 
                     logging.warning(
@@ -2841,12 +2795,13 @@ class Bot:
             self.supertrend_level = level
 
             logging.info(
-                "CLOSED 1M CANDLE | bucket=%s | O=%.2f H=%.2f L=%.2f C=%.2f | ST=%s | ST_LEVEL=%.2f | PREV=%s",
+                "CLOSED 1M CANDLE | bucket=%s | O=%.2f H=%.2f L=%.2f C=%.2f | ATR=%.4f | ST=%s | ST_LEVEL=%.2f | PREV=%s",
                 candle["bucket"],
                 candle["open"],
                 candle["high"],
                 candle["low"],
                 candle["close"],
+                current["atr"],
                 direction,
                 level,
                 previous,
@@ -2865,14 +2820,12 @@ class Bot:
 
                 return
 
-            # Same direction = NO TRADE
             if direction == previous:
 
                 self.save()
 
                 return
 
-            # Save confirmed flip.
             self.last_signal = direction
 
             self.save()
@@ -2890,7 +2843,6 @@ class Bot:
                 )
             )
 
-            # HARD WEEKEND CHECK
             if is_market_closed():
 
                 logging.info(
@@ -3366,7 +3318,7 @@ class Bot:
                     self.execution_uncertain,
 
                 "strategy":
-                    "Supertrend 10/3 - 1m",
+                    "Delta XAUTUSD Supertrend 10/3 - 1m",
             },
 
             "total_closed_pnl":
@@ -3617,6 +3569,16 @@ START BOT
 <div class="card">
 
 <h3>STRATEGY</h3>
+
+<div class="row">
+<span>Exchange</span>
+<span>Delta Exchange</span>
+</div>
+
+<div class="row">
+<span>Symbol</span>
+<span>XAUTUSD</span>
+</div>
 
 <div class="row">
 <span>Supertrend</span>
@@ -4324,8 +4286,6 @@ def main():
 
         BOT.sync_existing_position()
 
-        # If restart happened during weekend and position
-        # somehow still exists, close it again.
         if is_market_closed():
 
             BOT.weekend_force_close()
